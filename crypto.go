@@ -21,13 +21,13 @@ const (
 
 const (
 	CryptoVersion = 0
-	MacSize = 16
-	SnSize  = 6 // Sequence number Size is 48bit / 6 bytes
+	MacSize       = 16
+	SnSize        = 6 // Sequence number Size is 48bit / 6 bytes
 	//MinPayloadSize is the minimum payload Size in bytes. We need at least 8 bytes as
 	// 8 + the MAC Size (16 bytes) is 24 bytes, which is used as the input for
 	// sealing with chacha20poly1305.NewX().
-	
-	PubKeySize     = 32
+
+	PubKeySize         = 32
 	HeaderSize         = 1
 	ConnIdSize         = 8
 	MsgInitFillLenSize = 2
@@ -302,8 +302,9 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		true,
 		0,
 		sharedSecret,
-		encData[0:HeaderSize+ConnIdSize+(2*PubKeySize)],
-		encData[HeaderSize+ConnIdSize+(2*PubKeySize):],
+		encData[0:MinInitRcvSizeHdr],
+		encData[MinInitRcvSizeHdr:],
+		false, // Live decryption
 	)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -352,6 +353,7 @@ func decryptInitCryptoSnd(
 		nonForwardSecretKey,
 		encData[0:HeaderSize+(2*PubKeySize)],
 		encData[HeaderSize+(2*PubKeySize):],
+		false, // Live decryption
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -397,6 +399,7 @@ func decryptInitCryptoRcv(
 		sharedSecret,
 		encData[0:HeaderSize+ConnIdSize+PubKeySize],
 		encData[HeaderSize+ConnIdSize+PubKeySize:],
+		false, // Live decryption
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -428,6 +431,7 @@ func decryptData(
 		sharedSecret,
 		encData[0:HeaderSize+ConnIdSize],
 		encData[HeaderSize+ConnIdSize:],
+		false, // This is a live decryption, not offline
 	)
 	if err != nil {
 		return nil, err
@@ -440,16 +444,14 @@ func decryptData(
 	}, nil
 }
 
-func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret []byte, header []byte, encData []byte) (
+func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret []byte, header []byte, encData []byte, isOfflineDecrypt bool) (
 	snConn uint64, currentEpochCrypt uint64, packetData []byte, err error) {
 	snConnBytes := make([]byte, SnSize)
 
-	encSn := encData[0:SnSize]
-	encData = encData[SnSize:]
-	nonceRand := encData[:24]
-	snConnBytes, err = openNoVerify(sharedSecret, nonceRand, encSn, snConnBytes)
+	encryptedSN := encData[:SnSize]
+	ciphertextWithNonce := encData[SnSize:]
+	snConnBytes, err = openNoVerify(sharedSecret, ciphertextWithNonce, encryptedSN, snConnBytes)
 	if err != nil {
-		return 0, 0, nil, err
 	}
 	snConn = Uint48(snConnBytes)
 
@@ -470,15 +472,24 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret []byte, heade
 
 	for _, epochTry := range epochs {
 		PutUint48(nonceDet, epochTry)
-		if isSender {
-			// set first (highest) bit to 0
-			nonceDet[0] = nonceDet[0] &^ 0x80 // bit clear
+		// The logic for the sender bit is inverted between live decryption and offline pcap decryption.
+		// isOfflineDecrypt allows us to handle both cases correctly.
+		if isOfflineDecrypt {
+			if isSender {
+				nonceDet[0] = nonceDet[0] | 0x80 // bit set
+			} else {
+				nonceDet[0] = nonceDet[0] &^ 0x80 // bit clear
+			}
 		} else {
-			// set first (highest) bit to 1
-			nonceDet[0] = nonceDet[0] | 0x80 // bit set
+			// Live decryption logic
+			if isSender {
+				nonceDet[0] = nonceDet[0] &^ 0x80 // bit clear
+			} else {
+				nonceDet[0] = nonceDet[0] | 0x80 // bit set
+			}
 		}
 
-		packetData, err = aead.Open(nil, nonceDet, encData, header)
+		packetData, err = aead.Open(nil, nonceDet, ciphertextWithNonce, header)
 		if err == nil {
 			//TODO if we are at epochCrypt + 1 -> make this the new epochCrypt
 			return snConn, epochTry, packetData, nil
@@ -487,13 +498,33 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret []byte, heade
 	return 0, 0, nil, err
 }
 
-// inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go
-func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte, snSer []byte) ([]byte, error) {
-	s, err := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
+// DecryptDataForPcap is a helper function for external tools (like pcap decryptors)
+// to decrypt a QOTP data packet payload.
+func DecryptDataForPcap(encryptedPortion []byte, isSenderOnInit bool, epoch uint64, sharedSecret []byte, connId uint64) ([]byte, error) {
+	// Reconstruct the AAD (header) as it was during encryption for a Data packet.
+	header := make([]byte, HeaderSize+ConnIdSize)
+	header[0] = (uint8(Data) << 5) | CryptoVersion
+	PutUint64(header[HeaderSize:], connId)
+
+	// For offline decryption, we must call chainedDecrypt directly with the offline flag.
+	_, _, payload, err := chainedDecrypt(isSenderOnInit, epoch, sharedSecret, header, encryptedPortion, true)
 	if err != nil {
 		return nil, err
 	}
-	s.SetCounter(1) // Set the counter to 1, skipping 32 bytes
+	// The payload of a data packet is another QOTP-formatted payload.
+	// We return this inner raw payload for dissection.
+	return payload, nil
+}
+
+// inspired by: https://github.com/golang/crypto/blob/master/chacha20poly1305/chacha20poly1305_generic.go
+func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte, snSer []byte) ([]byte, error) {
+	// The nonce for the SN is the first 24 bytes of the main ciphertext (which is passed as 'nonce' here).
+	snNonce := nonce[:chacha20poly1305.NonceSizeX]
+	s, err := chacha20.NewUnauthenticatedCipher(sharedSecret, snNonce)
+	if err != nil {
+		return nil, err
+	}
+	s.SetCounter(1) // Per the spec, skip the first 32 bytes of the keystream for SN encryption.
 
 	// Decrypt the ciphertext
 	s.XORKeyStream(snSer, encoded)

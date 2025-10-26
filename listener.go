@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -21,16 +23,18 @@ type Listener struct {
 	currentConnID   *uint64
 	currentStreamID *uint32
 	closed          bool
+	keyLogWriter    io.Writer
 	mtu             int
 	mu              sync.Mutex
 }
 
 type ListenOption struct {
-	seed       *[32]byte
-	prvKeyId   *ecdh.PrivateKey
-	localConn  NetworkConn
-	listenAddr *net.UDPAddr
-	mtu        int
+	seed         *[32]byte
+	prvKeyId     *ecdh.PrivateKey
+	localConn    NetworkConn
+	listenAddr   *net.UDPAddr
+	mtu          int
+	keyLogWriter io.Writer
 }
 
 type ListenFunc func(*ListenOption) error
@@ -41,6 +45,14 @@ func WithMtu(mtu int) ListenFunc {
 			return errors.New("seed already set")
 		}
 		o.mtu = mtu
+		return nil
+	}
+}
+
+// WithKeyLogWriter sets a writer for logging session keys in SSLKEYLOGFILE format.
+func WithKeyLogWriter(w io.Writer) ListenFunc {
+	return func(o *ListenOption) error {
+		o.keyLogWriter = w
 		return nil
 	}
 }
@@ -173,11 +185,12 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	}
 
 	l := &Listener{
-		localConn: lOpts.localConn,
-		prvKeyId:  lOpts.prvKeyId,
-		mtu:       lOpts.mtu,
-		connMap:   NewLinkedMap[uint64, *Conn](),
-		mu:        sync.Mutex{},
+		localConn:    lOpts.localConn,
+		prvKeyId:     lOpts.prvKeyId,
+		mtu:          lOpts.mtu,
+		keyLogWriter: lOpts.keyLogWriter,
+		connMap:      NewLinkedMap[uint64, *Conn](),
+		mu:           sync.Mutex{},
 	}
 
 	slog.Info(
@@ -186,6 +199,10 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.prvKeyId.PublicKey().Bytes()[:3])+"…"))
 
 	return l, nil
+}
+
+func (l *Listener) PubKey() *ecdh.PublicKey {
+	return l.prvKeyId.PublicKey()
 }
 
 func (l *Listener) CloseNow() error {
@@ -369,6 +386,15 @@ func (l *Listener) newConn(
 		rcvWndSize:         rcvBufferCapacity, //initially our capacity, correct value will be sent to us when we need it
 	}
 
+	// Derive and log the shared secret for decryption in Wireshark
+	if l.keyLogWriter != nil {
+		sharedSecret, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv)
+		if err != nil {
+			return nil, err
+		}
+		logKey(l.keyLogWriter, conn.connId, sharedSecret)
+	}
+
 	l.connMap.Put(connId, conn)
 	return conn, nil
 }
@@ -400,4 +426,14 @@ func (l *Listener) debug() slog.Attr {
 
 func (l *Listener) ForceClose(c *Conn) {
 	c.cleanupConn()
+}
+
+// logKey writes the session key to the key log in a format Wireshark can understand.
+// The format is `QOTP_SHARED_SECRET <connId_hex> <secret_hex>`.
+func logKey(w io.Writer, connId uint64, secret []byte) {
+	line := fmt.Sprintf("QOTP_SHARED_SECRET %x %x\n", connId, secret)
+	_, err := w.Write([]byte(line))
+	if err != nil {
+		slog.Error("Failed to write to key log", "error", err)
+	}
 }
