@@ -1,16 +1,21 @@
-# QOTP
+# QOTP - Quite OK Transport Protocol
 
-Warning: the protocol format is not final and may change!
+⚠️ **Warning**: Protocol format is not final and may change.
 
-A UDP-based transport protocol that takes an "opinionated" approach, similar to QUIC but with a focus
-on providing reasonable defaults rather than many options. The goal is to have lower complexity,
-simplicity, and security, while still being reasonably performant.
+A UDP-based transport protocol with an opinionated approach, similar to QUIC but focused on reasonable defaults over configurability. Goals: lower complexity, simplicity, security, and reasonable performance.
 
-QOTP (quite ok transport protocol) is peer-to-peer (P2P) friendly, meaning a P2P-friendly protocol often
-includes easy integration for NAT traversal, such as UDP hole punching, multi-homing, where data packets
-can come from different source addresses, or out of band public key exchange. It does not have a TIME_WAIT
-state that could exhaust ports and it does not open a socket for each connection, thus allowing many
-short-lived connections.
+QOTP is P2P-friendly, supporting UDP hole punching, multi-homing (packets from different source addresses), out-of-band key exchange, no TIME_WAIT state, and single socket for multiple connections.
+
+## Key Design Choices
+
+- **Single crypto suite**: curve25519/chacha20poly1305 (vs SSL/TLS with 57+ RFCs)
+- **Always encrypted**: No plaintext option, no key renegotiation
+- **0-RTT option**: User chooses between 0-RTT (no perfect forward secrecy) or 1-RTT (with perfect forward secrecy)
+- **BBR congestion control**: Estimates network capacity via bottleneck bandwidth and RTT
+- **Connection-level flow control**: Congestion control at connection level, not per-stream
+- **Simple teardown**: FIN/ACK with timeout
+- **MTU configuration**: No MTU discover, only MTU configuratio, default to 1400 (QUIC has 1200)
+- **Compact**: Goal < 3k LoC (currently ~2.8k LoC source)
 
 In QOTP, there is 1 supported crypto algorithm (curve25519/chacha20-poly1305) as in contrast to TLS with
 many options. It is mentioned [here](https://www.cs.auckland.ac.nz/~pgut001/pubs/bollocks.pdf) that there
@@ -27,449 +32,488 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 * https://eprints.ost.ch/id/eprint/879/ (https://github.com/stalder-n/lrp2p-go)
 * https://eprints.ost.ch/id/eprint/979/
 
-## Features / Limitations
-
-* [x] Public key of the recipient transfer can be out of band (e.g., TXT field of DNS), or in band.
-* [x] Always encrypted (curve25519/chacha20-poly1305) - no renegotiate of keys
-* [x] Support for streams, but flow and congestion control is done at the connection level
-* [x] 0-RTT (first request always needs to be equal or larger than its reply -> fill up to MTU and no
-  perfect forward secrecy)
-* [x] User decides on perfect forward secrecy. 2 options: a) no perfect forward secrecy for 1st message
-  if payload is sent in first message (request and reply). b) perfect forward secrecy with empty first message
-* [x] Congestion control: BBR (Bottleneck Bandwidth and Round-trip propagation time) estimates network capacity by
-  measuring bottleneck bandwidth and minimum round-trip time
-* [x] FIN/ACK teardown with timeout
-* [x] MTU configuration
-* [x] Goal: less than 3k LoC
-
-## Assumptions
-
-* Every node on the world is reachable via network in 1s. Max RTT is 2sec
-* Packets are identified with sequence offset + length (similar to QUIC). Length is 16bit, as an IP packet has a
-  maximum length of 64KB.
-* Initial paket size is 1400 (QUIC has 1200).
-* Receiver window max size is 64bit
-* Sequence offset is 64bit similar to QUIC with 62bit. Also, since packets are identified with
-  offset/length and length is 16bit. Current buffer sizes for 100 Gb/s cards are
-  [2GB](https://fasterdata.es.net/host-tuning/linux/100g-tuning/), which is already the
-  maximum ([max allowed in Linux is 2GB-1](https://fasterdata.es.net/host-tuning/linux/)). So 32bit with 4GB is being
-  already the limit, and a new protocol needs to support more. What about 48bit? A worst case reorder with packets in
-  flight for 1sec is when the first packet arrives last and with a buffer of 2^48 bytes (256TB). Thus, what is the
-  in-flight bandwidth that can handle worst case for 1 second: 48bit is 2^48 * 8 -> 2.3 Pb/s
-    * Current fastest speed: 22.9 Pb/s - multimode (https://newatlas.com/telecommunications/datat-transmission-record-20x-global-internet-traffic/)
-    * Commercial: 402 Tb/s - singlemode (https://www.techspot.com/news/103584-blistering-402-tbs-fiber-optic-speeds-achieved-unlocking.html)
-  So, 64bit should be enough for the foreseeable future.
-
-## Message Flow
-
-```mermaid
----
-title: "Message Flow: In-band Crypto Keys"
----
-sequenceDiagram
-    participant S as Sender
-    participant R as Receiver
-
-    Note over S,R: Protocol Flow 1: Basic Handshake
-
-    S->>R: InitSnd
-    Note right of S: pubKeyIdSnd + pubKeyEpSnd<br/>Unencrypted
-
-    R->>S: InitRcv
-    Note left of R: pubKeyIdSnd + pubKeyEpSnd<br/>Encrypted with ECDH shared secret
-
-    S->>R: Data
-    Note right of S: Encrypted data messages<br/>Using established shared secret
-
-    R->>S: Data
-    Note left of R: Encrypted data messages<br/>Using established shared secret
-```
-
-```mermaid
----
-title: "Message Flow: Out-of-band Crypto Keys"
----
-sequenceDiagram
-    participant S as Sender
-    participant R as Receiver
-
-    Note over S,R: Protocol Flow 2: Crypto Handshake
-
-    S->>R: InitCryptoSnd
-    Note right of S: pubKeyIdSnd + pubKeyEpSnd<br/>Encrypted (non-forward-secret)
-
-    R->>S: InitCryptoRcv
-    Note left of R: pubKeyEpSnd<br/>Encrypted (forward-secret)
-
-    S->>R: Data
-    Note right of S: Encrypted data messages<br/>Using forward-secret shared secret
-
-    R->>S: Data
-    Note left of R: Encrypted data messages<br/>Using forward-secret shared secret
-```
-
-## Messages Format (encryption layer)
-
-The current version is 0. The available types are:
-
-* 000b: INIT_HANDSHAKE_S0
-* 001b: INIT_HANDSHAKE_R0
-* 010b: INIT_WITH_CRYPTO_S0
-* 011b: INIT_WITH_CRYPTO_R0
-* 100b: DATA (everything else)
-* 101b: not used
-* 110b: not used
-* 111b: not used
-
-The available types are not encrypted as packets may arrive twice, and we need to know
-how to decode them.
-
-### Type INIT_HANDSHAKE_S0, min: 1400 bytes (due to filler, no data, since no encryption)
-
-Minimum is 1400 bytes to prevent amplification attacks. Since it's not encrypted, no payload can be sent.
-S0 means, it's only sent by the sender at sequence number 0. Connection Id is set randomly, and the corresponding
-R0 needs to reply with the same random connection Id.
-
-```mermaid
----
-title: "INIT_HANDSHAKE_S0 Packet"
----
-packet-beta
-  0-4: "Version"
-  5-7: "Type"
-  8-263: "Public Key Sender Ephemeral (X25519), with the first 64bit being Connection Id (64bit)"
-  264-519: "Public Key Sender Id (X25519)"
-  520-521: "(520-11200) fill up to 1400 bytes..."
-```
-
-### Type INIT_HANDSHAKE_R0, min: 103 bytes (79 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-
-The reply can contain data as it can be encrypted with perfect forward secrecy. In order to get data, INIT_HANDSHAKE_S0
-needs to fill up so that we can get data here. R0 means, it's only sent by the receiver at sequence number 0. The
-random connection Id after this message will be deleted, and the proper pubIdRcv Xor pubIdSnd is used.
-
-```mermaid
----
-title: "INIT_HANDSHAKE_R0 Packet"
----
-packet-beta
-  0-4: "Version"
-  5-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-327: "Public Key Receiver Ephemeral (X25519)"
-  328-583: "Public Key Receiver Id (X25519)"
-  584-631: "Double Encrypted Crypto Sequence Number (48bit)"
-  632-695: "Data (variable, but min 8 bytes)"
-  696-824: "MAC (HMAC-SHA256) (128bit)"
-```
-
-### Type INIT_WITH_CRYPTO_S0, min: 1400 bytes (79 bytes until payload/fillel + min payload 8 bytes + 16 bytes MAC)
-
-If we have a crpyto key, we can already encrypet with the first message, but it will no non-perfect forward secrecy. The
-user can decide if he wants to send data. S0 means, it's only sent by the sender at sequence number 0.
-
-```mermaid
----
-title: "INIT_WITH_CRYPTO_S0 Packet"
----
-
-packet-beta
-  0-4: "Version"
-  5-7: "Type"
-  8-263: "Public Key Sender Ephemeral (X25519), with the first 64bit being Connection Id (64bit)"
-  264-519: "Public Key Sender Id (X25519)"
-  520-567: "Double Encrypted Crypto Sequence Number (48bit)"
-  568-583: "Filler length (16bit), example 1 byte"
-  584-591: "Fill, example 1 byte"
-  592-655: "Data (variable, but min 8 bytes)"
-  656-784: "MAC (HMAC-SHA256)"
-```
-
-### Type INIT_WITH_CRYPTO_R0, min: 71 bytes (47 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-
-R0 means, it's only sent by the receiver at sequence number 0.
-
-```mermaid
----
-title: "INIT_WITH_CRYPTO_R0 Packet"
----
-packet-beta
-  0-4: "Version"
-  5-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-327: "Public Key Receiver Ephemeral (X25519)"
-  328-375: "Double Encrypted Crypto Sequence Number (48bit)"
-  376-439: "Data (variable, but min 8 bytes)"
-  440-568: "MAC (HMAC-SHA256) (128bit)"
-```
-
-### Type DATA, min: 39 bytes (15 bytes until payload + min payload 8 bytes + 16 bytes MAC)
-```mermaid
----
-title: "DATA Packet"
----
-packet-beta
-  0-4: "Version"
-  5-7: "Type"
-  8-71: "Connection Id (64bit)"
-  72-119: "Double Encrypted Crypto Sequence Number (48bit)"
-  120-183: "Data (variable, min. 8 bytes)"
-  184-312: "MAC (HMAC-SHA256) (128bit)"
-```
-
-The length of the complete INIT_R0 needs to be same or smaller INIT_S0, thus we need to fill up the INIT message.
-The pubKeyIdShortRcv (first 64bit) XOR pukKeyIdShortSnd (first 64bit) identifies the connection Id (connId) for multi-homing.
-
-### Double Encryption with Encoded Sequence Number
-
-Similar to QUIC, TomTP uses a deterministic way to encrypt the sequence number and payload. However, TomTP uses twice
-chacha20poly1305. The `chainedEncrypt` function handles the double encryption process for messages,
-particularly focusing on encoding and encrypting the sequence number. Here's a detailed breakdown of how it works:
-
-First Layer Encryption:
-
-1. Create a deterministic nonce with the sequence number. TomTP uses 6 bytes for sequence numbers and ChaCha20-Poly1305
-   uses a 12 bytes nonce. Thus, a sender puts its sequence number in the first 0-6 bytes, the receiver puts its
-   sequence number in the last 6-12 bytes to avoid collision.
-1. Use standard ChaCha20-Poly1305 to encrypt the payload data with this nonce
-1. Include any header/crypto data as additional authenticated data (AAD)
-1. The resulting ciphertext must be at least 24 bytes to allow for nonce extraction
-
-Second Layer Encryption:
-
-1. Take the first 24 bytes (16bytes MAC + 8 bytes payload, hence we need a min. of 8 bytes payload) of the first
-encryption result as a random nonce
-1. Use XChaCha20-Poly1305 to encrypt just the sequence number
-1. Take only the first 6 bytes (48 bits) of this encrypted sequence number (we drop the MAC)
-
-The final message structure is:
-
-* Header/crypto data (unencrypted, but signed)
-* Second layer ciphertext sequence number (6 bytes)
-* First layer ciphertext (including authentication tag)
-
-Decryption reverses this process using the same shared secret:
-
-First Layer Sequence Number Decryption:
-
-1. Extract the first 24 bytes from the first layer ciphertext as random nonce.
-1. Use XChaCha20-Poly1305 with the shared secret to decrypt the 6-byte encrypted sequence number.
-1. No authentication is needed since a wrong sequence number will cause the second layer to fail.
-
-Second Layer Payload Decryption:
-
-1. Generate the same deterministic nonce with the sequence number. (sender - 0-6 bytes, recipient 6-12 bytes)
-1. Use standard ChaCha20-Poly1305 with this nonce and shared secret
-1. Include the header/crypto data as additional authenticated data (AAD)
-1. Decrypt and authenticate the first layer ciphertext
-1. If authentication succeeds, return the decrypted sequence number and payload
-
-The scheme ensures that tampering with either the sequence number or payload will cause authentication to fail during
-the second layer decryption. The deterministic nonce binds the sequence number to the payload, while the random nonce
-from the first encryption adds unpredictability to the sequence number encryption.
-
-## Encrypted Payload Format (Transport Layer) - min. 8 Bytes (without data)
-
-To simplify the implementation, there is only one payload header.
-
-```mermaid
----
-title: "TomTP Payload Packet"
----
-packet-beta
-  0-3: "Version"
-  4-5: "Type"
-  6-7: "Flags"
-  8-39: "Opt. ACKs: Example ACK: StreamId 32bit"
-  40-63: "Opt. ACKs: Example ACK: StreamOffset 24/48bit"
-  64-79: "Opt. ACKs: Example ACK: Len 16bit"
-  80-87: "Opt. RCV_WND_SIZE"
-  88-119: "StreamId 32bit"
-  120-143: "StreamOffset 24/48bit"
-  144-151: "Data..."
-```
-The TomTP payload packet begins with a header byte containing several control bits:
-
-* Bits 0-3: Version
-* Bits 4-5: 
-  * 00 DATA
-  * 01 PING/No DATA
-  * 10 CLOSE
-  * 11 Unused
-* Bit 6: 24/48bit
-* Bit 7: ACK/No ACK
-
-If ACK bit is present then:
-
-* Bytes 8-39 contain the StreamId (32 bits)
-* Bytes 40-63 hold the StreamOffset (24 or 48 bits)
-* Bytes 64-79 contain the Len field (16 bits)
-* Bytes 80-87 contain the receiver window size (8bit)
-  * Value of 31 here means CLOSE ACK
-
-The Data section:
-
-* Bytes 88-119 contain the StreamId (32 bits)
-* Bytes 120-143 hold the StreamOffset (24 or 48 bits)
-
-Only if data length is greater than zero:
-
-* Bytes 144-... and beyond contain the actual data payload
-
-### Close
-
-Close can be initiated from both sides. SND CLOSE (offset) -> get ACKed with a RCV CLOSE (same offset), or RTO, until timeout.
-Both sides can set the flag, but needs to be acked, even if its a 0 len ack.
-
-### Ping
-
-Sending empty packets also need to be acked. But those are not retransmitted. This can be used for ping.
-
-### Overhead
-- **Total Overhead for Data Packets:**
-  47 bytes (crypto header 39 bytes + payload header 8 bytes) with 0 data (for a 1400-byte packet, this results in an overhead of ~3.3%).
-
-### Communication States and Corner Cases
-
-This is a list of things that could go wrong and will go wrong and how they are handled
-
-## Handshake: packet loss 1
-```mermaid
-sequenceDiagram
-    participant Alice
-    participant Network
-    participant Bob
-
-    Note over Alice, Bob: Test - Testing 1 retransmission with success
-
-    Alice->>Network: Send Packet 1 (data="hallo1")
-    Note over Network: Packet 1 gets lost
-
-    Note over Alice: Wait for RTO timer (250ms + 1μs)
-
-    Alice->>Network: Retransmit Packet 1
-    Network->>Bob: Packet arrives successfully
-
-    Note over Bob: First time receiving (isNew=true)
-```
-
-## Handshake: packet loss 2
-```mermaid
-sequenceDiagram
-participant Alice
-participant Network
-participant Bob
-
-    Note over Alice, Bob: TestRTOTimes4Success - Testing multiple retransmissions with success
-
-    Alice->>Network: Send Packet 1 (data="hallo1") at t=0
-    Note over Network: Packet 1 gets lost
-
-    Note over Alice: Wait for RTO timer (250ms + 1μs)
-    Alice->>Network: Retransmit Packet at t=250ms+1μs
-    Note over Network: Retransmission 1 gets lost
-
-    Note over Alice: Wait for RTO timer (687ms + 2μs)
-    Alice->>Network: Retransmit Packet at t=687ms+2μs
-    Note over Network: Retransmission 2 gets lost
-
-    Note over Alice: Wait for RTO timer (1452ms + 3μs)
-    Alice->>Network: Retransmit Packet at t=1452ms+3μs
-    Note over Network: Retransmission 3 gets lost
-
-    Note over Alice: Wait for RTO timer (2791ms + 4μs)
-    Alice->>Network: Retransmit Packet at t=2791ms+4μs
-    Network->>Bob: Packet arrives successfully
-
-    Note over Bob: First time receiving (isNew=true)
-```
-
-## Handshake: Timeout
-```mermaid
-sequenceDiagram
-participant Alice
-participant Network
-participant Bob
-
-    Note over Alice, Bob: TestRTOTimes4Fail - Testing multiple retransmissions with failure
-
-    Alice->>Network: Send Packet 1 (data="hallo1") at t=0
-    Note over Network: Packet 1 gets lost
-
-    Note over Alice: Wait for RTO timer (250ms + 1μs)
-    Alice->>Network: Retransmit Packet at t=250ms+1μs
-    Note over Network: Retransmission 1 gets lost
-
-    Note over Alice: Wait for RTO timer (687ms + 2μs)
-    Alice->>Network: Retransmit Packet at t=687ms+2μs
-    Note over Network: Retransmission 2 gets lost
-
-    Note over Alice: Wait for RTO timer (1452ms + 3μs)
-    Alice->>Network: Retransmit Packet at t=1452ms+3μs
-    Note over Network: Retransmission 3 gets lost
-
-    Note over Alice: Wait for RTO timer (2791ms + 4μs)
-    Alice->>Network: Retransmit Packet at t=2791ms+4μs
-    Note over Network: Retransmission 4 gets lost
-
-    Note over Alice: Wait for RTO timer (5134ms + 5μs)
-    Note over Alice: Error occurs - Maximum retransmissions exceeded
-```
-
-## Handshake Garbage 1
-```mermaid
-sequenceDiagram
-    participant Alice
-    participant Network
-    participant Bob
-    Note over Alice, Bob: TestGarbage1 - Return garbage
-    Alice->>Network: Garbage
-    Network->>Bob: Garbage
-    Note over Bob: Print error
-```
-
-
-## Handshake Garbage 2
-```mermaid
-sequenceDiagram
-    participant Alice
-    participant Network
-    participant Bob
-
-    Note over Alice, Bob: TestGarbage1 - Return garbage
-
-    Alice->>Network: Send Packet 1 (data="hallo1")
-    Network->>Bob: Packet arrives successfully
-
-    Note over Bob: Bob is in a weird state
-
-    Bob->>Network: Garbage
-    Network->>Alice: Garbage
-
-    Note over Alice: Print error
-```
-
-### LoC
+## Core Assumptions
+
+* Max RTT: Up to 30 seconds connection timeout (no hard RTT limit, but suspicious RTT > 30s logged)
+* Packet identification: Stream offset (24 or 48-bit) + length (16-bit)
+* Default MTU: 1400 bytes (configurable)
+* Buffer capacity: 16MB send + 16MB receive (configurable constants)
+* Crypto sequence space: 48-bit sequence number + 47-bit epoch = 2^95 total space
+  * Separate from transport layer stream offsets
+  * Rollover at 2^48 packets (not bytes) increments epoch counter
+  * At 2^95 exhaustion: ~5 billion ZB sent, requires manual reconnection
+* Transport sequence space: 24-bit (16MB range) or 48-bit (256TB range) stream offsets per stream
+  * Automatically uses 48-bit when offset > 0xFFFFFF (16MB)
+  * Multiple independent streams per connection
+
+## Protocol Specification
+
+### Message Flow
+
+**Flow 1: In-band Key Exchange (No Prior Keys)**
 
 ```
-echo "Source Code LoC"; ls -I "*_test.go" | xargs tokei; echo "Test Code LoC"; ls *_test.go | xargs tokei
+Sender → Receiver: InitSnd (unencrypted, 1400 bytes min)
+  - pubKeyEpSnd + pubKeyIdSnd
+  - Padded to prevent amplification
 
-Source Code LoC
-===============================================================================
- Language            Files        Lines         Code     Comments       Blanks
-===============================================================================
- Go                     17         3711         2804          301          606
- Markdown                1          475            0          369          106
- Shell                   2          174          130           20           24
-===============================================================================
- Total                  20         4360         2934          690          736
-===============================================================================
-Test Code LoC
-===============================================================================
- Language            Files        Lines         Code     Comments       Blanks
-===============================================================================
- Go                     13         5656         3909          642         1105
-===============================================================================
- Total                  13         5656         3909          642         1105
-===============================================================================
+Receiver → Sender: InitRcv (encrypted with ECDH)
+  - pubKeyEpRcv + pubKeyIdRcv
+  - Can contain payload (perfect forward secrecy)
+
+Both: Data messages (encrypted with shared secret)
 ```
+
+**Flow 2: Out-of-band Keys (0-RTT)**
+
+```
+Sender → Receiver: InitCryptoSnd (encrypted, non-PFS)
+  - pubKeyEpSnd + pubKeyIdSnd
+  - Can contain payload
+  - 1400 bytes min with padding
+
+Receiver → Sender: InitCryptoRcv (encrypted, PFS)
+  - pubKeyEpRcv
+  - Can contain payload
+
+Both: Data messages (encrypted with PFS shared secret)
+```
+
+### Encryption Layer
+
+#### Header Format (1 byte)
+
+```
+Bits 0-4: Version (5 bits, currently 0)
+Bits 5-7: Message Type (3 bits)
+```
+
+**Message Types**:
+- `000` (0): InitSnd - Initial handshake from sender
+- `001` (1): InitRcv - Initial handshake reply from receiver  
+- `010` (2): InitCryptoSnd - Initial with crypto from sender
+- `011` (3): InitCryptoRcv - Initial with crypto reply from receiver
+- `100` (4): Data - All data messages
+
+#### Constants
+
+```
+CryptoVersion       = 0
+MacSize             = 16 bytes (Poly1305)
+SnSize              = 6 bytes (48-bit sequence number)
+MinProtoSize        = 8 bytes (minimum payload)
+PubKeySize          = 32 bytes (X25519)
+HeaderSize          = 1 byte
+ConnIdSize          = 8 bytes
+MsgInitFillLenSize  = 2 bytes
+
+MinInitRcvSizeHdr       = 65 bytes (header + connId + 2 pubkeys)
+MinInitCryptoSndSizeHdr = 65 bytes (header + 2 pubkeys)
+MinInitCryptoRcvSizeHdr = 41 bytes (header + connId + pubkey)
+MinDataSizeHdr          = 9 bytes (header + connId)
+FooterDataSize          = 22 bytes (6 SN + 16 MAC)
+MinPacketSize           = 39 bytes (9 + 22 + 8)
+
+Default MTU             = 1400 bytes
+Send Buffer Capacity    = 16 MB
+Receive Buffer Capacity = 16 MB
+```
+
+### Message Structures
+
+#### InitSnd (Type 000, Min: 1400 bytes)
+
+Unencrypted, no data payload. Minimum 1400 bytes prevents amplification attacks.
+
+```
+Byte 0:       Header (version=0, type=000)
+Bytes 1-32:   Public Key Ephemeral Sender (X25519)
+              First 8 bytes = Connection ID
+Bytes 33-64:  Public Key Identity Sender (X25519)
+Bytes 65+:    Padding to 1400 bytes
+```
+
+**Connection ID**: First 64 bits of pubKeyEpSnd used as temporary connection ID.
+
+#### InitRcv (Type 001, Min: 103 bytes)
+
+Encrypted with ECDH(prvKeyEpRcv, pubKeyEpSnd). Achieves perfect forward secrecy.
+
+```
+Byte 0:       Header (version=0, type=001)
+Bytes 1-8:    Connection ID (from InitSnd)
+Bytes 9-40:   Public Key Ephemeral Receiver (X25519)
+Bytes 41-72:  Public Key Identity Receiver (X25519)
+Bytes 73-78:  Encrypted Sequence Number (48-bit)
+Bytes 79+:    Encrypted Payload (min 8 bytes)
+Last 16:      MAC (Poly1305)
+```
+
+After InitRcv, connection ID becomes: `pubKeyIdRcv[0:8] XOR pubKeyIdSnd[0:8]`
+
+#### InitCryptoSnd (Type 010, Min: 1400 bytes)
+
+Encrypted with ECDH(prvKeyEpSnd, pubKeyIdRcv). No perfect forward secrecy for first message.
+
+```
+Byte 0:       Header (version=0, type=010)
+Bytes 1-32:   Public Key Ephemeral Sender (X25519)
+              First 8 bytes = Connection ID
+Bytes 33-64:  Public Key Identity Sender (X25519)
+Bytes 65-70:  Encrypted Sequence Number (48-bit)
+Bytes 71-72:  Filler Length (16-bit, encrypted)
+Bytes 73+:    Filler (variable, encrypted)
+Bytes X+:     Encrypted Payload (min 8 bytes)
+Last 16:      MAC (Poly1305)
+Total:        Padded to 1400 bytes
+```
+
+#### InitCryptoRcv (Type 011, Min: 71 bytes)
+
+Encrypted with ECDH(prvKeyEpRcv, pubKeyEpSnd). Achieves perfect forward secrecy.
+
+```
+Byte 0:       Header (version=0, type=011)
+Bytes 1-8:    Connection ID (from InitCryptoSnd)
+Bytes 9-40:   Public Key Ephemeral Receiver (X25519)
+Bytes 41-46:  Encrypted Sequence Number (48-bit)
+Bytes 47+:    Encrypted Payload (min 8 bytes)
+Last 16:      MAC (Poly1305)
+```
+
+#### Data (Type 100, Min: 39 bytes)
+
+All subsequent data messages after handshake.
+
+```
+Byte 0:       Header (version=0, type=100)
+Bytes 1-8:    Connection ID
+Bytes 9-14:   Encrypted Sequence Number (48-bit)
+Bytes 15+:    Encrypted Payload (min 8 bytes)
+Last 16:      MAC (Poly1305)
+```
+
+### Double Encryption Scheme
+
+QOTP uses deterministic double encryption for sequence numbers and payload:
+
+**Encryption Process**:
+
+1. **First Layer** (Payload):
+   - Nonce: 12 bytes deterministic
+     - Bytes 0-5: Epoch (48-bit)
+     - Bytes 6-11: Sequence number (48-bit)
+     - Bit 0 (MSB): 0=receiver, 1=sender (prevents nonce collision)
+   - Encrypt payload with ChaCha20-Poly1305
+   - AAD: header + crypto data
+   - Output: ciphertext + 16-byte MAC
+
+2. **Second Layer** (Sequence Number):
+   - Nonce: First 24 bytes of first-layer ciphertext (random)
+   - Encrypt sequence number with XChaCha20-Poly1305
+   - Take first 6 bytes only (discard MAC)
+
+**Decryption Process**:
+
+1. Extract first 24 bytes of first-layer ciphertext as nonce
+2. Decrypt 6-byte sequence number with XChaCha20-Poly1305
+3. Reconstruct deterministic nonce with decrypted sequence number
+4. Try decryption with epochs: current, current-1, current+1
+5. Verify MAC - any tampering fails authentication
+
+**Epoch Handling**:
+
+- Sequence number rolls over at 2^48 (256 TB)
+- Epoch increments on rollover (47-bit, last bit for sender/receiver)
+- Decryption tries 3 epochs to handle reordering near boundaries
+- Total space: 2^95 ≈ 40 ZB (exhaustion would require resending all human data 28M times)
+
+### Transport Layer (Payload Format)
+
+After decryption, payload contains transport header + data. Min 8 bytes total.
+
+#### Payload Header (Variable Size)
+
+```
+Byte 0:
+  Bits 0-3: Version
+  Bits 4-5: Message Type
+    00 = DATA
+    01 = PING (empty packet, needs ACK)
+    10 = CLOSE
+    11 = Reserved
+  Bit 6: Offset size (0=24-bit, 1=48-bit)
+  Bit 7: ACK present (0=no, 1=yes)
+
+If ACK present (bit 7 = 1):
+  Bytes 1-4:    Stream ID (32-bit)
+  Bytes 5-7/10: Stream Offset (24 or 48-bit)
+  Bytes 8-9/11-12: Length (16-bit)
+  Byte 10/13:   Receive Window (8-bit, encoded)
+  
+Data section (always present):
+  Bytes X+0-3:     Stream ID (32-bit)
+  Bytes X+4-6/9:   Stream Offset (24 or 48-bit)
+  Bytes X+7/10+:   Data (if length > 0)
+```
+
+**Window Encoding** (logarithmic compression):
+
+```
+Value  Capacity       Value  Capacity
+0      0 B            50     16 KB
+1      128 B          100    1 MB
+2      256 B          150    96 MB
+10     512 B          200    7 GB
+18     1 KB           250    512 GB
+                      255    ~896 GB (max)
+```
+
+Formula: `base * (1 + substep/8)` where `base = 2^(highBit)`, highBit derived from encoded value.
+
+#### Message Types
+
+**DATA**: Normal data transmission with optional ACK piggyback.
+
+**PING**: Empty packet (length=0) that requires ACK. Not retransmitted if lost. Used for keepalive and RTT measurement.
+
+**CLOSE**: Marks stream closure at current offset. Both sender and receiver can initiate.
+
+### Flow Control and Congestion
+
+#### BBR Congestion Control
+
+**State Machine**:
+
+```
+Startup → Drain/Normal → Probe → Normal
+  ↓
+Always: RTT inflation check
+```
+
+**Pacing Gains**:
+- Startup: 277% (2.77x) - aggressive growth
+- Normal: 100% (1.0x) - steady state
+- Drain: 75% (0.75x) - reduce queue after startup
+- Probe: 125% (1.25x) - periodic bandwidth probing
+- DupAck: 90% (0.9x) - back off on duplicate ACK
+
+**State Transitions**:
+
+1. **Startup → Normal**: When bandwidth stops growing (3 consecutive samples without increase)
+2. **Normal → Drain**: When RTT inflation > 150% of minimum
+3. **Normal → DupAck**: On duplicate ACK (reduce bandwidth to 98%)
+4. **Normal → Probe**: Every 8 × RTT_min (probe for more bandwidth)
+
+**Measurements**:
+
+```go
+SRTT = (7/8) × SRTT + (1/8) × RTT_sample
+RTTVAR = (3/4) × RTTVAR + (1/4) × |SRTT - RTT_sample|
+RTT_min = min(RTT_samples) over 10 seconds
+BW_max = max(bytes_acked / RTT_min)
+```
+
+**Pacing Calculation**:
+
+```
+pacing_interval = (packet_size × 1e9) / (BW_max × gain_percent / 100)
+```
+
+If no bandwidth estimate: use `SRTT / 10` or fallback to 10ms.
+
+#### Retransmission (RTO)
+
+```
+RTO = SRTT + 4 × RTTVAR
+RTO = clamp(RTO, 100ms, 2000ms)
+Default RTO = 200ms (when no SRTT)
+
+Backoff: RTO_i = RTO × 2^(i-1)
+Max retries: 4 (total 5 attempts)
+Timeout after ~5 seconds total
+```
+
+**Example timing**:
+- Attempt 1: t=0
+- Attempt 2: t=250ms
+- Attempt 3: t=687ms
+- Attempt 4: t=1452ms
+- Attempt 5: t=2791ms
+- Fail: t=5134ms
+
+#### Flow Control
+
+**Receive Window**: 
+- Advertised in each ACK
+- Calculated as: `buffer_capacity - current_buffer_usage`
+- Encoded logarithmically (8-bit → 896GB range)
+- Sender respects: `data_in_flight + packet_size ≤ rcv_window`
+
+**Pacing**: 
+- Sender tracks `next_write_time`
+- Waits until `now ≥ next_write_time` before sending
+- Even ACK-only packets respect pacing (can send early if needed)
+
+### Stream Management
+
+#### Stream Lifecycle
+
+```
+Open → Active → Close_Requested → Closed (30s timeout)
+```
+
+**Stream States**:
+- `Open`: Normal read/write operations
+- `CloseRequested`: Close initiated, waiting for offset acknowledgment
+- `Closed`: All data up to close offset delivered, 30-second grace period
+
+#### Close Protocol
+
+**Sender-Initiated**:
+1. Sender calls `Close()` on stream
+2. Marks `closeAtOffset` in send buffer (current queued data end)
+3. Marks `closeAtOffset` in receive buffer (current receive offset)
+4. Continues sending data up to `closeAtOffset`
+5. Closes stream immediately when all data up to `closeAtOffset` is ACKed
+6. No grace period on sender side
+
+**Receiver-Initiated**:
+1. Receiver calls `Close()` on stream
+2. Marks `closeAtOffset` in receive buffer (current receive offset)
+3. Marks `closeAtOffset` in send buffer (current queued data end)
+4. Sender receives CLOSE message and marks its send buffer `closeAtOffset`
+5. Receiver enters 30-second grace period starting when stream marked closed
+6. After grace period expires, stream is cleaned up
+
+**Grace Period**: 30 seconds (ReadDeadLine) only on receiver side to handle late packets and retransmissions.
+
+### Connection Management
+
+**Connection ID**: 
+- Initial: First 64 bits of ephemeral public key
+- Final: `pubKeyIdRcv[0:8] XOR pubKeyIdSnd[0:8]`
+- Enables multi-homing (packets from different source addresses)
+
+**Connection Timeout**: 
+- 30 seconds of inactivity (no packets sent or received)
+- Automatic cleanup after timeout
+
+**Single Socket**: 
+- All connections share one UDP socket
+- No TIME_WAIT state
+- Scales to many short-lived connections
+
+### Buffer Management
+
+**Send Buffer** (`SendBuffer`):
+- Capacity: 16 MB (configurable)
+- Tracks: queued data, in-flight data, ACKed data
+- Per-stream accounting
+- `userData`: queued data not yet sent
+- `dataInFlightMap`: sent but not ACKed (key: offset+length)
+- Retransmission: oldest unACKed packet on RTO
+
+**Receive Buffer** (`ReceiveBuffer`):
+- Capacity: 16 MB (configurable)
+- Handles: out-of-order delivery, overlapping segments
+- Per-stream segments stored in sorted map
+- Deduplication: checks against `nextInOrderOffsetToWaitFor`
+- Overlap handling: validates matching data in overlaps
+
+**Packet Key Encoding** (64-bit):
+```
+Bits 0-15:  Length (16-bit)
+Bits 16-63: Offset (48-bit)
+```
+
+Enables O(1) in-flight packet tracking and ACK processing.
+
+## Overhead Analysis
+
+**Crypto Layer Overhead**:
+- InitSnd: 1400 bytes (no data, padding)
+- InitRcv: 87+ bytes (65 header + 6 SN + 16 MAC + ≥8 payload)
+- InitCryptoSnd: 1400 bytes (includes padding)
+- InitCryptoRcv: 63+ bytes (41 header + 6 SN + 16 MAC + ≥8 payload)
+- Data: 31+ bytes (9 header + 6 SN + 16 MAC + ≥8 payload)
+
+**Transport Layer Overhead** (variable):
+- No ACK, 24-bit offset: 8 bytes
+- No ACK, 48-bit offset: 11 bytes
+- With ACK, 24-bit offset: 19 bytes
+- With ACK, 48-bit offset: 25 bytes
+
+**Total Minimum Overhead** (Data message with payload):
+- Best case: 39 bytes (9 + 6 + 16 + 8 transport header)
+- Typical: 39-47 bytes for data packets
+- 1400-byte packet: ~2.8-3.4% overhead
+
+## Implementation Details
+
+### Data Structures
+
+**LinkedMap**: O(1) insertion, deletion, lookup, and Next/Prev traversal. Used for connection and stream maps.
+
+**SortedMap**: Skip list with O(log n) insertion/deletion, O(1) Get/Next/Prev when key exists. Used for receive buffer segments.
+
+### Thread Safety
+
+All buffer operations protected by mutexes:
+- `SendBuffer.mu`: Protects send buffer operations
+- `ReceiveBuffer.mu`: Protects receive buffer operations
+- `Conn.mu`: Protects connection state
+- `Listener.mu`: Protects listener state
+
+### Error Handling
+
+**Crypto Errors**: 
+- Authentication failures logged and dropped silently
+- Malformed packets logged and dropped
+- Epoch mismatches handled with ±1 epoch tolerance
+
+**Buffer Full**:
+- Send: `Write()` returns partial bytes written
+- Receive: Packet dropped with `RcvInsertBufferFull`
+
+**Connection Errors**:
+- RTO exhausted: Close connection
+- 30-second inactivity: Close connection
+- Invalid state transitions: Close connection
+
+## Usage Example
+
+```go
+// Server
+listener, _ := qotp.Listen(qotp.WithListenAddr("127.0.0.1:8888"))
+defer listener.Close()
+
+listener.Loop(func(stream *qotp.Stream) bool {
+    if stream == nil {
+        return true // No data yet
+    }
+    data, err := stream.Read()
+    if err != nil {
+        return false // Exit loop
+    }
+    if len(data) > 0 {
+        stream.Write([]byte("response"))
+        stream.Close()
+    }
+    return true
+})
+
+// Client (in-band key exchange)
+listener, _ := qotp.Listen()
+conn, _ := listener.DialString("127.0.0.1:8888")
+stream := conn.Stream(0)
+stream.Write([]byte("hello"))
+
+// Client (out-of-band keys, 0-RTT)
+pubKeyHex := "0x1234..." // Receiver's public key
+conn, _ := listener.DialWithCryptoString("127.0.0.1:8888", pubKeyHex)
+```
+
+## Contributing
+
+Protocol is experimental. Contributions welcome but expect breaking changes.

@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"io"
 	"net/netip"
 	"testing"
 
@@ -47,7 +48,7 @@ func TestStreamBasicSendReceive(t *testing.T) {
 	// Received data
 	streamB, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB.state == StreamStateOpen)
+	assert.True(t, streamB.IsOpen())
 	b, err := streamB.Read()
 	assert.Nil(t, err)
 
@@ -85,7 +86,7 @@ func TestStreamMultipleStreams(t *testing.T) {
 	// Received data, verification
 	streamB1, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB1.state == StreamStateOpen)
+	assert.True(t, streamB1.IsOpen())
 	b1, err := streamB1.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a1, b1)
@@ -107,7 +108,7 @@ func TestStreamMultipleStreams(t *testing.T) {
 
 	streamB2, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB2.state == StreamStateOpen)
+	assert.True(t, streamB2.IsOpen())
 	b2, err := streamB2.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a2, b2)
@@ -140,7 +141,7 @@ func TestStreamMultipleStreamsWithTimeout(t *testing.T) {
 	// Received data, verification
 	streamB1, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB1.state == StreamStateOpen)
+	assert.True(t, streamB1.IsOpen())
 	b1, err := streamB1.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a1, b1)
@@ -161,7 +162,7 @@ func TestStreamMultipleStreamsWithTimeout(t *testing.T) {
 	streamB2, err := listenerB.Listen(0, specificNano)
 	streamB2, err = listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB2.state == StreamStateOpen)
+	assert.True(t, streamB2.IsOpen())
 	b2, err := streamB2.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, a2, b2)
@@ -186,7 +187,7 @@ func TestStreamRetransmission(t *testing.T) {
 
 	streamB, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB.state == StreamStateOpen)
+	assert.True(t, streamB.IsOpen())
 }
 
 func TestStreamRetransmissionBackoff(t *testing.T) {
@@ -222,7 +223,7 @@ func TestStreamRetransmissionBackoff(t *testing.T) {
 	_, err = connPair.senderToRecipient(1)
 	streamB, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	assert.True(t, streamB.state == StreamStateOpen)
+	assert.True(t, streamB.IsOpen())
 }
 
 func TestStreamMaxRetransmissions(t *testing.T) {
@@ -274,8 +275,8 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	a1 := []byte("hallo1")
 	_, err := streamA.Write(a1)
 	assert.Nil(t, err)
-	connA.CloseNow()
-	assert.True(t, streamA.state == StreamStateCloseRequest)
+	connA.Close()
+	assert.True(t, streamA.IsCloseRequested())
 
 	minPacing := connA.listener.Flush(specificNano)
 	assert.Equal(t, uint64(0), minPacing) // Close packet should be sent
@@ -290,9 +291,9 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 
 	// Verify data received correctly
 	buffer, err := streamB.Read()
-	assert.Nil(t, err)
+	assert.Equal(t, err, io.EOF)
 
-	assert.True(t, streamB.state == StreamStateCloseReceived)
+	assert.True(t, streamB.IsCloseRequested())
 
 	assert.Equal(t, a1, buffer)
 
@@ -303,14 +304,12 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	_, err = connPair.recipientToSender(1)
 	assert.Nil(t, err)
 
-	assert.True(t, streamA.state == StreamStateCloseRequest)
+	assert.True(t, streamA.IsCloseRequested())
 	streamA, err = streamA.conn.listener.Listen(0, specificNano)
-	assert.True(t, streamA.state == StreamStateCloseRequest)
+	assert.True(t, streamA.IsCloseRequested())
 	assert.Nil(t, err)
 
-	buffer, err = streamA.Read()
-
-	assert.True(t, streamA.state == StreamStateClosed)
+	assert.True(t, streamA.IsClosed())
 }
 
 func TestStreamCloseInitiatedByReceiver(t *testing.T) {
@@ -320,7 +319,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	a1 := []byte("hallo1")
 	_, err := streamA.Write(a1)
 	assert.Nil(t, err)
-	assert.True(t, streamA.state == StreamStateOpen)
+	assert.True(t, streamA.IsOpen())
 
 	minPacing := connA.listener.Flush(specificNano)
 	assert.Equal(t, uint64(0), minPacing) // Data should be sent
@@ -332,14 +331,14 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	// Listener B receives data
 	streamB, err := listenerB.Listen(0, specificNano)
 	assert.Nil(t, err)
-	streamB.conn.CloseNow()
-	assert.True(t, streamB.state == StreamStateCloseRequest)
+	streamB.conn.Close()
+	assert.True(t, streamB.IsCloseRequested())
 
 	// Verify data received correctly
 	buffer, err := streamB.Read()
 	assert.Nil(t, err)
 
-	assert.True(t, streamB.state == StreamStateCloseRequest)
+	assert.True(t, streamB.IsCloseRequested())
 
 	assert.Equal(t, a1, buffer)
 
@@ -355,7 +354,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 
 	buffer, err = streamA.Read()
 
-	assert.True(t, streamA.state == StreamStateCloseReceived)
+	assert.True(t, streamA.IsCloseRequested())
 }
 
 func TestStreamFlowControl(t *testing.T) {
@@ -364,9 +363,9 @@ func TestStreamFlowControl(t *testing.T) {
 	//write 64k
 	streamA := connA.Stream(0)
 	dataA := make([]byte, rcvBufferCapacity+1)
-	dataARemaining, err := streamA.Write(dataA)
+	n, err := streamA.Write(dataA)
 	assert.Nil(t, err)
-	assert.Equal(t, 1, len(dataARemaining))
+	assert.Equal(t, 16777216, n)
 	assert.Equal(t, 16777216, streamA.conn.snd.size)
 	minPacing := streamA.conn.listener.Flush(specificNano)
 	assert.Equal(t, uint64(0), minPacing) // Data should be sent
@@ -382,9 +381,9 @@ func TestStreamFlowControl(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, uint64(0x1000000), streamB.conn.rcvWndSize)
 	dataB1 := make([]byte, rcvBufferCapacity+1)
-	dataB1Remaining, err := streamB.Write(dataB1)
+	n, err = streamB.Write(dataB1)
 	assert.Nil(t, err)
-	assert.Equal(t, 1, len(dataB1Remaining))
+	assert.Equal(t, 16777216, n)
 	minPacing = streamB.conn.listener.Flush(specificNano)
 	assert.Equal(t, uint64(0), minPacing) // Data should be sent
 
@@ -422,59 +421,3 @@ func TestStreamFlowControl(t *testing.T) {
 	//respect time
 	assert.Equal(t, uint64(0x65aa3f2c), specificNano)
 }
-
-/*func TestStreamHighThroughput(t *testing.T) {
-	connA, listenerB, connPair := setupStreamTest(t)
-
-	var totalBytesReceived uint64
-	var mu sync.Mutex
-
-	connA.listener.Loop(func(s *Stream) bool {
-		for {
-			data, err := s.Read()
-			if err != nil || len(data) == 0 {
-				break
-			}
-			mu.Lock()
-			totalBytesReceived += uint64(len(data))
-			mu.Unlock()
-		}
-	})
-	listenerB.Loop(func(s *Stream) bool {
-		for {
-			data, err := s.Read()
-			if err != nil || len(data) == 0 {
-				break
-			}
-			mu.Lock()
-			totalBytesReceived += uint64(len(data))
-			mu.Unlock()
-		}
-	})
-
-	streamA := connA.Stream(0)
-
-	dataA := make([]byte, rcvBufferCapacity)
-	_, err := streamA.Write(dataA)
-	assert.Nil(t, err)
-
-	for {
-		mu.Lock()
-		received := totalBytesReceived
-		mu.Unlock()
-
-		if received >= rcvBufferCapacity {
-			cancelA()
-			cancelB()
-			break
-		}
-
-		_, err = connPair.recipientToSenderAll()
-		assert.Nil(t, err)
-
-		_, err = connPair.senderToRecipientAll()
-		assert.Nil(t, err)
-	}
-	
-	slog.Info("running time for 16MB in 10KB/s, expecting ~27min", "time:min", specificNano/(secondNano*60))
-	}*/

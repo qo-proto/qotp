@@ -1,77 +1,63 @@
 package qotp
 
 import (
-	"github.com/stretchr/testify/suite"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-type SortedHashMapTestSuite struct {
-	suite.Suite
-	shm *SortedMap[int, string]
+func TestSortedMapBasicOperations(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	// Empty map
+	assert.Equal(t, 0, sm.Size())
+	minKey, minVal, ok := sm.Min()
+	assert.False(t, ok)
+	assert.Equal(t, 0, minKey)
+	assert.Equal(t, "", minVal)
+
+	// Put and Get
+	sm.Put(1, "one")
+	value, ok := sm.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, "one", value)
+
+	// Update existing key
+	sm.Put(1, "ONE")
+	value, ok = sm.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, "ONE", value)
+	assert.Equal(t, 1, sm.Size())
+
+	// Non-existent key
+	value, ok = sm.Get(999)
+	assert.False(t, ok)
+	assert.Equal(t, "", value)
 }
 
-func (s *SortedHashMapTestSuite) SetupTest() {
-	s.shm = NewSortedMap[int, string]()
+func TestSortedMapContains(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	assert.False(t, sm.Contains(1))
+
+	sm.Put(1, "one")
+	sm.Put(2, "two")
+
+	assert.True(t, sm.Contains(1))
+	assert.True(t, sm.Contains(2))
+	assert.False(t, sm.Contains(3))
+
+	value, ok := sm.Remove(1)
+	assert.True(t, ok)
+	assert.Equal(t, "one", value)
+	assert.False(t, sm.Contains(1))
+	assert.True(t, sm.Contains(2))
 }
 
-func TestSortedHashMapSuite(t *testing.T) {
-	suite.Run(t, new(SortedHashMapTestSuite))
-}
+func TestSortedMapOrderedTraversal(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-func (s *SortedHashMapTestSuite) TestBasicOperations() {
-	// Test empty map
-	s.NotNil(s.shm)
-	s.Equal(0, s.shm.Size())
-	
-	minKey, minVal, ok := s.shm.Min()
-	s.False(ok)
-	s.Equal(0, minKey)    // zero value for int
-	s.Equal("", minVal)   // zero value for string
-
-	// Test basic Put and Get
-	s.shm.Put(1, "one")
-	value, ok := s.shm.Get(1)
-	s.True(ok)
-	s.Equal("one", value)
-
-	// Test updating existing key
-	s.shm.Put(1, "ONE")
-	value, ok = s.shm.Get(1)
-	s.True(ok)
-	s.Equal("ONE", value)
-	s.Equal(1, s.shm.Size())
-
-	// Test non-existent key
-	value, ok = s.shm.Get(999)
-	s.False(ok)
-	s.Equal("", value) // zero value for string
-}
-
-func (s *SortedHashMapTestSuite) TestContainsOperation() {
-	// Test empty map
-	s.False(s.shm.Contains(1))
-
-	// Add some values
-	s.shm.Put(1, "one")
-	s.shm.Put(2, "two")
-
-	// Test existing keys
-	s.True(s.shm.Contains(1))
-	s.True(s.shm.Contains(2))
-
-	// Test non-existing key
-	s.False(s.shm.Contains(3))
-
-	// Test after removal
-	value, ok := s.shm.Remove(1)
-	s.True(ok)
-	s.Equal("one", value)
-	s.False(s.shm.Contains(1))
-	s.True(s.shm.Contains(2))
-}
-
-func (s *SortedHashMapTestSuite) TestTreeOperations() {
 	values := []struct {
 		key   int
 		value string
@@ -85,83 +71,75 @@ func (s *SortedHashMapTestSuite) TestTreeOperations() {
 		{6, "six"},
 	}
 
-	// Insert values
 	for _, v := range values {
-		s.shm.Put(v.key, v.value)
+		sm.Put(v.key, v.value)
 	}
 
-	// Test ordered traversal using Next(key) method
 	expected := []int{1, 3, 4, 5, 6, 7, 9}
-	
-	// Start from minimum and traverse
-	currentKey, currentVal, ok := s.shm.Min()
-	s.True(ok)
-	s.Equal(1, currentKey)
-	s.Equal("one", currentVal)
-	
+
+	currentKey, currentVal, ok := sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 1, currentKey)
+	assert.Equal(t, "one", currentVal)
+
 	for i, exp := range expected {
-		s.Equal(exp, currentKey, "Unexpected key at position %d", i)
-		
-		// Get next key for next iteration
+		assert.Equal(t, exp, currentKey)
 		if i < len(expected)-1 {
-			currentKey, _, ok = s.shm.Next(currentKey)
-			s.True(ok)
+			currentKey, _, ok = sm.Next(currentKey)
+			assert.True(t, ok)
 		}
 	}
-	
-	// Verify no next after last element
-	nextKey, nextVal, ok := s.shm.Next(currentKey)
-	s.False(ok)
-	s.Equal(0, nextKey)   // zero value for int
-	s.Equal("", nextVal)  // zero value for string
+
+	nextKey, nextVal, ok := sm.Next(currentKey)
+	assert.False(t, ok)
+	assert.Equal(t, 0, nextKey)
+	assert.Equal(t, "", nextVal)
 }
 
-func (s *SortedHashMapTestSuite) TestRemoveOperations() {
-	// Test removing from empty map
-	value, ok := s.shm.Remove(1)
-	s.False(ok)
-	s.Equal("", value) // zero value
+func TestSortedMapRemove(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-	// Build a complex map
+	// Remove from empty
+	value, ok := sm.Remove(1)
+	assert.False(t, ok)
+	assert.Equal(t, "", value)
+
 	values := []int{8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15}
 	for _, v := range values {
-		s.shm.Put(v, "value")
+		sm.Put(v, "value")
 	}
 
-	// Test removing elements
-	value, ok = s.shm.Remove(15)
-	s.True(ok)
-	s.Equal("value", value)
-	_, exists := s.shm.Get(15)
-	s.False(exists) // Should be gone
+	value, ok = sm.Remove(15)
+	assert.True(t, ok)
+	assert.Equal(t, "value", value)
+	_, exists := sm.Get(15)
+	assert.False(t, exists)
 
-	value, ok = s.shm.Remove(14)
-	s.True(ok)
-	s.Equal("value", value)
-	
-	// Check that 13 is still accessible (since 14 and 15 are gone)
-	s.True(s.shm.Contains(13))
+	value, ok = sm.Remove(14)
+	assert.True(t, ok)
+	assert.Equal(t, "value", value)
 
-	value, ok = s.shm.Remove(8)
-	s.True(ok)
-	s.Equal("value", value)
+	assert.True(t, sm.Contains(13))
 
-	// Verify some remaining elements
-	s.True(s.shm.Contains(1))
-	s.True(s.shm.Contains(13))
-	s.False(s.shm.Contains(8))
-	s.False(s.shm.Contains(14))
-	s.False(s.shm.Contains(15))
+	value, ok = sm.Remove(8)
+	assert.True(t, ok)
+	assert.Equal(t, "value", value)
+
+	assert.True(t, sm.Contains(1))
+	assert.True(t, sm.Contains(13))
+	assert.False(t, sm.Contains(8))
+	assert.False(t, sm.Contains(14))
+	assert.False(t, sm.Contains(15))
 }
 
-func (s *SortedHashMapTestSuite) TestMinOperations() {
-	// Test empty map
-	minKey, minVal, ok := s.shm.Min()
-	s.False(ok)
-	s.Equal(0, minKey)
-	s.Equal("", minVal)
+func TestSortedMapMin(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-	// Add items in non-sorted order
+	minKey, minVal, ok := sm.Min()
+	assert.False(t, ok)
+	assert.Equal(t, 0, minKey)
+	assert.Equal(t, "", minVal)
+
 	values := map[int]string{
 		5: "five",
 		3: "three",
@@ -170,106 +148,258 @@ func (s *SortedHashMapTestSuite) TestMinOperations() {
 		9: "nine",
 	}
 	for k, v := range values {
-		s.shm.Put(k, v)
+		sm.Put(k, v)
 	}
 
-	// Test minimum
-	minKey, minVal, ok = s.shm.Min()
-	s.True(ok)
-	s.Equal(1, minKey)
-	s.Equal("one", minVal)
+	minKey, minVal, ok = sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 1, minKey)
+	assert.Equal(t, "one", minVal)
 
-	// Test after removing minimum
-	removedVal, removed := s.shm.Remove(1)
-	s.True(removed)
-	s.Equal("one", removedVal)
-	
-	minKey, minVal, ok = s.shm.Min()
-	s.True(ok)
-	s.Equal(3, minKey)
-	s.Equal("three", minVal)
+	removedVal, removed := sm.Remove(1)
+	assert.True(t, removed)
+	assert.Equal(t, "one", removedVal)
+
+	minKey, minVal, ok = sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 3, minKey)
+	assert.Equal(t, "three", minVal)
 }
 
-func (s *SortedHashMapTestSuite) TestNextOperations() {
-	// Test Next on empty map
-	nextKey, nextVal, ok := s.shm.Next(1)
-	s.False(ok)
-	s.Equal(0, nextKey)
-	s.Equal("", nextVal)
+func TestSortedMapNext(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-	// Test Next with single element
-	s.shm.Put(1, "one")
-	minKey, minVal, ok := s.shm.Min()
-	s.True(ok)
-	s.Equal(1, minKey)
-	s.Equal("one", minVal)
-	
-	// Should have no next
-	nextKey, nextVal, ok = s.shm.Next(1)
-	s.False(ok)
-	s.Equal(0, nextKey)
-	s.Equal("", nextVal)
+	// Empty map
+	nextKey, nextVal, ok := sm.Next(1)
+	assert.False(t, ok)
+	assert.Equal(t, 0, nextKey)
+	assert.Equal(t, "", nextVal)
 
-	// Test Next with multiple elements
-	s.shm.Put(2, "two")
-	s.shm.Put(3, "three")
+	// Single element
+	sm.Put(1, "one")
+	minKey, minVal, ok := sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 1, minKey)
+	assert.Equal(t, "one", minVal)
 
-	// Test traversal
-	key, val, ok := s.shm.Min()
-	s.True(ok)
-	s.Equal(1, key)
-	s.Equal("one", val)
-	
-	key, val, ok = s.shm.Next(key)
-	s.True(ok)
-	s.Equal(2, key)
-	s.Equal("two", val)
-	
-	key, val, ok = s.shm.Next(key)
-	s.True(ok)
-	s.Equal(3, key)
-	s.Equal("three", val)
-	
-	// No more elements
-	key, val, ok = s.shm.Next(key)
-	s.False(ok)
-	s.Equal(0, key)
-	s.Equal("", val)
+	nextKey, nextVal, ok = sm.Next(1)
+	assert.False(t, ok)
+	assert.Equal(t, 0, nextKey)
+	assert.Equal(t, "", nextVal)
+
+	// Multiple elements
+	sm.Put(2, "two")
+	sm.Put(3, "three")
+
+	key, val, ok := sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 1, key)
+	assert.Equal(t, "one", val)
+
+	key, val, ok = sm.Next(key)
+	assert.True(t, ok)
+	assert.Equal(t, 2, key)
+	assert.Equal(t, "two", val)
+
+	key, val, ok = sm.Next(key)
+	assert.True(t, ok)
+	assert.Equal(t, 3, key)
+	assert.Equal(t, "three", val)
+
+	key, val, ok = sm.Next(key)
+	assert.False(t, ok)
+	assert.Equal(t, 0, key)
+	assert.Equal(t, "", val)
 }
 
-func (s *SortedHashMapTestSuite) TestNextFromKey() {
-	// Add some values
+func TestSortedMapNextFromKey(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
 	values := []int{1, 3, 5, 7, 9}
 	for _, v := range values {
-		s.shm.Put(v, "value")
+		sm.Put(v, "value")
 	}
 
-	// Test Next from existing key
-	nextKey, nextValue, ok := s.shm.Next(3)
-	s.True(ok)
-	s.Equal(5, nextKey)
-	s.Equal("value", nextValue)
+	// Next from existing key
+	nextKey, nextValue, ok := sm.Next(3)
+	assert.True(t, ok)
+	assert.Equal(t, 5, nextKey)
+	assert.Equal(t, "value", nextValue)
 
-	// Test Next from non-existing key
-	nextKey, nextValue, ok = s.shm.Next(4)
-	s.True(ok)
-	s.Equal(5, nextKey)
-	s.Equal("value", nextValue)
+	// Next from non-existing key
+	nextKey, nextValue, ok = sm.Next(4)
+	assert.True(t, ok)
+	assert.Equal(t, 5, nextKey)
+	assert.Equal(t, "value", nextValue)
 
-	// Test Next from last key (should return false)
-	nextKey, nextValue, ok = s.shm.Next(9)
-	s.False(ok)
-	s.Equal(0, nextKey)
-	s.Equal("", nextValue)
+	// Next from last key
+	nextKey, nextValue, ok = sm.Next(9)
+	assert.False(t, ok)
+	assert.Equal(t, 0, nextKey)
+	assert.Equal(t, "", nextValue)
 
-	// Test Next from key larger than all keys
-	nextKey, nextValue, ok = s.shm.Next(10)
-	s.False(ok)
-	s.Equal(0, nextKey)
-	s.Equal("", nextValue)
+	// Next from key larger than all
+	nextKey, nextValue, ok = sm.Next(10)
+	assert.False(t, ok)
+	assert.Equal(t, 0, nextKey)
+	assert.Equal(t, "", nextValue)
 }
 
-func (s *SortedHashMapTestSuite) TestConcurrentOperations() {
+func TestSortedMapPrev(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	// Empty map
+	prevKey, prevVal, ok := sm.Prev(5)
+	assert.False(t, ok)
+	assert.Equal(t, 0, prevKey)
+	assert.Equal(t, "", prevVal)
+
+	// Single element
+	sm.Put(5, "five")
+
+	prevKey, prevVal, ok = sm.Prev(5)
+	assert.False(t, ok)
+	assert.Equal(t, 0, prevKey)
+	assert.Equal(t, "", prevVal)
+
+	// Multiple elements
+	sm.Put(1, "one")
+	sm.Put(3, "three")
+	sm.Put(7, "seven")
+	sm.Put(9, "nine")
+
+	key, val, ok := sm.Prev(9)
+	assert.True(t, ok)
+	assert.Equal(t, 7, key)
+	assert.Equal(t, "seven", val)
+
+	key, val, ok = sm.Prev(key)
+	assert.True(t, ok)
+	assert.Equal(t, 5, key)
+	assert.Equal(t, "five", val)
+
+	key, val, ok = sm.Prev(key)
+	assert.True(t, ok)
+	assert.Equal(t, 3, key)
+	assert.Equal(t, "three", val)
+
+	key, val, ok = sm.Prev(key)
+	assert.True(t, ok)
+	assert.Equal(t, 1, key)
+	assert.Equal(t, "one", val)
+
+	key, val, ok = sm.Prev(key)
+	assert.False(t, ok)
+	assert.Equal(t, 0, key)
+	assert.Equal(t, "", val)
+}
+
+func TestSortedMapPrevFromKey(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	values := []int{1, 3, 5, 7, 9}
+	for _, v := range values {
+		sm.Put(v, "value")
+	}
+
+	// Prev from existing key
+	prevKey, prevValue, ok := sm.Prev(7)
+	assert.True(t, ok)
+	assert.Equal(t, 5, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	// Prev from non-existing key
+	prevKey, prevValue, ok = sm.Prev(6)
+	assert.True(t, ok)
+	assert.Equal(t, 5, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	// Prev from first key
+	prevKey, prevValue, ok = sm.Prev(1)
+	assert.False(t, ok)
+	assert.Equal(t, 0, prevKey)
+	assert.Equal(t, "", prevValue)
+
+	// Prev from key smaller than all
+	prevKey, prevValue, ok = sm.Prev(0)
+	assert.False(t, ok)
+	assert.Equal(t, 0, prevKey)
+	assert.Equal(t, "", prevValue)
+
+	// Prev from key larger than all
+	prevKey, prevValue, ok = sm.Prev(15)
+	assert.True(t, ok)
+	assert.Equal(t, 9, prevKey)
+	assert.Equal(t, "value", prevValue)
+}
+
+func TestSortedMapPrevNextSymmetry(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	values := []int{2, 4, 6, 8, 10}
+	for _, v := range values {
+		sm.Put(v, "value")
+	}
+
+	currentKey := 6
+
+	// Go next
+	nextKey, _, ok := sm.Next(currentKey)
+	assert.True(t, ok)
+	assert.Equal(t, 8, nextKey)
+
+	// Go back with Prev
+	prevKey, _, ok := sm.Prev(nextKey)
+	assert.True(t, ok)
+	assert.Equal(t, 6, prevKey)
+
+	// Go prev
+	prevKey, _, ok = sm.Prev(currentKey)
+	assert.True(t, ok)
+	assert.Equal(t, 4, prevKey)
+
+	// Go forward with Next
+	nextKey, _, ok = sm.Next(prevKey)
+	assert.True(t, ok)
+	assert.Equal(t, 6, nextKey)
+}
+
+func TestSortedMapPrevWithGaps(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+
+	values := []int{1, 5, 10, 20, 50}
+	for _, v := range values {
+		sm.Put(v, "value")
+	}
+
+	prevKey, prevValue, ok := sm.Prev(15)
+	assert.True(t, ok)
+	assert.Equal(t, 10, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	prevKey, prevValue, ok = sm.Prev(7)
+	assert.True(t, ok)
+	assert.Equal(t, 5, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	prevKey, prevValue, ok = sm.Prev(3)
+	assert.True(t, ok)
+	assert.Equal(t, 1, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	prevKey, prevValue, ok = sm.Prev(51)
+	assert.True(t, ok)
+	assert.Equal(t, 50, prevKey)
+	assert.Equal(t, "value", prevValue)
+
+	prevKey, prevValue, ok = sm.Prev(1)
+	assert.False(t, ok)
+	assert.Equal(t, 0, prevKey)
+	assert.Equal(t, "", prevValue)
+}
+
+func TestSortedMapConcurrent(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 	var wg sync.WaitGroup
 	numGoroutines := 10
 	numOperations := 100
@@ -281,7 +411,7 @@ func (s *SortedHashMapTestSuite) TestConcurrentOperations() {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				val := base*numOperations + j
-				s.shm.Put(val, "value")
+				sm.Put(val, "value")
 			}
 		}(i)
 	}
@@ -293,9 +423,9 @@ func (s *SortedHashMapTestSuite) TestConcurrentOperations() {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				if j%2 == 0 {
-					s.shm.Get(j)
+					sm.Get(j)
 				} else {
-					s.shm.Remove(j)
+					sm.Remove(j)
 				}
 			}
 		}()
@@ -304,185 +434,162 @@ func (s *SortedHashMapTestSuite) TestConcurrentOperations() {
 	wg.Wait()
 }
 
-func (s *SortedHashMapTestSuite) TestEdgeCases() {
-	// Test updating value for existing key
-	s.shm.Put(1, "original")
-	value, ok := s.shm.Get(1)
-	s.True(ok)
-	s.Equal("original", value)
-	s.Equal(1, s.shm.Size())
-	
-	s.shm.Put(1, "updated")
-	value, ok = s.shm.Get(1)
-	s.True(ok)
-	s.Equal("updated", value)
-	s.Equal(1, s.shm.Size()) // Size shouldn't change
+func TestSortedMapUpdateValue(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-	// Test removing non-existent key
-	removedVal, removed := s.shm.Remove(999)
-	s.False(removed)
-	s.Equal("", removedVal)
+	sm.Put(1, "original")
+	value, ok := sm.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, "original", value)
+	assert.Equal(t, 1, sm.Size())
 
-	// Test Contains after operations
-	s.shm.Put(5, "five")
-	s.True(s.shm.Contains(5))
-	removedVal, removed = s.shm.Remove(5)
-	s.True(removed)
-	s.Equal("five", removedVal)
-	s.False(s.shm.Contains(5))
+	sm.Put(1, "updated")
+	value, ok = sm.Get(1)
+	assert.True(t, ok)
+	assert.Equal(t, "updated", value)
+	assert.Equal(t, 1, sm.Size())
 }
 
-func (s *SortedHashMapTestSuite) TestPrevOperations() {
-	// Test Prev on empty map
-	prevKey, prevVal, ok := s.shm.Prev(5)
-	s.False(ok)
-	s.Equal(0, prevKey)
-	s.Equal("", prevVal)
+func TestSortedMapRemoveNonExistent(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 
-	// Test Prev with single element
-	s.shm.Put(5, "five")
-	
-	// Should have no previous for the only element
-	prevKey, prevVal, ok = s.shm.Prev(5)
-	s.False(ok)
-	s.Equal(0, prevKey)
-	s.Equal("", prevVal)
+	removedVal, removed := sm.Remove(999)
+	assert.False(t, removed)
+	assert.Equal(t, "", removedVal)
 
-	// Test Prev with multiple elements
-	s.shm.Put(1, "one")
-	s.shm.Put(3, "three")
-	s.shm.Put(7, "seven")
-	s.shm.Put(9, "nine")
-
-	// Test reverse traversal using Prev
-	key, val, ok := s.shm.Prev(9)
-	s.True(ok)
-	s.Equal(7, key)
-	s.Equal("seven", val)
-	
-	key, val, ok = s.shm.Prev(key)
-	s.True(ok)
-	s.Equal(5, key)
-	s.Equal("five", val)
-	
-	key, val, ok = s.shm.Prev(key)
-	s.True(ok)
-	s.Equal(3, key)
-	s.Equal("three", val)
-	
-	key, val, ok = s.shm.Prev(key)
-	s.True(ok)
-	s.Equal(1, key)
-	s.Equal("one", val)
-	
-	// No more previous elements
-	key, val, ok = s.shm.Prev(key)
-	s.False(ok)
-	s.Equal(0, key)
-	s.Equal("", val)
+	sm.Put(5, "five")
+	assert.True(t, sm.Contains(5))
+	removedVal, removed = sm.Remove(5)
+	assert.True(t, removed)
+	assert.Equal(t, "five", removedVal)
+	assert.False(t, sm.Contains(5))
 }
 
-func (s *SortedHashMapTestSuite) TestPrevFromKey() {
-	// Add some values
-	values := []int{1, 3, 5, 7, 9}
-	for _, v := range values {
-		s.shm.Put(v, "value")
+func TestSortedMapRemoveAllThenAdd(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+	
+	sm.Put(1, "one")
+	sm.Put(2, "two")
+	sm.Put(3, "three")
+	
+	sm.Remove(1)
+	sm.Remove(2)
+	sm.Remove(3)
+	
+	assert.Equal(t, 0, sm.Size())
+	
+	// Add again - level should reset properly
+	sm.Put(5, "five")
+	sm.Put(10, "ten")
+	
+	minKey, _, ok := sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 5, minKey)
+}
+
+func TestSortedMapLevelGrowth(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+	
+	// Add 16 elements (4^2) - should grow to level 3
+	for i := 0; i < 16; i++ {
+		sm.Put(i, "value")
 	}
-
-	// Test Prev from existing key
-	prevKey, prevValue, ok := s.shm.Prev(7)
-	s.True(ok)
-	s.Equal(5, prevKey)
-	s.Equal("value", prevValue)
-
-	// Test Prev from non-existing key - should find largest key smaller than target
-	prevKey, prevValue, ok = s.shm.Prev(6)
-	s.True(ok)
-	s.Equal(5, prevKey)
-	s.Equal("value", prevValue)
-
-	// Test Prev from first key (should return false)
-	prevKey, prevValue, ok = s.shm.Prev(1)
-	s.False(ok)
-	s.Equal(0, prevKey)
-	s.Equal("", prevValue)
-
-	// Test Prev from key smaller than all keys
-	prevKey, prevValue, ok = s.shm.Prev(0)
-	s.False(ok)
-	s.Equal(0, prevKey)
-	s.Equal("", prevValue)
-
-	// Test Prev from key larger than all keys - should find the largest key
-	prevKey, prevValue, ok = s.shm.Prev(15)
-	s.True(ok)
-	s.Equal(9, prevKey)
-	s.Equal("value", prevValue)
+	
+	// Remove all - level should decrease
+	for i := 0; i < 16; i++ {
+		sm.Remove(i)
+	}
+	
+	// Verify map still works
+	sm.Put(100, "hundred")
+	val, ok := sm.Get(100)
+	assert.True(t, ok)
+	assert.Equal(t, "hundred", val)
 }
 
-func (s *SortedHashMapTestSuite) TestPrevNextSymmetry() {
-	// Add test data
-	values := []int{2, 4, 6, 8, 10}
-	for _, v := range values {
-		s.shm.Put(v, "value")
-	}
-
-	// Test that Next and Prev are symmetric
-	// Start from middle element
-	currentKey := 6
+func TestSortedMapNextPrevAfterRemoval(t *testing.T) {
+	sm := NewSortedMap[int, string]()
 	
-	// Go to next
-	nextKey, _, ok := s.shm.Next(currentKey)
-	s.True(ok)
-	s.Equal(8, nextKey)
+	sm.Put(1, "one")
+	sm.Put(2, "two")
+	sm.Put(3, "three")
 	
-	// Go back with Prev
-	prevKey, _, ok := s.shm.Prev(nextKey)
-	s.True(ok)
-	s.Equal(6, prevKey) // Should return to original
+	// Remove middle
+	sm.Remove(2)
 	
-	// Go to previous
-	prevKey, _, ok = s.shm.Prev(currentKey)
-	s.True(ok)
-	s.Equal(4, prevKey)
+	// Next from 1 should skip to 3
+	nextKey, nextVal, ok := sm.Next(1)
+	assert.True(t, ok)
+	assert.Equal(t, 3, nextKey)
+	assert.Equal(t, "three", nextVal)
 	
-	// Go forward with Next
-	nextKey, _, ok = s.shm.Next(prevKey)
-	s.True(ok)
-	s.Equal(6, nextKey) // Should return to original
+	// Prev from 3 should skip to 1
+	prevKey, prevVal, ok := sm.Prev(3)
+	assert.True(t, ok)
+	assert.Equal(t, 1, prevKey)
+	assert.Equal(t, "one", prevVal)
 }
 
-func (s *SortedHashMapTestSuite) TestPrevWithGaps() {
-	// Add values with gaps
-	values := []int{1, 5, 10, 20, 50}
+func TestSortedMapSkipListIntegrity(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+	
+	// Add in random order
+	values := []int{50, 25, 75, 10, 30, 60, 80, 5, 15, 35, 55, 65, 85}
 	for _, v := range values {
-		s.shm.Put(v, "value")
+		sm.Put(v, "value")
 	}
+	
+	// Remove some
+	sm.Remove(25)
+	sm.Remove(60)
+	sm.Remove(10)
+	
+	// Verify complete forward traversal
+	expected := []int{5, 15, 30, 35, 50, 55, 65, 75, 80, 85}
+	current, _, ok := sm.Min()
+	assert.True(t, ok)
+	
+	for _, exp := range expected {
+		assert.Equal(t, exp, current)
+		if exp != expected[len(expected)-1] {
+			current, _, ok = sm.Next(current)
+			assert.True(t, ok)
+		}
+	}
+	
+	// Verify complete backward traversal
+	for i := len(expected) - 1; i >= 0; i-- {
+		assert.Equal(t, expected[i], current)
+		if i > 0 {
+			current, _, ok = sm.Prev(current)
+			assert.True(t, ok)
+		}
+	}
+}
 
-	// Test Prev with gaps - should find the closest smaller key
-	prevKey, prevValue, ok := s.shm.Prev(15)
-	s.True(ok)
-	s.Equal(10, prevKey)
-	s.Equal("value", prevValue)
-
-	prevKey, prevValue, ok = s.shm.Prev(7)
-	s.True(ok)
-	s.Equal(5, prevKey)
-	s.Equal("value", prevValue)
-
-	prevKey, prevValue, ok = s.shm.Prev(3)
-	s.True(ok)
-	s.Equal(1, prevKey)
-	s.Equal("value", prevValue)
-
-	// Test boundary cases
-	prevKey, prevValue, ok = s.shm.Prev(51)
-	s.True(ok)
-	s.Equal(50, prevKey)
-	s.Equal("value", prevValue)
-
-	prevKey, prevValue, ok = s.shm.Prev(1)
-	s.False(ok)
-	s.Equal(0, prevKey)
-	s.Equal("", prevValue)
+func TestSortedMapUpdateDoesntAffectOrder(t *testing.T) {
+	sm := NewSortedMap[int, string]()
+	
+	sm.Put(1, "one")
+	sm.Put(2, "two")
+	sm.Put(3, "three")
+	
+	// Update middle element multiple times
+	sm.Put(2, "TWO")
+	sm.Put(2, "two-updated")
+	sm.Put(2, "final")
+	
+	// Order should be preserved
+	current, val, ok := sm.Min()
+	assert.True(t, ok)
+	assert.Equal(t, 1, current)
+	
+	current, val, ok = sm.Next(current)
+	assert.True(t, ok)
+	assert.Equal(t, 2, current)
+	assert.Equal(t, "final", val) // Updated value
+	
+	current, _, ok = sm.Next(current)
+	assert.True(t, ok)
+	assert.Equal(t, 3, current)
 }

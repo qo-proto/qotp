@@ -33,10 +33,7 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano uint64, nowNa
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	readDeadline := time.Time{}
-	if timeoutNano > 0 {
-		readDeadline = time.Unix(0, int64(nowNano + timeoutNano))
-	}
+	readDeadline := time.Unix(0, int64(nowNano + timeoutNano))
 	err = c.conn.SetReadDeadline(readDeadline)
 	if err != nil {
 		return 0, netip.AddrPort{}, err

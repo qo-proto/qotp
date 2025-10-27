@@ -10,11 +10,24 @@ func FuzzPayload(f *testing.F) {
 	// Add seed corpus
 	payloads := []*PayloadHeader{
 		{
+			MsgType:      MsgTypeData,
 			StreamID:     1,
 			StreamOffset: 100,
 			Ack:          &Ack{streamID: 10, offset: 200, len: 10, rcvWnd: 1000},
 		},
 		{
+			MsgType:      MsgTypePing,
+			StreamID:     5,
+			StreamOffset: 50,
+		},
+		{
+			MsgType:      MsgTypeClose,
+			StreamID:     10,
+			StreamOffset: 1000,
+			Ack:          &Ack{streamID: 20, offset: 500, len: 100, rcvWnd: 5000},
+		},
+		{
+			MsgType:      MsgTypeData,
 			StreamID:     math.MaxUint32,
 			StreamOffset: math.MaxUint64,
 		},
@@ -44,8 +57,7 @@ func FuzzPayload(f *testing.F) {
 		}
 
 		// Compare payload fields
-		if decoded.IsPing != reDecoded.IsPing ||
-			decoded.IsCloseSnd != reDecoded.IsCloseSnd ||
+		if decoded.MsgType != reDecoded.MsgType ||
 			decoded.StreamID != reDecoded.StreamID ||
 			decoded.StreamOffset != reDecoded.StreamOffset {
 			t.Fatal("Payload fields mismatch")

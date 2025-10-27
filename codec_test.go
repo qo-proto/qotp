@@ -36,6 +36,7 @@ func createTestConnection(isSender, withCrypto, handshakeDone bool) *Conn {
 		pubKeyIdRcv: prvIdBob.PublicKey(),
 		prvKeyEpSnd: prvEpAlice,
 		listener:     &Listener{prvKeyId: prvIdAlice, mtu: 1400},
+		snd:          NewSendBuffer(sndBufferCapacity),
 		rcv:          NewReceiveBuffer(1000),
 		streams:      NewLinkedMap[uint32, *Stream](),
 		sharedSecret: bytes.Repeat([]byte{1}, 32),
@@ -84,7 +85,7 @@ func getTestRemoteAddr() netip.AddrPort {
 func TestCodecStreamClosed(t *testing.T) {
 	conn := createTestConnection(true, false, true)
 	stream := conn.Stream(1)
-	stream.CloseNow()
+	stream.Close()
 
 	p := &PayloadHeader{}
 	output, err := conn.encode(p, []byte("test data"), conn.msgType())
@@ -95,7 +96,7 @@ func TestCodecStreamClosed(t *testing.T) {
 func TestCodecConnectionClosed(t *testing.T) {
 	conn := createTestConnection(true, false, true)
 	stream := conn.Stream(1)
-	stream.conn.CloseNow()
+	stream.conn.Close()
 
 	p := &PayloadHeader{}
 	output, err := conn.encode(p, []byte("test data"), conn.msgType())
@@ -207,7 +208,7 @@ func TestCodecDataSizeOne(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -235,7 +236,7 @@ func TestCodecDataSizeHundred(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -263,7 +264,7 @@ func TestCodecDataSizeThousand(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -291,7 +292,7 @@ func TestCodecDataSizeLarge(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -339,7 +340,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := c.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 
 	// Step 5: Setup for Data message flow after handshake
@@ -371,7 +372,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	p, u, err = DecodePayload(payload)
 	s, err = c.decode(p, u, 0, 0)
 	assert.NoError(t, err)
-	_, rb = s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	_, rb, _ = s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, dataMsg, rb)
 }
 
@@ -413,7 +414,7 @@ func TestCodecInvalidMessageType(t *testing.T) {
 
 	// Test with invalid message type
 	p := &PayloadHeader{}
-	_, err := conn.encode(p, []byte("test"), MsgType(99))
+	_, err := conn.encode(p, []byte("test"), CryptoMsgType(99))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown message type")
 }

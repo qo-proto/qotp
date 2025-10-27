@@ -37,7 +37,7 @@ func runServer(addr string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer listener.CloseNow()
+	defer listener.Close()
 	fmt.Printf("Server listening on %s\n", addr)
 	fmt.Println("Waiting for clients...")
 	
@@ -57,7 +57,7 @@ func runServer(addr string) {
 			
 			upper := strings.ToUpper(msg)
 			stream.Write([]byte(upper))
-			stream.CloseNow()
+			stream.Close()
 		}
 		return true
 	})
@@ -67,7 +67,7 @@ func runClient(serverAddr string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer listener.CloseNow()
+	defer listener.Close()
 	
 	conn, err := listener.DialString(serverAddr)
 	if err != nil {

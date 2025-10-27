@@ -115,27 +115,26 @@ func newPairedConn(localAddr string) *PairedConn {
 
 // ReadFromUDPAddrPort reads data from the read queue
 func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutNano uint64, nowNano uint64) (int, netip.AddrPort, error) {
-	if p.isClosed() {
-		return 0, netip.AddrPort{}, errors.New("connection closed")
-	}
+    if p.isClosed() {
+        return 0, netip.AddrPort{}, errors.New("connection closed")
+    }
 
-	// Check if there's data in the queue
-	p.readQueueMu.Lock()
-	defer p.readQueueMu.Unlock()
-	// Check if there's data in the queue
+    p.readQueueMu.Lock()
+    defer p.readQueueMu.Unlock()
 
-	if len(p.readQueue) == 0 {
-		specificNano += timeoutNano
-		return 0, netip.AddrPort{}, nil
-	}
-	
-	packet := p.readQueue[0]
-	p.readQueue = p.readQueue[1:]
-	n := copy(buf, packet.data)
-	
-	slog.Debug("    ReadUDP",slog.Int("len(data)", len(buf)))
-	
-	return n, netip.AddrPort{}, nil
+    if len(p.readQueue) == 0 {
+        specificNano += timeoutNano
+        // Return timeout error to match real UDP behavior
+        return 0, netip.AddrPort{}, nil
+    }
+    
+    packet := p.readQueue[0]
+    p.readQueue = p.readQueue[1:]
+    n := copy(buf, packet.data)
+    
+    slog.Debug("    ReadUDP", slog.Int("len(data)", len(buf)))
+    
+    return n, netip.AddrPort{}, nil
 }
 
 // TimeoutReadNow cancels any pending read operation

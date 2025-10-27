@@ -64,10 +64,8 @@ func NewMeasurements() Measurements {
 	}
 }
 
-func (c *Conn) UpdateMeasurements(rttMeasurementNano uint64, bytesAcked uint64, nowNano uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Conn) updateMeasurements(rttMeasurementNano uint64, bytesAcked uint64, nowNano uint64) {
+	
 	// Validation
 	if rttMeasurementNano == 0 {
 		slog.Warn("cannot update measurements, rtt is 0")
@@ -168,10 +166,7 @@ func (c *Conn) rtoNano() uint64 {
 	}
 }
 
-func (c *Conn) OnDuplicateAck() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Conn) onDuplicateAck() {
 	c.bwMax = c.bwMax * dupAckBwReduction / 100
 	c.pacingGainPct = dupAckGain
 
@@ -180,10 +175,7 @@ func (c *Conn) OnDuplicateAck() {
 	}
 }
 
-func (c *Conn) OnPacketLoss() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Conn) onPacketLoss() {
 	slog.Debug("PacketLoss",
 		slog.Uint64("bwMax", c.bwMax),
 		slog.Uint64("newBwMax", c.bwMax*lossBwReduction/100),
@@ -197,9 +189,6 @@ func (c *Conn) OnPacketLoss() {
 }
 
 func (c *Conn) calcPacing(packetSize uint64) uint64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.bwMax == 0 {
 		if c.srtt > 0 {
 			return c.srtt / rttDivisor

@@ -1,33 +1,19 @@
 package qotp
 
 import (
-	"errors"
+	"io"
 	"log/slog"
 	"sync"
 )
 
-type StreamState uint8
-
-const (
-	StreamStateOpen StreamState = iota
-	StreamStateCloseRequest //set this state to send the type close (sender side)
-	StreamStateClosed //received the close ACK, so stream is closed (sender side)
-	StreamStateCloseReceived //the other when type close is received (rcv side).
-                             //We send ack back, but keep the ack, we only close and clean up
-                             // when we have all data.
-)
-
 type Stream struct {
-	streamID uint32
-	conn     *Conn
-	state    StreamState
-	mu       sync.Mutex
+	streamID     uint32
+	conn         *Conn
+	closedAtNano uint64 //0 means not closed
+	mu           sync.Mutex
 }
 
 func (s *Stream) NotifyDataAvailable() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	return s.conn.listener.localConn.TimeoutReadNow()
 }
 
@@ -35,57 +21,73 @@ func (s *Stream) Ping() {
 	s.conn.snd.QueuePing(s.streamID)
 }
 
+func (s *Stream) Close() {
+	s.conn.snd.Close(s.streamID)
+}
+
+func (s *Stream) IsClosed() bool {
+	return s.closedAtNano != 0
+}
+
+func (s *Stream) IsCloseRequested() bool {
+	return s.conn.snd.GetOffsetClosedAt(s.streamID) !=nil
+}
+
+func (s *Stream) IsOpen() bool {
+	return !s.IsCloseRequested() && !s.IsClosed()
+}
+
 func (s *Stream) Read() (userData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == StreamStateClosed {
-		return nil, errors.New("stream closed")
+	closeOffset := s.conn.rcv.GetOffsetClosedAt(s.streamID)
+	if s.closedAtNano != 0 {
+		slog.Debug("Read/closed", gId(), s.debug())
+		return nil, io.ErrUnexpectedEOF
 	}
 
-	offset, data := s.conn.rcv.RemoveOldestInOrder(s.streamID)
-	closeOffset := s.conn.rcv.GetOffsetClosedAt(s.streamID)
-	s.conn.updateState(s, closeOffset != nil && *closeOffset == offset)
+	offset, data, receiveTimeNano := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+
+	//check if our receive buffer is marked as closed
+	if closeOffset != nil {
+		//it is marked to close
+		if offset >= *closeOffset {
+			//we got all data, mark as closed //TODO check wrap around
+			s.closedAtNano = receiveTimeNano
+			slog.Debug("Read/close", gId(), s.debug(), slog.String("b…", string(data[:min(16, len(data))])))
+			return data, io.EOF
+		}
+	}
+	
 	slog.Debug("Read", gId(), s.debug(), slog.String("b…", string(data[:min(16, len(data))])))
 	return data, nil
 }
-func (s *Stream) Write(userData []byte) (remainingUserData []byte, err error) {
-	return s.WriteWithClose(userData, false)
-}
-
-func (s *Stream) WriteWithClose(userData []byte, close bool) (remainingUserData []byte, err error) {
+func (s *Stream) Write(userData []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.state == StreamStateClosed {
-		return nil, errors.New("stream closed")
+	if s.closedAtNano != 0 || s.conn.snd.GetOffsetClosedAt(s.streamID)!=nil {
+		return 0, io.ErrUnexpectedEOF
 	}
 
 	if len(userData) == 0 {
-		return userData, nil
+		return 0, nil
 	}
 
 	slog.Debug("Write", gId(), s.debug(), slog.String("b…", string(userData[:min(16, len(userData))])))
-	n, status := s.conn.snd.QueueData(s.streamID, userData, close)
+	n, status := s.conn.snd.QueueData(s.streamID, userData)
 	if status != InsertStatusOk {
 		slog.Debug("Status Nok", gId(), s.debug(), slog.Any("status", status))
 	} else {
 		//data is read, so signal to cancel read, since we could do a flush
 		err = s.conn.listener.localConn.TimeoutReadNow()
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 	}
 
-	remainingUserData = userData[n:]
-	return remainingUserData, nil
-}
-
-func (s *Stream) CloseNow() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.state = StreamStateCloseRequest
+	return n, nil
 }
 
 func (s *Stream) debug() slog.Attr {
@@ -98,12 +100,4 @@ func (s *Stream) debug() slog.Attr {
 	}
 
 	return slog.String("net", s.conn.listener.localConn.LocalAddrString())
-}
-
-func (s *Stream) currentOffset() uint64 {
-	streamBuffer := s.conn.snd.streams[s.streamID]
-	if streamBuffer == nil {
-		return 0
-	}
-	return streamBuffer.bytesSentUserOffset
 }

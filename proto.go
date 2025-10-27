@@ -12,23 +12,30 @@ const (
 	Offset24or48Flag = 6
 	AckFlag          = 7
 	MinProtoSize     = 8
-	CloseAck         = uint8(255)
+)
+
+type StreamMsgType uint8
+
+const (
+	MsgTypeData StreamMsgType = iota
+	MsgTypePing
+	MsgTypeClose
+	MsgTypeReserved
+	MsgTypeInvalid
 )
 
 type PayloadHeader struct {
-	IsPing     bool
-	IsCloseSnd bool
+	MsgType      StreamMsgType
 	Ack          *Ack
 	StreamID     uint32
 	StreamOffset uint64
 }
 
 type Ack struct {
-	streamID   uint32
-	offset     uint64
-	len        uint16
-	rcvWnd     uint64
-	IsCloseAck bool
+	streamID uint32
+	offset   uint64
+	len      uint16
+	rcvWnd   uint64
 }
 
 /*
@@ -48,26 +55,25 @@ encoded | capacity
 150     | 96MB
 200     | 7GB
 250     | 512GB
-254     | 768GB+
+255     | ~896GB+ (max)
 */
 
 func EncodeRcvWindow(actualBytes uint64) uint8 {
 	if actualBytes == 0 {
 		return 0
 	}
-	if actualBytes <= 128 {
+	if actualBytes <= 255 {
 		return 1
 	}
 
 	highBit := bits.Len64(actualBytes) - 1
 	lowerBits := (actualBytes >> (highBit - 3)) & 0x7 // 8 substeps
 
-	encoded := uint8((highBit-8)*8 + int(lowerBits) + 2)
-
-	if encoded > 254 {
-		return 254
+	encoded := (highBit-8)*8 + int(lowerBits) + 2
+	if encoded > 255 {
+		return 255
 	}
-	return encoded
+	return uint8(encoded)
 }
 
 func DecodeRcvWindow(encoded uint8) uint64 {
@@ -92,12 +98,13 @@ func EncodePayload(p *PayloadHeader, userData []byte) (encoded []byte, offset in
 	header := uint8(ProtoVersion) // bits 0-3
 
 	// Determine type (bits 4-5)
-	if p.IsPing {
+	switch p.MsgType {
+	case MsgTypePing:
 		header |= 1 << TypeFlag // type = 01
-	} else if p.IsCloseSnd {
+	case MsgTypeClose:
 		header |= 2 << TypeFlag // type = 10
+		// case MsgTypeData: nothing to set (00)
 	}
-	// else type = 00 (DATA) - nothing to set
 
 	// Determine if 48-bit offset needed
 	isExtend := p.StreamOffset > 0xffffff
@@ -165,11 +172,12 @@ func DecodePayload(data []byte) (payload *PayloadHeader, userData []byte, err er
 	version := header & 0xF // bits 0-3
 	typeFlag := (header >> TypeFlag) & 0x3
 	switch typeFlag {
-	case 0: //default is data
+	case 0:
+		payload.MsgType = MsgTypeData
 	case 1:
-		payload.IsPing = true
+		payload.MsgType = MsgTypePing
 	case 2:
-		payload.IsCloseSnd = true
+		payload.MsgType = MsgTypeClose
 	case 3:
 		return nil, nil, errors.New("type not supported")
 	}

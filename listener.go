@@ -205,7 +205,7 @@ func (l *Listener) PubKey() *ecdh.PublicKey {
 	return l.prvKeyId.PublicKey()
 }
 
-func (l *Listener) CloseNow() error {
+func (l *Listener) Close() error {
 	slog.Debug("ListenerClose", gId())
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -213,7 +213,7 @@ func (l *Listener) CloseNow() error {
 	l.closed = true
 
 	for _, conn := range l.connMap.items {
-		conn.value.CloseNow()
+		conn.value.Close()
 	}
 
 	err := l.localConn.TimeoutReadNow()
@@ -311,11 +311,19 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 			break
 		}
 
-		if stream.state == StreamStateClosed {
-			// stream closed, mark for cleaning up, do not clean up yet, otherwise the iterator will become
-			// much more complex
-			closeStream[conn] = stream.streamID
-			continue
+		if stream.closedAtNano != 0 {
+			if conn.isSenderOnInit {
+				// stream closed on sender, mark for cleaning up, do not clean up yet, otherwise the iterator will become
+				// much more complex
+				closeStream[conn] = stream.streamID
+				continue
+			} else {
+				// stream closed on receiver, wait for 30sec timeout before cleanup
+				if stream.closedAtNano+ReadDeadLine > nowNano {
+					closeStream[conn] = stream.streamID
+					continue
+				}
+			}
 		}
 
 		if dataSent > 0 {

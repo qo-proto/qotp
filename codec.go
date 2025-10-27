@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType MsgType) (encData []byte, err error) {
+func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgType) (encData []byte, err error) {
 	// Create payload early for cases that need it
 	var packetData []byte
 
@@ -117,7 +117,7 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType MsgType) (en
 }
 
 func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
-	conn *Conn, userData []byte, msgType MsgType, err error) {
+	conn *Conn, userData []byte, msgType CryptoMsgType, err error) {
 	// Read the header byte and connId
 	if len(encData) < MinPacketSize {
 		return nil, nil, 0, fmt.Errorf("header needs to be at least %v bytes", MinPacketSize)
@@ -128,7 +128,7 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
     if version != CryptoVersion {
 		return nil, nil, 0, errors.New("unsupported version version")
 	}
-    msgType = MsgType(header >> 5)
+    msgType = CryptoMsgType(header >> 5)
 
 	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
 

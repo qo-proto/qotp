@@ -21,7 +21,7 @@ func TestNewListener(t *testing.T) {
 	// Test case 1: Create a new listener with a valid address
 	listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
 	defer func() {
-		err := listener.CloseNow()
+		err := listener.Close()
 		assert.Nil(t, err)
 	}()
 	if err != nil {
@@ -42,7 +42,7 @@ func TestNewStream(t *testing.T) {
 	// Test case 1: Create a new multi-stream with a valid remote address
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	defer func() {
-		err := listener.CloseNow()
+		err := listener.Close()
 		assert.Nil(t, err)
 	}()
 	assert.Nil(t, err)
@@ -66,7 +66,7 @@ func TestClose(t *testing.T) {
 	assert.NoError(t, err)
 	// Test case 2: Close a listener with multi-streams
 	listener.DialWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	err = listener.CloseNow()
+	err = listener.Close()
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
