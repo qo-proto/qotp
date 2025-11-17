@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"time"
 
 	"sync"
 )
@@ -336,7 +337,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 		//no data sent, check if we reached the timeout for the activity
 		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-			slog.Info("closing connection, timeout", conn.debug(), slog.Uint64("now", nowNano),
+			slog.Info("close connection, timeout", conn.debug(), slog.Uint64("now", nowNano),
 				slog.Uint64("last", conn.lastReadTimeNano))
 			closeConn = append(closeConn, conn)
 			break
@@ -407,20 +408,25 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) Loop(callback func(s *Stream) bool) {
+func (l *Listener) Loop(callback func(s *Stream) (bool, error)) {
 	waitNextNano := MinDeadLine
 	for {
-		s, err := l.Listen(waitNextNano, timeNowNano())
+		s, err := l.Listen(waitNextNano, uint64(time.Now().UnixNano()))
 		if err != nil {
 			slog.Error("Error in loop listen", slog.Any("error", err))
+			break
 		}
 		// callback in any case, s may be null, but this gives the user
 		// the control to cancel the Loop every MinDeadLine
-		cont := callback(s)
-		waitNextNano = l.Flush(timeNowNano())
+		cont, err := callback(s)
+		if err != nil {
+			slog.Error("Error in loop callback", slog.Any("error", err))
+			break
+		}
+		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
 
 		if !cont {
-			return
+			break
 		}
 	}
 }

@@ -404,9 +404,6 @@ func decryptInitCryptoRcv(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if snConn != 0 {
-		return nil, nil, nil, errors.New("sn must be 0")
-	}
 
 	return sharedSecret, pubKeyEpRcv, &Message{
 		PayloadRaw:        packetData,

@@ -2,8 +2,10 @@ package qotp
 
 import (
 	"crypto/ecdh"
+	"crypto/rand"
 	"fmt"
 	"testing"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -70,4 +72,363 @@ func TestClose(t *testing.T) {
 	if err != nil {
 		t.Errorf("Expected no error, but got: %v", err)
 	}
+}
+
+// Helper function to run data transfer test with specified parameters
+func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int, 
+	dataLossFunc func(int) bool, ackLossFunc func(int) bool, 
+	latencyNano uint64, testName string) {
+	
+	connA, listenerB, connPair := setupStreamTest(t)
+	
+	// Set up network conditions
+	connPair.Conn1.latencyNano = latencyNano
+	connPair.Conn2.latencyNano = latencyNano
+	
+	streamA := connA.Stream(0)
+	
+	// Generate test data
+	testData := make([]byte, testDataSize)
+	_, err := rand.Read(testData)
+	assert.NoError(t, err)
+	
+	// Write data
+	n, err := streamA.Write(testData)
+	assert.NoError(t, err)
+	assert.Equal(t, testDataSize, n)
+	
+	var streamB *Stream
+	receivedData := []byte{}
+	dropCounterSender := 0
+	dropCounterReceiver := 0
+	
+	for i := 0; i < maxIterations; i++ {
+		// Sender flushes
+		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		assert.NoError(t, err)
+		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
+		connPair.Conn1.localTime += max(minPacing, 10*msNano)
+		
+		// Transfer data packets with loss
+		if connPair.nrOutgoingPacketsSender() > 0 {
+			nPackets := connPair.nrOutgoingPacketsSender()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounterSender++
+				if dataLossFunc(dropCounterSender) {
+					pattern[j] = -1 // drop
+				} else {
+					pattern[j] = 1 // deliver
+				}
+			}
+			_, err = connPair.senderToRecipient(pattern...)
+			assert.NoError(t, err)
+		}
+		
+		// Receiver processes incoming data
+		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		assert.NoError(t, err)
+		if s != nil {
+			streamB = s
+		}
+		
+		// Read available data
+		if streamB != nil {
+			data, err := streamB.Read()
+			if err == nil && len(data) > 0 {
+				receivedData = append(receivedData, data...)
+			}
+		}
+		
+		// Receiver flushes ACKs
+		minPacing = listenerB.Flush(connPair.Conn2.localTime)
+		connPair.Conn2.localTime += max(minPacing, 10*msNano)
+		
+		// Transfer ACKs with loss
+		if connPair.nrOutgoingPacketsReceiver() > 0 {
+			nPackets := connPair.nrOutgoingPacketsReceiver()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounterReceiver++
+				if ackLossFunc(dropCounterReceiver) {
+					pattern[j] = -1
+				} else {
+					pattern[j] = 1
+				}
+			}
+			_, err = connPair.recipientToSender(pattern...)
+			assert.NoError(t, err)			
+		}
+		
+		// Check completion
+		if len(receivedData) >= testDataSize {
+			t.Logf("%s: Transfer completed in %d iterations", testName, i+1)
+			
+			// Verify data integrity
+			assert.Equal(t, testDataSize, len(receivedData), "should receive all data")
+			assert.Equal(t, testData, receivedData, "received data should match sent data")
+			return
+		}
+	}
+	
+	// If we get here, test failed
+	t.Errorf("%s: Failed to complete transfer in %d iterations (received %d/%d bytes)", 
+		testName, maxIterations, len(receivedData), testDataSize)
+}
+
+func TestStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
+	runDataTransferTest(t, 10*1024, 1000,
+		func(counter int) bool { return counter%2 == 0 }, // 50% data loss
+		func(counter int) bool { return counter%2 == 0 }, // 50% ack loss
+		50*msNano,
+		"50% Loss")
+}
+
+func TestStreamWith10PercentLoss(t *testing.T) {
+	runDataTransferTest(t, 10*1024, 500,
+		func(counter int) bool { return counter%10 == 0 }, // 10% data loss
+		func(counter int) bool { return counter%10 == 0 }, // 10% ack loss
+		50*msNano,
+		"10% Loss")
+}
+
+func TestStreamWithAsymmetricLoss(t *testing.T) {
+	// 20% data loss, 50% ACK loss
+	runDataTransferTest(t, 10*1024, 1000,
+		func(counter int) bool { return counter%5 == 0 },  // 20% data loss
+		func(counter int) bool { return counter%2 == 0 },  // 50% ack loss
+		50*msNano,
+		"Asymmetric Loss (20% data, 50% ack)")
+}
+
+func TestStreamWithReordering(t *testing.T) {
+	connA, listenerB, connPair := setupStreamTest(t)
+	
+	connPair.Conn1.latencyNano = 50 * msNano
+	connPair.Conn2.latencyNano = 50 * msNano
+	
+	streamA := connA.Stream(0)
+	
+	testDataSize := 10 * 1024
+	testData := make([]byte, testDataSize)
+	_, err := rand.Read(testData)
+	assert.NoError(t, err)
+	
+	n, err := streamA.Write(testData)
+	assert.NoError(t, err)
+	assert.Equal(t, testDataSize, n)
+	
+	var streamB *Stream
+	receivedData := []byte{}
+	maxIterations := 1000
+	
+	for i := 0; i < maxIterations; i++ {
+		// Sender flushes
+		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
+		connPair.Conn1.localTime += max(minPacing, 10*msNano)
+		
+		// Reorder packets if we have multiple
+		if connPair.nrOutgoingPacketsSender() >= 3 {
+			// Reverse order of first 3 packets: [0,1,2] -> [2,1,0]
+			err = connPair.reorderSender(2, 1, 0)
+			assert.NoError(t, err)
+		}
+		
+		if connPair.nrOutgoingPacketsSender() > 0 {
+			nPackets := connPair.nrOutgoingPacketsSender()
+			_, err = connPair.senderToRecipient(nPackets) // deliver all
+			assert.NoError(t, err)
+		}
+		
+		// Receiver processes
+		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		assert.NoError(t, err)
+		if s != nil {
+			streamB = s
+		}
+		
+		if streamB != nil {
+			data, err := streamB.Read()
+			if err == nil && len(data) > 0 {
+				receivedData = append(receivedData, data...)
+			}
+		}
+		
+		// Receiver flushes ACKs
+		minPacing = listenerB.Flush(connPair.Conn2.localTime)
+		connPair.Conn2.localTime += max(minPacing, 10*msNano)
+		
+		if connPair.nrOutgoingPacketsReceiver() > 0 {
+			nPackets := connPair.nrOutgoingPacketsReceiver()
+			_, err = connPair.recipientToSender(nPackets) // deliver all ACKs
+			assert.NoError(t, err)
+			
+			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+			assert.NoError(t, err)
+		}
+		
+		if len(receivedData) >= testDataSize {
+			t.Logf("Reordering: Transfer completed in %d iterations", i+1)
+			assert.Equal(t, testDataSize, len(receivedData))
+			assert.Equal(t, testData, receivedData)
+			return
+		}
+	}
+	
+	t.Errorf("Reordering: Failed to complete transfer")
+}
+
+func TestStreamWithHighLatency(t *testing.T) {
+	runDataTransferTest(t, 5*1024, 1000,
+		func(counter int) bool { return counter%5 == 0 }, // 20% data loss
+		func(counter int) bool { return counter%5 == 0 }, // 20% ack loss
+		200*msNano, // High latency
+		"High Latency (200ms)")
+}
+
+func TestStreamWithNoLoss(t *testing.T) {
+	runDataTransferTest(t, 10*1024, 500,
+		func(counter int) bool { return false }, // 0% data loss
+		func(counter int) bool { return false }, // 0% ack loss
+		50*msNano,
+		"No Loss")
+}
+
+func TestStreamMultipleStreams(t *testing.T) {
+	connA, listenerB, connPair := setupStreamTest(t)
+	
+	connPair.Conn1.latencyNano = 50 * msNano
+	connPair.Conn2.latencyNano = 50 * msNano
+	
+	// Create 3 streams
+	numStreams := 3
+	streams := make([]*Stream, numStreams)
+	testData := make([][]byte, numStreams)
+	testDataSize := 5 * 1024
+	
+	for i := 0; i < numStreams; i++ {
+		streams[i] = connA.Stream(uint32(i))
+		testData[i] = make([]byte, testDataSize)
+		_, err := rand.Read(testData[i])
+		assert.NoError(t, err)
+		
+		// Write to all streams
+		n, err := streams[i].Write(testData[i])
+		assert.NoError(t, err)
+		assert.Equal(t, testDataSize, n)
+	}
+	
+	receivedData := make([][]byte, numStreams)
+	for i := range receivedData {
+		receivedData[i] = []byte{}
+	}
+	
+	maxIterations := 1000
+	dropCounter := 0
+	
+	for iter := 0; iter < maxIterations; iter++ {
+		// Sender flushes
+		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
+		connPair.Conn1.localTime += max(minPacing, 10*msNano)
+		
+		// Transfer with 30% loss
+		if connPair.nrOutgoingPacketsSender() > 0 {
+			nPackets := connPair.nrOutgoingPacketsSender()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounter++
+				if dropCounter%10 < 3 {
+					pattern[j] = -1
+				} else {
+					pattern[j] = 1
+				}
+			}
+			_, err := connPair.senderToRecipient(pattern...)
+			assert.NoError(t, err)
+		}
+		
+		// Receiver processes
+		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		assert.NoError(t, err)
+		
+		if s != nil {
+			data, err := s.Read()
+			if err == nil && len(data) > 0 {
+				receivedData[s.streamID] = append(receivedData[s.streamID], data...)
+			}
+		}
+		
+		// Receiver flushes
+		minPacing = listenerB.Flush(connPair.Conn2.localTime)
+		connPair.Conn2.localTime += max(minPacing, 10*msNano)
+		
+		// Transfer ACKs
+		if connPair.nrOutgoingPacketsReceiver() > 0 {
+			nPackets := connPair.nrOutgoingPacketsReceiver()
+			pattern := make([]int, nPackets)
+			for j := 0; j < nPackets; j++ {
+				dropCounter++
+				if dropCounter%10 < 3 {
+					pattern[j] = -1
+				} else {
+					pattern[j] = 1
+				}
+			}
+			_, err = connPair.recipientToSender(pattern...)
+			assert.NoError(t, err)
+			
+			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+			assert.NoError(t, err)
+		}
+		
+		// Check if all streams completed
+		allComplete := true
+		for i := 0; i < numStreams; i++ {
+			if len(receivedData[i]) < testDataSize {
+				allComplete = false
+				break
+			}
+		}
+		
+		if allComplete {
+			t.Logf("Multiple streams: Transfer completed in %d iterations", iter+1)
+			
+			// Verify all streams
+			for i := 0; i < numStreams; i++ {
+				assert.Equal(t, testDataSize, len(receivedData[i]), 
+					"stream %d should receive all data", i)
+				assert.Equal(t, testData[i], receivedData[i], 
+					"stream %d data should match", i)
+			}
+			return
+		}
+	}
+	
+	t.Errorf("Multiple streams: Failed to complete transfer")
+	for i := 0; i < numStreams; i++ {
+		t.Logf("Stream %d: received %d/%d bytes", i, len(receivedData[i]), testDataSize)
+	}
+}
+
+func TestStreamWithExtremeConditions(t *testing.T) {
+	// Test with very small MTU-sized chunks and high loss
+	maxRetry=20
+	ReadDeadLine = uint64(300 * secondNano)
+	
+	defer func(){
+		maxRetry=5
+		ReadDeadLine = uint64(30 * secondNano)
+	}()
+	
+	runDataTransferTest(t, 2*1024, 2000, // Small data, many iterations
+		func(counter int) bool { 
+			// Bursty loss: drop 3, deliver 2, repeat
+			return (counter-1)%5 < 3
+		},
+		func(counter int) bool { 
+			// Different pattern for ACKs
+			return (counter-1)%7 < 3
+		},
+		100*msNano,
+		"Extreme Conditions")
 }

@@ -2,39 +2,45 @@ package qotp
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
-	"time"
 )
 
-const (
-	defaultRTO = 200 * msNano
-	minRTO     = 100 * msNano
-	maxRTO     = 2000 * msNano
+const ()
 
-	rttExpiry       = 10 * secondNano
-	probeMultiplier = 8
+var (
+	defaultRTO = uint64(200 * msNano)
+	minRTO     = uint64(100 * msNano)
+	maxRTO     = uint64(2000 * msNano)
 
-	startupGain = 277
-	normalGain  = 100
-	drainGain   = 75
-	probeGain   = 125
+	rttExpiry       = uint64(10 * secondNano)
+	probeMultiplier = uint64(8)
 
-	bwDecThreshold = 3
+	startupGain = uint64(277)
+	normalGain  = uint64(100)
+	drainGain   = uint64(75)
+	probeGain   = uint64(125)
 
-	dupAckBwReduction = 98
-	dupAckGain        = 90
+	bwDecThreshold = uint64(3)
 
-	lossBwReduction = 95
+	dupAckBwReduction = uint64(98)
+	dupAckGain        = uint64(90)
 
-	fallbackInterval = 10 * msNano
-	rttDivisor       = 10
+	lossBwReduction = uint64(95)
 
-	rttInflationHigh     = 150
-	rttInflationModerate = 125
+	fallbackInterval = uint64(10 * msNano)
+	rttDivisor       = uint64(10)
 
-	MinDeadLine  uint64 = 100 * msNano
-	ReadDeadLine uint64 = 30 * secondNano // 30 seconds
+	rttInflationHigh     = uint64(150)
+	rttInflationModerate = uint64(125)
+
+	MinDeadLine  = uint64(100 * msNano)
+	ReadDeadLine = uint64(30 * secondNano) // 30 seconds
+
+	//backoff
+	maxRetry      = 5
+	rtoBackoffPct = uint64(200)
 )
 
 // Combined measurement state - both RTT and BBR in one struct
@@ -65,7 +71,6 @@ func NewMeasurements() Measurements {
 }
 
 func (c *Conn) updateMeasurements(rttMeasurementNano uint64, bytesAcked uint64, nowNano uint64) {
-	
 	// Validation
 	if rttMeasurementNano == 0 {
 		slog.Warn("cannot update measurements, rtt is 0")
@@ -208,38 +213,13 @@ func backoff(rtoNano uint64, rtoNr int) (uint64, error) {
 	if rtoNr <= 0 {
 		return 0, errors.New("backoff requires a positive rto number")
 	}
-	if rtoNr > 5 {
-		return 0, errors.New("max retry attempts (4) exceeded")
+	if rtoNr > maxRetry {
+		return 0, fmt.Errorf("max retry attempts: %v exceeded limit %v", rtoNr, maxRetry)
 	}
 
 	for i := 1; i < rtoNr; i++ {
-		rtoNano = rtoNano * 2
+		rtoNano = (rtoNano * rtoBackoffPct) / 100
 	}
 
 	return rtoNano, nil
-}
-
-// ******************* Time **********************
-
-var specificNano uint64 = math.MaxUint64
-
-func setTime(nowNano uint64) {
-	if nowNano <= specificNano {
-		slog.Warn("Time/Warp/Fail",
-			slog.Uint64("before:ms", specificNano/msNano),
-			slog.Uint64("after:ms", nowNano/msNano))
-		return
-	}
-	slog.Debug("Time/Warp/Manual",
-		slog.Uint64("+:ms", (nowNano-specificNano)/msNano),
-		slog.Uint64("before:ms", specificNano/msNano),
-		slog.Uint64("after:ms", nowNano/msNano))
-	specificNano = nowNano
-}
-
-func timeNowNano() uint64 {
-	if specificNano == math.MaxUint64 {
-		return uint64(time.Now().UnixNano())
-	}
-	return specificNano
 }

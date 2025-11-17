@@ -41,14 +41,14 @@ func runServer(addr string) {
 	fmt.Printf("Server listening on %s\n", addr)
 	fmt.Println("Waiting for clients...")
 	
-	listener.Loop(func(stream *qotp.Stream) bool {
+	listener.Loop(func(stream *qotp.Stream) (bool, error) {
 		if stream == nil {	
-			return true
+			return true, nil
 		}
 		data, err := stream.Read()
 		if err != nil {
 			fmt.Printf("Server exit loop, %v\n", err)
-			return false
+			return false, nil
 		}
 		
 		if len(data) > 0 {
@@ -59,7 +59,7 @@ func runServer(addr string) {
 			stream.Write([]byte(upper))
 			stream.Close()
 		}
-		return true
+		return true, nil
 	})
 }
 func runClient(serverAddr string) {
@@ -89,15 +89,15 @@ func runClient(serverAddr string) {
 	fmt.Printf("Sent: %s\n", input)
 	
 	// Read reply
-	listener.Loop(func(s *qotp.Stream) bool {
+	listener.Loop(func(s *qotp.Stream) (bool, error) {
 		if s == nil {
-			return true
+			return true, nil
 		}
 		data, _ := s.Read()
 		if len(data) > 0 {
 			fmt.Printf("Received, exit: %s\n", data)
-			return false
+			return false, nil
 		}
-		return true
+		return true, nil
 	})
 }

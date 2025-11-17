@@ -45,7 +45,7 @@ func setupLogger(level slog.Level) {
 		SrcFileLength: 16,
 		MsgPrefix:     color.HiWhiteString("|"),
 		MsgColor:      color.New(color.FgHiWhite),
-		MsgLength:     16,
+		MsgLength:     24,
 	}))
 	color.NoColor = false
 	slog.SetDefault(logger)

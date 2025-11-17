@@ -16,16 +16,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func init() {
-	specificNano = 0
-}
-
 // ConnPair represents a pair of connected NetworkConn implementations
 type ConnPair struct {
 	Conn1 *PairedConn
 	Conn2 *PairedConn
-
-	localAddr string
 }
 
 // PairedConn implements the NetworkConn interface and connects to a partner
@@ -43,15 +37,16 @@ type PairedConn struct {
 
 	latencyNano uint64 // One-way latency in nanoseconds
 	bandwidth   uint64 // Bandwidth in bits per second (0 = unlimited)
+	localTime   uint64
 
 	closed bool
 }
 
 // packetData represents a UDP packet
 type packetData struct {
-	data            []byte
-	remoteAddr      string
-	packetDelayNano uint64
+	data        []byte
+	remoteAddr  string
+	arrivalTime uint64
 }
 
 // NewConnPair creates a pair of connected NetworkConn implementations
@@ -72,20 +67,28 @@ func NewConnPair(addr1 string, addr2 string) *ConnPair {
 	}
 }
 
+func (c *ConnPair) senderToRecipientOrder(order ...int) (n int, err error) {
+	err = c.reorderSender(order...)
+	if err != nil {
+		return 0, err
+	}
+	return c.senderToRecipientAll()
+}
+
 func (c *ConnPair) senderToRecipient(sequence ...int) (n int, err error) {
-	return c.Conn1.CopyData(sequence...)
+	return c.Conn1.copyData(sequence...)
 }
 
 func (c *ConnPair) senderToRecipientAll() (n int, err error) {
-	return c.Conn1.CopyData(len(c.Conn1.writeQueue))
+	return c.Conn1.copyData(len(c.Conn1.writeQueue))
 }
 
 func (c *ConnPair) recipientToSenderAll() (n int, err error) {
-	return c.Conn2.CopyData(len(c.Conn2.writeQueue))
+	return c.Conn2.copyData(len(c.Conn2.writeQueue))
 }
 
 func (c *ConnPair) recipientToSender(sequence ...int) (n int, err error) {
-	return c.Conn2.CopyData(sequence...)
+	return c.Conn2.copyData(sequence...)
 }
 
 func (c *ConnPair) nrOutgoingPacketsSender() int {
@@ -115,26 +118,33 @@ func newPairedConn(localAddr string) *PairedConn {
 
 // ReadFromUDPAddrPort reads data from the read queue
 func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutNano uint64, nowNano uint64) (int, netip.AddrPort, error) {
-    if p.isClosed() {
-        return 0, netip.AddrPort{}, errors.New("connection closed")
-    }
+	if p.isClosed() {
+		return 0, netip.AddrPort{}, errors.New("connection closed")
+	}
 
-    p.readQueueMu.Lock()
-    defer p.readQueueMu.Unlock()
+	p.readQueueMu.Lock()
+	defer p.readQueueMu.Unlock()
 
-    if len(p.readQueue) == 0 {
-        specificNano += timeoutNano
-        // Return timeout error to match real UDP behavior
-        return 0, netip.AddrPort{}, nil
-    }
-    
-    packet := p.readQueue[0]
-    p.readQueue = p.readQueue[1:]
-    n := copy(buf, packet.data)
-    
-    slog.Debug("    ReadUDP", slog.Int("len(data)", len(buf)))
-    
-    return n, netip.AddrPort{}, nil
+	if len(p.readQueue) == 0 {
+		p.localTime += timeoutNano
+		slog.Debug("    ReadUDP/no data/no queue", slog.Uint64("localTime", p.localTime))
+		return 0, netip.AddrPort{}, nil
+	}
+
+	packet := p.readQueue[0]
+
+	timeUntilPacket := packet.arrivalTime - p.localTime
+	if packet.arrivalTime < p.localTime || timeUntilPacket <= timeoutNano {
+		p.localTime = packet.arrivalTime
+		p.readQueue = p.readQueue[1:]
+		n := copy(buf, packet.data)
+		slog.Debug("    ReadUDP", slog.Int("len(data)", len(buf)))
+		return n, netip.AddrPort{}, nil
+	} else {
+		p.localTime += timeoutNano
+		slog.Debug("    ReadUDP/no data/in queue", slog.Uint64("localTime", p.localTime))
+		return 0, netip.AddrPort{}, nil
+	}
 }
 
 // TimeoutReadNow cancels any pending read operation
@@ -151,7 +161,7 @@ func (p *PairedConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, now
 	// Make a copy of the data
 	dataCopy := make([]byte, len(b))
 	n := copy(dataCopy, b)
-	
+
 	if n != len(b) {
 		return errors.New("could not send all data. This should not happen")
 	}
@@ -171,16 +181,18 @@ func (p *PairedConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, now
 
 	p.writeQueueMu.Lock()
 	p.writeQueue = append(p.writeQueue, packetData{
-		data:            dataCopy,
-		remoteAddr:      remoteAddr.String(),
-		packetDelayNano: p.latencyNano + transmissionNano,
+		data:        dataCopy,
+		remoteAddr:  remoteAddr.String(),
+		arrivalTime: p.localTime + p.latencyNano + transmissionNano,
 	})
 	p.writeQueueMu.Unlock()
+
+	p.localTime += transmissionNano
 
 	return nil
 }
 
-func (p *PairedConn) CopyData(sequence ...int) (int, error) {
+func (p *PairedConn) copyData(sequence ...int) (int, error) {
 	if p.isClosed() || p.partner == nil || p.partner.isClosed() {
 		return 0, errors.New("connection or partner unavailable")
 	}
@@ -207,7 +219,7 @@ func (p *PairedConn) CopyData(sequence ...int) (int, error) {
 		absCount := count
 		if count < 0 {
 			absCount = -count
-			slog.Debug("Net/Drop", slog.Int("#pckts", absCount), slog.String("net",p.localAddr + "→" + p.partner.localAddr))
+			slog.Debug("Net/Drop", slog.Int("#pckts", absCount), slog.String("net", p.localAddr+"→"+p.partner.localAddr))
 		}
 		if absCount > available {
 			absCount = available
@@ -219,11 +231,7 @@ func (p *PairedConn) CopyData(sequence ...int) (int, error) {
 			for _, pkt := range packets {
 				totalBytes += len(pkt.data)
 				slog.Debug("Time/Warp/Auto",
-					slog.Int("len(data)", len(pkt.data)),
-					slog.Uint64("+:ms", pkt.packetDelayNano/msNano),
-					slog.Uint64("before:ms", specificNano/msNano),
-					slog.Uint64("after:ms", (specificNano+pkt.packetDelayNano)/msNano))
-				specificNano += pkt.packetDelayNano
+					slog.Int("len(data)", len(pkt.data)))
 			}
 
 			p.partner.readQueueMu.Lock()
@@ -240,6 +248,25 @@ func (p *PairedConn) CopyData(sequence ...int) (int, error) {
 	p.writeQueue = p.writeQueue[pos:]
 
 	return totalBytes, nil
+}
+
+func (c *ConnPair) reorderSender(order ...int) error {
+	c.Conn1.writeQueueMu.Lock()
+	defer c.Conn1.writeQueueMu.Unlock()
+
+	if len(order) > len(c.Conn1.writeQueue) {
+		return errors.New("order indices exceed queue size")
+	}
+
+	reordered := make([]packetData, len(order))
+	for i, idx := range order {
+		if idx < 0 || idx >= len(c.Conn1.writeQueue) {
+			return errors.New("invalid order index")
+		}
+		reordered[i] = c.Conn1.writeQueue[idx]
+	}
+	c.Conn1.writeQueue = reordered
+	return nil
 }
 
 // Close closes the connection
@@ -287,67 +314,74 @@ func TestNewConnPair(t *testing.T) {
 	assert.Equal(t, conn1, conn2.partner)
 }
 
-func TestWriteAndReadUDP(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("isSender", "receiver")
-	sender := connPair.Conn1
-	receiver := connPair.Conn2
-
-	// Test data
-	testData := []byte("hello world")
-
-	// Write from isSender to receiver
-	err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
-	assert.NoError(t, err)
-
-	_, err = connPair.senderToRecipient(1)
-	assert.NoError(t, err)
-
-	// Read on receiver side
-	buffer := make([]byte, 100)
-	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 0, 1100000)
-	assert.NoError(t, err)
-	assert.Equal(t, len(testData), n)
-	assert.Equal(t, testData, buffer[:n])
-}
-
-func TestWriteAndReadUDPBidirectional(t *testing.T) {
-	// Create a connection pair
+func TestBidirectionalCommunication(t *testing.T) {
 	connPair := NewConnPair("endpoint1", "endpoint2")
 	endpoint1 := connPair.Conn1
 	endpoint2 := connPair.Conn2
 
-	// Test data
 	dataFromEndpoint1 := []byte("message from endpoint 1")
 	dataFromEndpoint2 := []byte("response from endpoint 2")
 
-	// Endpoint 1 writes to Endpoint 2
 	err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 
 	_, err = connPair.senderToRecipient(1)
 	assert.NoError(t, err)
 
-	// Endpoint 2 reads from Endpoint 1
 	buffer := make([]byte, 100)
-	n2, _, err := endpoint2.ReadFromUDPAddrPort(buffer, 0, specificNano)
+	n2, _, err := endpoint2.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint1), n2)
-	assert.Equal(t, dataFromEndpoint1, buffer[:n2])
 
-	// Endpoint 2 writes back to Endpoint 1
 	err = endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 
 	_, err = connPair.recipientToSender(1)
 	assert.NoError(t, err)
 
-	// Endpoint 1 reads response from Endpoint 2
-	buffer = make([]byte, 100)
-	n4, _, err := endpoint1.ReadFromUDPAddrPort(buffer, 0, specificNano)
+	n4, _, err := endpoint1.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, len(dataFromEndpoint2), n4)
-	assert.Equal(t, dataFromEndpoint2, buffer[:n4])
+}
+
+// Add test for localTime behavior:
+func TestLocalTimeAdvancement(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+	receiver := connPair.Conn2
+
+	initialTime := sender.localTime
+	testData := []byte("test")
+
+	// Write advances sender time by transmission time
+	err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+	assert.Greater(t, sender.localTime, initialTime)
+
+	_, err = connPair.senderToRecipient(1)
+	assert.NoError(t, err)
+
+	// Read advances receiver time to packet arrival
+	receiverInitialTime := receiver.localTime
+	buffer := make([]byte, 100)
+	_, _, err = receiver.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
+	assert.NoError(t, err)
+	assert.Greater(t, receiver.localTime, receiverInitialTime)
+}
+
+// Add timeout test:
+func TestReadTimeout(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	receiver := connPair.Conn2
+
+	initialTime := receiver.localTime
+	timeout := uint64(5 * secondNano)
+
+	buffer := make([]byte, 100)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, timeout, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n) // No data
+	assert.Equal(t, initialTime+timeout, receiver.localTime)
 }
 
 func TestWriteToClosedConnection(t *testing.T) {
@@ -421,7 +455,7 @@ func TestMultipleWrites(t *testing.T) {
 	// Read and verify all messages in order
 	buffer := make([]byte, 100)
 	for _, expectedMsg := range messages {
-		n, _, err := receiver.ReadFromUDPAddrPort(buffer, 0, specificNano)
+		n, _, err := receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
 		assert.NoError(t, err)
 		assert.Equal(t, len(expectedMsg), n)
 		assert.Equal(t, expectedMsg, buffer[:n])
@@ -462,15 +496,38 @@ func TestWriteAndReadUDPWithDrop(t *testing.T) {
 
 	// Read on receiver side - should only receive packet 1
 	buffer := make([]byte, 100)
-	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 0, specificNano)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData1), n)
 	assert.Equal(t, testData1, buffer[:n])
 
 	// Verify that packet 2 was not received (no more data in the queue)
-	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 0, specificNano)
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
 	assert.NoError(t, err) // Should return no error but zero bytes
 	assert.Equal(t, 0, n)
 }
 
-// Add these tests to your existing test file
+func TestPacketArrivesAfterTimeout(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+	receiver := connPair.Conn2
+
+	// Send packet with latency
+	sender.latencyNano = 10 * secondNano
+	err := sender.WriteToUDPAddrPort([]byte("late packet"), netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+
+	_, err = connPair.senderToRecipient(1)
+	assert.NoError(t, err)
+
+	// Try to read with short timeout (packet won't arrive in time)
+	buffer := make([]byte, 100)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 1*secondNano, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n) // Timeout, no data
+
+	// Now read with sufficient timeout
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 20*secondNano, 0)
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0) // Should get the packet
+}

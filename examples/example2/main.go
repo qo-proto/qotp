@@ -62,13 +62,13 @@ func runServer(addr string) {
 	n := 0
 
 	// Handle incoming streams
-	listener.Loop(func(stream *qotp.Stream) bool {
+	listener.Loop(func(stream *qotp.Stream) (bool, error) {
 		if stream == nil { //nothing to read
-			return true
+			return true, nil
 		}
 		data, err := stream.Read()
 		if err != nil {
-			return false
+			return false, nil
 		}
 
 		if len(data) > 0 {
@@ -81,7 +81,7 @@ func runServer(addr string) {
 				stream.Close()
 			}
 		}
-		return true
+		return true, nil
 	})
 }
 
@@ -111,18 +111,18 @@ func runClient(serverAddr string) {
 
 	n := 0
 	// Read reply
-	listener.Loop(func(s *qotp.Stream) bool {
+	listener.Loop(func(s *qotp.Stream) (bool, error) {
 		if s == nil { //nothing to read
-			return true //continue
+			return true, nil //continue
 		}
 		data, _ := s.Read()
 		if len(data) > 0 {
 			n += len(data)
 			fmt.Printf("Received: [%v] %s\n", n, data)
 			if n == 20000 {
-				return false //exit
+				return false, nil //exit
 			}
 		}
-		return true //continue
+		return true, nil //continue
 	})
 }
