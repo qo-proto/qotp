@@ -9,8 +9,12 @@ import (
 type Stream struct {
 	streamID     uint32
 	conn         *Conn
-	closedAtNano uint64 //0 means not closed
+	closedAtNano uint64 // 0 means not closed
 	mu           sync.Mutex
+}
+
+func (s *Stream) StreamID() uint32 {
+	return s.streamID
 }
 
 func (s *Stream) NotifyDataAvailable() error {
@@ -30,7 +34,7 @@ func (s *Stream) IsClosed() bool {
 }
 
 func (s *Stream) IsCloseRequested() bool {
-	return s.conn.snd.GetOffsetClosedAt(s.streamID) !=nil
+	return s.conn.snd.GetOffsetClosedAt(s.streamID) != nil
 }
 
 func (s *Stream) IsOpen() bool {
@@ -49,25 +53,26 @@ func (s *Stream) Read() (userData []byte, err error) {
 
 	offset, data, receiveTimeNano := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 
-	//check if our receive buffer is marked as closed
+	// check if our receive buffer is marked as closed
 	if closeOffset != nil {
-		//it is marked to close
+		// it is marked to close
 		if offset >= *closeOffset {
-			//we got all data, mark as closed //TODO check wrap around
+			// we got all data, mark as closed //TODO check wrap around
 			s.closedAtNano = receiveTimeNano
 			slog.Debug("Read/close", gId(), s.debug(), slog.String("b…", string(data[:min(16, len(data))])))
 			return data, io.EOF
 		}
 	}
-	
+
 	slog.Debug("Read", gId(), s.debug(), slog.String("b…", string(data[:min(16, len(data))])))
 	return data, nil
 }
+
 func (s *Stream) Write(userData []byte) (n int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.closedAtNano != 0 || s.conn.snd.GetOffsetClosedAt(s.streamID)!=nil {
+	if s.closedAtNano != 0 || s.conn.snd.GetOffsetClosedAt(s.streamID) != nil {
 		return 0, io.ErrUnexpectedEOF
 	}
 
@@ -80,7 +85,7 @@ func (s *Stream) Write(userData []byte) (n int, err error) {
 	if status != InsertStatusOk {
 		slog.Debug("Status Nok", gId(), s.debug(), slog.Any("status", status))
 	} else {
-		//data is read, so signal to cancel read, since we could do a flush
+		// data is read, so signal to cancel read, since we could do a flush
 		err = s.conn.listener.localConn.TimeoutReadNow()
 		if err != nil {
 			return 0, err
