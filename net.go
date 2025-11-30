@@ -44,8 +44,14 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano uint64, nowNa
 	return n, sourceAddress, err
 }
 
+// TimeoutReadNow cancels any pending Read operation by setting the read 
+// deadline to a past time, causing it to return immediately with a timeout error.
+//
+// Call this when a write is ready in another goroutine to unblock the reader
+// and allow the connection to switch from read mode to write mode.
 func (c *UDPNetworkConn) TimeoutReadNow() error {
-	return c.conn.SetReadDeadline(time.Time{})
+	pastTime := time.Unix(0, 1)
+	return c.conn.SetReadDeadline(pastTime)
 }
 
 func (c *UDPNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, _ uint64) error {
