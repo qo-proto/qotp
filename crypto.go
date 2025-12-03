@@ -4,7 +4,6 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"errors"
-	"fmt"
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -153,10 +152,7 @@ func encryptInitCryptoSnd(
 	}
 
 	encData, err = chainedEncrypt(snCrypto, 0, true, nonForwardSecretKey, headerWithKeys, paddedPacketData)
-	
-	fmt.Printf("encData -encrypt QQQ: %x\n", encData)
-	fmt.Printf("nonForwardSecretKey -encrypt QQQ: %x\n", nonForwardSecretKey)
-	
+
 	return Uint64(headerWithKeys[HeaderSize:]), encData, err
 }
 
@@ -334,8 +330,6 @@ func decryptInitCryptoSnd(
 	if len(encData) < mtu {
 		return nil, nil, nil, errors.New("size is below minimum init")
 	}
-	
-	fmt.Printf("encData QQQ: %x\n", encData)
 
 	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[HeaderSize : HeaderSize+PubKeySize])
 	if err != nil {
@@ -352,8 +346,6 @@ func decryptInitCryptoSnd(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	
-	fmt.Printf("nonForwardSecretKey QQQ: %x\n", nonForwardSecretKey)
 
 	snConn, currentEpochCrypt, packetData, err := chainedDecrypt(
 		false,

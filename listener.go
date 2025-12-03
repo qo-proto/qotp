@@ -404,7 +404,6 @@ func (l *Listener) newConn(
 		if err != nil {
 			return nil, err
 		}
-		fmt.Printf("nonForwardSecretKey sharedSecretId: %x\n", sharedSecretId)
 		logKey(l.keyLogWriter, conn.connId, sharedSecret, sharedSecretId)
 	}
 
