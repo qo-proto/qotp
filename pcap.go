@@ -1,46 +1,113 @@
 package qotp
 
 import (
-	"crypto/ecdh"
+	"errors"
+	"fmt"
 )
 
 // DecryptDataForPcap decrypts a QOTP Data packet for Wireshark/pcap analysis.
 // This uses sharedSecret which is the ephemeral shared secret (PFS).
 func DecryptDataForPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret []byte) ([]byte, error) {
-	msg, err := decryptData(encData, isSenderOnInit, epoch, sharedSecret)
-	if err != nil {
-		return nil, err
+	if len(encData) < MinDataSizeHdr+FooterDataSize {
+		return nil, errors.New("packet too small for Data")
 	}
-	return msg.PayloadRaw, nil
+
+	// Header is: [1 byte header][8 bytes connId]
+	header := encData[0 : HeaderSize+ConnIdSize]
+	encryptedPortion := encData[HeaderSize+ConnIdSize:]
+
+	_, _, packetData, err := chainedDecrypt(
+		isSenderOnInit,
+		epoch,
+		sharedSecret,
+		header,
+		encryptedPortion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return packetData, nil
 }
 
 // DecryptInitCryptoSndForPcap decrypts InitCryptoSnd packets using the identity shared secret (non-PFS).
 // This uses sharedSecretId which is computed as ECDH(prvKeyEpSnd, pubKeyIdRcv).
-// Note: This requires the receiver's private identity key to decrypt.
-func DecryptInitCryptoSndForPcap(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int) ([]byte, error) {
-	_, _, msg, err := decryptInitCryptoSnd(encData, prvKeyIdRcv, mtu)
-	if err != nil {
-		return nil, err
+func DecryptInitCryptoSndForPcap(encData []byte, sharedSecretId []byte) ([]byte, error) {
+	if len(encData) < MinInitCryptoSndSizeHdr+FooterDataSize {
+		return nil, errors.New("packet too small for InitCryptoSnd")
 	}
-	return msg.PayloadRaw, nil
+
+	// Header is: [1 byte header][32 bytes pubKeyEpSnd][32 bytes pubKeyIdSnd]
+	header := encData[0 : HeaderSize+(2*PubKeySize)]
+	encryptedPortion := encData[HeaderSize+(2*PubKeySize):]
+
+	_, _, packetData, err := chainedDecrypt(
+		false, // InitCryptoSnd uses isSender=false
+		0,     // epoch is always 0 for init messages
+		sharedSecretId,
+		header,
+		encryptedPortion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	// Remove padding: first 2 bytes are filler length
+	fillerLen := Uint16(packetData)
+	if len(packetData) < 2+int(fillerLen) {
+		return nil, errors.New("invalid filler length")
+	}
+	actualData := packetData[2+int(fillerLen):]
+
+	return actualData, nil
 }
 
 // DecryptInitRcvForPcap decrypts InitRcv packets using the ephemeral shared secret (PFS).
-// This requires the sender's ephemeral private key.
-func DecryptInitRcvForPcap(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) ([]byte, error) {
-	_, _, _, msg, err := decryptInitRcv(encData, prvKeyEpSnd)
-	if err != nil {
-		return nil, err
+// This uses sharedSecret which is computed as ECDH(prvKeyEpSnd, pubKeyEpRcv).
+func DecryptInitRcvForPcap(encData []byte, sharedSecret []byte) ([]byte, error) {
+	if len(encData) < MinInitRcvSizeHdr+FooterDataSize {
+		return nil, errors.New("packet too small for InitRcv")
 	}
-	return msg.PayloadRaw, nil
+
+	// Header is: [1 byte header][8 bytes connId][32 bytes pubKeyEpRcv][32 bytes pubKeyIdRcv]
+	header := encData[0 : HeaderSize+ConnIdSize+(2*PubKeySize)]
+	encryptedPortion := encData[HeaderSize+ConnIdSize+(2*PubKeySize):]
+
+	_, _, packetData, err := chainedDecrypt(
+		true, // InitRcv uses isSender=true
+		0,    // epoch is always 0 for init messages
+		sharedSecret,
+		header,
+		encryptedPortion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return packetData, nil
 }
 
 // DecryptInitCryptoRcvForPcap decrypts InitCryptoRcv packets using the ephemeral shared secret (PFS).
-// This requires the sender's ephemeral private key.
-func DecryptInitCryptoRcvForPcap(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) ([]byte, error) {
-	_, _, msg, err := decryptInitCryptoRcv(encData, prvKeyEpSnd)
-	if err != nil {
-		return nil, err
+// This uses sharedSecret which is computed as ECDH(prvKeyEpSnd, pubKeyEpRcv).
+func DecryptInitCryptoRcvForPcap(encData []byte, sharedSecret []byte) ([]byte, error) {
+	if len(encData) < MinInitCryptoRcvSizeHdr+FooterDataSize {
+		return nil, errors.New("packet too small for InitCryptoRcv")
 	}
-	return msg.PayloadRaw, nil
+
+	// Header is: [1 byte header][8 bytes connId][32 bytes pubKeyEpRcv]
+	header := encData[0 : HeaderSize+ConnIdSize+PubKeySize]
+	encryptedPortion := encData[HeaderSize+ConnIdSize+PubKeySize:]
+
+	_, _, packetData, err := chainedDecrypt(
+		true, // InitCryptoRcv uses isSender=true
+		0,    // epoch is always 0 for init messages
+		sharedSecret,
+		header,
+		encryptedPortion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	return packetData, nil
 }
