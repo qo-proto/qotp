@@ -296,7 +296,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	// Simply remove from map - no trimming needed!
 	sendInfo, ok := stream.dataInFlightMap.Remove(key)
 	if !ok {
-		slog.Debug("ACK: duplicate, %s", key.string())
+		slog.Debug("ACK: duplicate, %s", slog.String("len/off",key.string()))
 		return AckDup, 0
 	}
 
