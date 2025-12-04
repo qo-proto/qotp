@@ -285,7 +285,7 @@ func (c *Conn) debug() slog.Attr {
 	return slog.Group("connection",
 		slog.Uint64("nextWrt:ms", c.nextWriteTime/msNano),
 		//slog.Uint64("nextWrt:ns", c.nextWriteTime),
-		slog.Int("inFlight", c.dataInFlight+c.listener.mtu),
+		slog.Int("inFlight", c.dataInFlight),
 		slog.Int("rcvBuf", c.rcv.capacity-c.rcv.size),
 		slog.Uint64("rcvWnd", c.rcvWndSize),
 		slog.Uint64("snCrypto", c.snCrypto),

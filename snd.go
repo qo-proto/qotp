@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -295,7 +296,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	// Simply remove from map - no trimming needed!
 	sendInfo, ok := stream.dataInFlightMap.Remove(key)
 	if !ok {
-		slog.Debug("ACK: duplicate")
+		slog.Debug("ACK: duplicate, %s", key.string())
 		return AckDup, 0
 	}
 
@@ -356,6 +357,10 @@ func (p packetKey) offset() uint64 {
 
 func (p packetKey) length() uint16 {
 	return uint16(p & 0xFFFF)
+}
+
+func (p packetKey) string() string {
+	return fmt.Sprintf("[offset:%v/len:%v]", p.offset(), p.length())
 }
 
 func createPacketKey(offset uint64, length uint16) packetKey {
