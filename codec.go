@@ -124,11 +124,11 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 	}
 
 	header := encData[0]
-    version := header & 0x1F           // Extract bits 0-4 (mask 0001 1111)
-    if version != CryptoVersion {
+	version := header & 0x1F // Extract bits 0-4 (mask 0001 1111)
+	if version != CryptoVersion {
 		return nil, nil, 0, errors.New("unsupported version version")
 	}
-    msgType = CryptoMsgType(header >> 5)
+	msgType = CryptoMsgType(header >> 5)
 
 	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
 
@@ -185,6 +185,11 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
 
+		// Log keys for 0-RTT connections (where pubKeyEpRcv wasn't available at newConn time)
+		if err := l.logKeysIfEnabled(conn, sharedSecret); err != nil {
+			return nil, nil, 0, err
+		}
+
 		slog.Debug(" Decode/InitRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitRcv, nil
 	case InitCryptoSnd:
@@ -233,6 +238,11 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
+
+		// Log keys for 0-RTT connections (client side receives InitCryptoRcv)
+		if err := l.logKeysIfEnabled(conn, sharedSecret); err != nil {
+			return nil, nil, 0, err
+		}
 
 		slog.Debug(" Decode/InitCryptoRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitCryptoRcv, nil
@@ -350,10 +360,27 @@ func offsetVarint(buf []byte, isExtend bool) uint64 {
 	return Uint24(buf)
 }
 
-
 func offsetSize(isExtend bool) int {
 	if isExtend {
 		return 6
 	}
 	return 3
+}
+
+// logKeysIfEnabled logs both shared secrets if keyLogWriter is enabled
+func (l *Listener) logKeysIfEnabled(conn *Conn, sharedSecret []byte) error {
+	if l.keyLogWriter == nil {
+		return nil
+	}
+
+	var sharedSecretId []byte
+	var err error
+	if conn.pubKeyIdRcv != nil {
+		sharedSecretId, err = conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv)
+		if err != nil {
+			return fmt.Errorf("failed to derive sharedSecretId: %w", err)
+		}
+	}
+	logKey(l.keyLogWriter, conn.connId, sharedSecret, sharedSecretId)
+	return nil
 }
