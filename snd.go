@@ -135,11 +135,15 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
+		slog.Debug("ReadyToSend/NoStreams")
 		return nil, 0, false
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
+		slog.Debug("ReadyToSend/NoStream",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false
 	}
 
@@ -153,6 +157,8 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	// Check if all queued data has been sent
 	if len(stream.queuedData) == 0 {
 		if stream.closeAtOffset == nil || stream.bytesSentOffset < *stream.closeAtOffset {
+			slog.Debug("ReadyToSend/NoQueuedData",
+				slog.Uint64("streamID", uint64(streamID)))
 			return nil, 0, false
 		}
 		key := createPacketKey(stream.bytesSentOffset, 0)
@@ -168,6 +174,13 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 
 	// Determine how much to send
 	length := min(uint64(maxData), uint64(len(stream.queuedData)))
+	
+	slog.Debug("ReadyToSend/PreparePacket",
+		slog.Uint64("streamID", uint64(streamID)),
+		slog.Int("queuedData", len(stream.queuedData)),
+		slog.Uint64("willSend", length),
+		slog.Int("maxData", maxData),
+		slog.Any("msgType", msgType))
 
 	// Extract data from queue
 	packetData = stream.queuedData[:length]
@@ -196,17 +209,23 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
+		slog.Debug("ReadyToRetransmit/NoStreams")
 		return nil, 0, false, nil
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
+		slog.Debug("ReadyToRetransmit/NoStream",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false, nil
 	}
 
 	// Check oldest packet first
 	packetKey, rtoData, ok := stream.dataInFlightMap.First()
 	if !ok {
+		slog.Debug("ReadyToRetransmit/NoInflight",
+			slog.Uint64("streamID", uint64(streamID)))
 		return nil, 0, false, nil
 	}
 
@@ -217,6 +236,11 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 
 	actualRtoNano := nowNano - rtoData.sentTimeNano
 	if actualRtoNano <= expectedRtoBackoffNano {
+		slog.Debug("ReadyToRetransmit/NotYet",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Uint64("actualRto:ms", actualRtoNano/msNano),
+			slog.Uint64("expectedRto:ms", expectedRtoBackoffNano/msNano),
+			slog.Int("sentNr", rtoData.sentNr))
 		return nil, 0, false, nil
 	}
 

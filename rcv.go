@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"bytes"
-	"log/slog"
 	"sync"
 )
 
@@ -40,7 +39,6 @@ func NewRcvBuffer() *RcvBuffer {
 }
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
-	slog.Debug("Rcv/NewReceiveBuffer")
 	return &ReceiveBuffer{
 		streams:  make(map[uint32]*RcvBuffer),
 		capacity: capacity,
@@ -77,21 +75,18 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	stream := rb.getOrCreateStream(streamID)
 
 	if rb.size+dataLen > rb.capacity {
-		slog.Debug("Rcv/BufferFull", slog.Int("rb.size+dataLen", rb.size+dataLen), slog.Int("rb.capacity", rb.capacity))
 		return RcvInsertBufferFull
 	}
 
 	// Now we need to add the ack to the list even if it's a duplicate,
 	// as the ack may have been lost, we need to send it again
 	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
-	slog.Debug("Rcv/AddedAck", slog.Uint64("offset", offset), slog.Int("ackListLen", len(rb.ackList)))
 
 	// Check if the incoming segment is completely before the next expected offset.
 	// This means all data in this segment has already been delivered to the user application.
 	// For example: if nextInOrderOffsetToWaitFor = 1000, and we receive data at offset 500-600,
 	// that data was already processed and delivered, so it's a duplicate we can safely ignore.
 	if offset+uint64(dataLen) <= stream.nextInOrderOffsetToWaitFor {
-		slog.Debug("Rcv/Duplicate/WithUser", slog.Uint64("offset", offset), slog.Int("len(data)", dataLen))
 		return RcvInsertDuplicate
 	}
 
@@ -102,23 +97,14 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 		// If incoming data is smaller or equal in size, it's a duplicate - ignore it
 		// If incoming data is larger, replace the existing segment with the larger one
 		if dataLen <= existingLen {
-			slog.Debug("Rcv/Duplicate/SmallerOrEqual",
-				slog.Uint64("offset", offset),
-				slog.Int("incoming_len", dataLen),
-				slog.Int("existing_len", existingLen))
 			return RcvInsertDuplicate
 		} else {
 			// Incoming segment is larger - remove the smaller existing one
 			// and continue to insert the larger segment
 			stream.segments.Remove(offset)
 			rb.size -= existingLen
-			slog.Debug("Rcv/Replace/WithLarger",
-				slog.Uint64("offset", offset),
-				slog.Int("old_len", existingLen),
-				slog.Int("new_len", dataLen))
 		}
 
-		slog.Debug("Rcv/Ok", slog.Uint64("offset", offset), slog.Int("len(data)", dataLen))
 		stream.segments.Put(offset, RcvValue{data: userData, receiveTimeNano: nowNano})
 		rb.size += dataLen
 		return RcvInsertOk
@@ -135,8 +121,6 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 			overlapLen := prevOffset + uint64(len(prevData.data)) - offset
 			if overlapLen >= uint64(dataLen) {
 				// Completely overlapped by previous - this is a duplicate
-				slog.Debug("Rcv/Duplicate/CompletelyOverlappedByPrev",
-					slog.Uint64("offset", offset), slog.Int("len(data)", dataLen))
 				return RcvInsertDuplicate
 			}
 			existingOverlap := prevData.data[offset-prevOffset:]
@@ -148,11 +132,6 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 			// Adjust our offset and data slice
 			finalOffset = prevEnd
 			finalUserData = userData[overlapLen:]
-
-			slog.Debug("Rcv/AdjustForPrevOverlap",
-				slog.Uint64("original_offset", offset),
-				slog.Uint64("adjusted_offset", finalOffset),
-				slog.Int("overlap_len", int(overlapLen)))
 		}
 	}
 
@@ -173,12 +152,6 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 				if !bytes.Equal(nextData.data, incomingOverlap) {
 					panic("Next segment complete overlap mismatch - data integrity violation")
 				}
-
-				slog.Debug("Rcv/ReplaceNext/CompleteOverlap",
-					slog.Uint64("next_offset", nextOffset),
-					slog.Int("next_len", len(nextData.data)),
-					slog.Uint64("our_offset", finalOffset),
-					slog.Int("our_len", len(finalUserData)))
 			} else {
 				// Partial overlap - shorten our data
 				overlapLen := ourEnd - nextOffset
@@ -191,17 +164,11 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 
 				// Shorten our data to remove overlap
 				finalUserData = finalUserData[:ourOverlapStart]
-
-				slog.Debug("Rcv/AdjustForNextOverlap",
-					slog.Uint64("adjusted_offset", finalOffset),
-					slog.Int("original_len", len(userData)),
-					slog.Int("final_len", len(finalUserData)))
 			}
 		}
 	}
 
 	// Now we have the correct offset and data slice - store it
-	slog.Debug("Rcv/final", slog.Uint64("offset", finalOffset), slog.Int("len(data)", len(finalUserData)), slog.Uint64("next", stream.nextInOrderOffsetToWaitFor))
 	stream.segments.Put(finalOffset, RcvValue{data: finalUserData, receiveTimeNano: nowNano})
 	rb.size += len(finalUserData)
 

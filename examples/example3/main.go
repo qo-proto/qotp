@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"log/slog"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -69,26 +72,48 @@ func runServer(addr string) {
 
 		data, err := s.Read()
 		if err != nil {
+			if err == io.EOF {
+				return true, nil // Stream closed, this is normal
+			}
 			fmt.Printf("error %v", err)
 			return false, nil
 		}
 
 		if len(data) > 0 {
-			m[s.StreamID()]=+len(data)
-			fmt.Printf("Server received: [%v] %s\n", m[s.StreamID()], data)
+			m[s.StreamID()] += len(data)
+			fmt.Printf("Server received: streamID=%v total=%v chunk=%v\n",
+				s.StreamID(), m[s.StreamID()], len(data))
+			fmt.Printf("Server received: [%v] %v\n", m[s.StreamID()], len(data))
 
 			// Send reply
 			if m[s.StreamID()] == 20000 {
+				slog.Info("Starting response goroutine",
+					slog.Uint64("streamID", uint64(s.StreamID())))
 				go func(s *qotp.Stream) {
-					time.Sleep(time.Millisecond * 200) //hard work
-					data := repeatText("Hello from server! ", 20000)
+					time.Sleep(time.Millisecond * 200)
+					data := repeatText("Hello from server! "+strconv.Itoa(int(s.StreamID())), 20000)
+					slog.Info("About to write response",
+						slog.Uint64("streamID", uint64(s.StreamID())),
+						slog.Int("bytes", len(data)))
 					for len(data) > 0 {
 						n, err := s.Write(data)
 						if err != nil {
-							log.Fatal(err)
+							slog.Error("Write failed",
+								slog.Uint64("streamID", uint64(s.StreamID())),
+								slog.Any("error", err))
+							return
 						}
-						data = data[0:n]
+						if n == 0 {
+							slog.Warn("Write returned 0, waiting",
+								slog.Uint64("streamID", uint64(s.StreamID())),
+								slog.Int("remaining", len(data)))
+							time.Sleep(time.Millisecond * 10)
+							continue
+						}
+						data = data[n:]
 					}
+					slog.Info("Finished writing, closing stream",
+						slog.Uint64("streamID", uint64(s.StreamID())))
 					s.Close()
 				}(s)
 			}
@@ -99,56 +124,83 @@ func runServer(addr string) {
 }
 
 func runClient(serverAddr string) {
-	// Create client listener (will auto-generate keys)
 	listener, err := qotp.Listen()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer listener.Close()
 
-	// Connect to server without crypto (in-band key exchange)
 	conn, err := listener.DialString(serverAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	fmt.Printf("Connected to server at %s\n", serverAddr)
 
-	total := 0
+	// Prepare all stream data upfront
+	type StreamState struct {
+		stream *qotp.Stream
+		data   []byte
+		sent   int
+	}
+
+	streams := make([]*StreamState, 10)
+	totalExpected := 0
 	for i := 0; i < 10; i++ {
-		// Send message
-		stream := conn.Stream(uint32(i))
-		go func(stream *qotp.Stream) {
-			data := repeatText("Hello from client! ", 20000)
-			total += len(data)
-			for len(data) > 0 {
-				n, err := stream.Write(data)
-				if err != nil {
-					log.Fatal(err)
-				}
-				data = data[0:n]
-				fmt.Println("Sent: Hello from client!")
-			}
-		}(stream)
+		data := repeatText("Hello from client! "+strconv.Itoa(i), 20000)
+		totalExpected += len(data)
+		streams[i] = &StreamState{
+			stream: conn.Stream(uint32(i)),
+			data:   data,
+			sent:   0,
+		}
 	}
 
 	var bytesReceived atomic.Int64
+
 	listener.Loop(func(s *qotp.Stream) (bool, error) {
-
-		if s == nil { //nothing to read
-			return true, nil //continue
+		if s != nil {
+			fmt.Printf("Received on stream %v\n", s.StreamID())
 		}
-
-		data, _ := s.Read()
-		if len(data) > 0 {
-			totalReceived := bytesReceived.Add(int64(len(data)))
-			fmt.Printf("Received: [%v] %s\n", totalReceived, data)
-			if totalReceived >= int64(total) {
-				return false, nil
+		// WRITE PHASE: Try to write on all streams
+		for _, ss := range streams {
+			if ss.sent < len(ss.data) {
+				remaining := ss.data[ss.sent:]
+				n, err := ss.stream.Write(remaining)
+				if err != nil {
+					log.Fatal(err)
+				}
+				if n > 0 {
+					ss.sent += n
+					fmt.Printf("Sent: streamID=%v chunk=%v total=%v/%v\n",
+						ss.stream.StreamID(), n, ss.sent, len(ss.data))
+				}
 			}
 		}
 
-		return true, nil //continue
-	})
+		// READ PHASE: Process incoming data
+		if s != nil {
+			data, _ := s.Read()
+			if len(data) > 0 {
+				totalReceived := bytesReceived.Add(int64(len(data)))
+				fmt.Printf("Received: streamID=%v chunk=%v total=%v/%v\n",
+					s.StreamID(), len(data), totalReceived, totalExpected)
 
+				if totalReceived >= int64(totalExpected) {
+					slog.Info("Closing stream early",
+						slog.Uint64("streamID", uint64(s.StreamID())),
+						slog.Int64("totalReceived", totalReceived),
+						slog.Int("totalExpected", totalExpected),
+						slog.Int("thisChunk", len(data)))
+					//s.Close()
+				}
+			}
+		}
+
+		activeStreams := conn.HasActiveStreams()
+		if !activeStreams {
+			fmt.Printf("HasActiveStreams() = %v, bytesReceived=%v/%v\n",
+				activeStreams, bytesReceived.Load(), totalExpected)
+		}
+		return activeStreams, nil
+	})
 }

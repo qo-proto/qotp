@@ -127,7 +127,6 @@ func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutNano uint64, nowNano
 
 	if len(p.readQueue) == 0 {
 		p.localTime += timeoutNano
-		slog.Debug("    ReadUDP/no data/no queue", slog.Uint64("localTime", p.localTime))
 		return 0, netip.AddrPort{}, nil
 	}
 
@@ -138,11 +137,9 @@ func (p *PairedConn) ReadFromUDPAddrPort(buf []byte, timeoutNano uint64, nowNano
 		p.localTime = packet.arrivalTime
 		p.readQueue = p.readQueue[1:]
 		n := copy(buf, packet.data)
-		slog.Debug("    ReadUDP", slog.Int("len(data)", len(buf)))
 		return n, netip.AddrPort{}, nil
 	} else {
 		p.localTime += timeoutNano
-		slog.Debug("    ReadUDP/no data/in queue", slog.Uint64("localTime", p.localTime))
 		return 0, netip.AddrPort{}, nil
 	}
 }
@@ -172,12 +169,6 @@ func (p *PairedConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, now
 	if p.bandwidth > 0 {
 		transmissionNano = (uint64(len(b)) * secondNano) / p.bandwidth
 	}
-
-	slog.Debug("    WriteUDP",
-		slog.Int("len(data)", len(b)),
-		slog.Uint64("bandwidth:B/s", p.bandwidth),
-		slog.Uint64("latency:ms", p.latencyNano/msNano),
-		slog.Uint64("tx-time:ms", transmissionNano/msNano))
 
 	p.writeQueueMu.Lock()
 	p.writeQueue = append(p.writeQueue, packetData{
@@ -209,7 +200,6 @@ func (p *PairedConn) copyData(indices ...int) (int, error) {
 		totalBytes := 0
 		for _, pkt := range p.writeQueue {
 			totalBytes += len(pkt.data)
-			slog.Debug("Time/Warp/Auto", slog.Int("len(data)", len(pkt.data)))
 		}
 
 		p.partner.readQueueMu.Lock()
@@ -235,7 +225,6 @@ func (p *PairedConn) copyData(indices ...int) (int, error) {
 
 		pkt := p.writeQueue[idx]
 		totalBytes += len(pkt.data)
-		slog.Debug("Time/Warp/Auto", slog.Int("len(data)", len(pkt.data)), slog.Int("idx", idx))
 
 		p.partner.readQueueMu.Lock()
 		p.partner.readQueue = append(p.partner.readQueue, pkt)
@@ -266,9 +255,6 @@ func (p *PairedConn) dropData(indices ...int) error {
 
 	// No arguments: drop all packets
 	if len(indices) == 0 {
-		for i := range p.writeQueue {
-			slog.Debug("Net/Drop", slog.Int("idx", i), slog.String("net", p.localAddr+"→"+p.partner.localAddr))
-		}
 		p.writeQueue = nil
 		return nil
 	}
@@ -279,7 +265,6 @@ func (p *PairedConn) dropData(indices ...int) error {
 	for _, idx := range indices {
 		if idx >= 0 && idx < len(p.writeQueue) {
 			toDrop[idx] = true
-			slog.Debug("Net/Drop", slog.Int("idx", idx), slog.String("net", p.localAddr+"→"+p.partner.localAddr))
 		}
 	}
 

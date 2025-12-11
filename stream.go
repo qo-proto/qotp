@@ -44,23 +44,21 @@ func (s *Stream) IsOpen() bool {
 func (s *Stream) Read() (userData []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	closeOffset := s.conn.rcv.GetOffsetClosedAt(s.streamID)
+	
 	if s.closedAtNano != 0 {
 		slog.Debug("Read/closed", gId(), s.debug())
-		return nil, io.ErrUnexpectedEOF
+		return nil, io.EOF
 	}
 
 	offset, data, receiveTimeNano := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 
 	// check if our receive buffer is marked as closed
+	closeOffset := s.conn.rcv.GetOffsetClosedAt(s.streamID)
 	if closeOffset != nil {
 		// it is marked to close
 		if offset >= *closeOffset {
 			// we got all data, mark as closed //TODO check wrap around
 			s.closedAtNano = receiveTimeNano
-			slog.Debug("Read/close", gId(), s.debug(), slog.String("b…", string(data[:min(16, len(data))])))
-			return data, io.EOF
 		}
 	}
 

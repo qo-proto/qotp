@@ -91,7 +91,7 @@ func (c *Conn) Stream(streamID uint32) (s *Stream) {
 	return s
 }
 
-func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uint64) (s *Stream, err error) {
+func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -99,7 +99,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 	if p.Ack != nil {
 		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
 		if ackStatus == AckStatusOk {
-			c.dataInFlight -= rawLen
+			c.dataInFlight -= len(userData)
 		} else if ackStatus == AckDup {
 			c.onDuplicateAck()
 		} else {
@@ -113,7 +113,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, rawLen int, nowNano uin
 
 		if nowNano > sentTimeNano && ackStatus == AckStatusOk {
 			rttNano := nowNano - sentTimeNano
-			c.updateMeasurements(rttNano, uint64(p.Ack.len), nowNano)
+			c.updateMeasurements(rttNano, int(p.Ack.len) + 42, nowNano) //TODO: 42 is approx.
 		}
 	}
 
@@ -157,19 +157,26 @@ func (c *Conn) cleanupConn() {
 		slog.Uint64("connID", c.connId), slog.Any("currId", c.listener.currentConnID))
 
 	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
-		*c.listener.currentConnID, _, _ = c.listener.connMap.Next(c.connId)
+		tmp, _, _ := c.listener.connMap.Next(c.connId)
+		c.listener.currentConnID = &tmp
 	}
 	c.listener.connMap.Remove(c.connId)
 }
 
+func (c *Conn) HasActiveStreams() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streams.Size() > 0
+}
+
 func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
+
 	//update state for receiver
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
 		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
-		slog.Debug(" Flush/AckAvailable", gId(), s.debug(), c.debug(), slog.Uint64("offset", ack.offset))
 	} else {
-		slog.Debug(" Flush/NoAck", gId(), s.debug(), c.debug())
+		//slog.Debug(" Flush/NoAck", gId(), s.debug(), c.debug())
 	}
 
 	// Respect pacing
@@ -196,7 +203,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	msgType := c.msgType()
 	splitData, offset, isClose, err := c.snd.ReadyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
-		slog.Debug(" Flush/RetransmitError", gId(), s.debug(), c.debug(), slog.Any("error", err))
 		return 0, 0, err
 	}
 
@@ -209,22 +215,19 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	//next check if we can send packets, during handshake we can only send 1 packet
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
 		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
-
 		if splitData != nil {
 			slog.Debug(" Flush/Send", gId(), s.debug(), c.debug())
 			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
 			slog.Debug(" Flush/Ack", gId(), s.debug(), c.debug())
 			return c.writeAck(s, ack, nowNano)
-		} else {
-			slog.Debug(" Flush/no", gId(), s.debug(), c.debug())
 		}
 	}
 
 	if ack != nil {
+		slog.Debug(" Flush/Ack2", gId(), s.debug(), c.debug())
 		return c.writeAck(s, ack, nowNano)
 	}
-	slog.Debug(" Flush/nada", gId(), s.debug(), c.debug())
 	return 0, MinDeadLine, nil
 }
 
@@ -248,12 +251,9 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 
 	packetLen := len(splitData)
 	if trackInFlight {
-		c.dataInFlight += packetLen
-		pacingNano = c.calcPacing(uint64(len(encData)))
-	} else {
-		pacingNano = c.calcPacing(uint64(packetLen))
+		c.dataInFlight += packetLen	
 	}
-
+	pacingNano = c.calcPacing(uint64(len(encData)))
 	c.nextWriteTime = nowNano + pacingNano
 	return packetLen, pacingNano, nil
 }

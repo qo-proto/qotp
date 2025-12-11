@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
+
 	"net/netip"
 	"strings"
 )
@@ -13,10 +13,6 @@ import (
 func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgType) (encData []byte, err error) {
 	// Create payload early for cases that need it
 	var packetData []byte
-
-	slog.Debug("  Encode", gId(), conn.debug(),
-		slog.Int("l(userData)", len(userData)),
-		slog.String("b…", string(userData[:min(16, len(userData))])))
 
 	// Handle message encoding based on connection state
 	switch msgType {
@@ -27,8 +23,6 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 			conn.listener.mtu,
 		)
 		conn.isInitSentOnSnd = true
-		slog.Debug("   Encode/InitSnd", gId(), conn.debug(),
-			slog.Int("l(encData)", len(encData)))
 	case InitCryptoSnd:
 		packetData, _ = EncodePayload(p, userData)
 		_, encData, err = encryptInitCryptoSnd(
@@ -43,9 +37,6 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 			return nil, err
 		}
 		conn.isInitSentOnSnd = true
-		slog.Debug("   Encode/InitCryptoSnd", gId(), conn.debug(),
-			slog.Int("l(packetData)", len(packetData)),
-			slog.Int("l(encData)", len(encData)))
 	case InitCryptoRcv:
 		packetData, _ = EncodePayload(p, userData)
 		encData, err = encryptInitCryptoRcv(
@@ -59,9 +50,6 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 			return nil, err
 		}
 		conn.isInitSentOnSnd = true
-		slog.Debug("   Encode/InitCryptoRcv", gId(), conn.debug(),
-			slog.Int("l(packetData)", len(packetData)),
-			slog.Int("l(encData)", len(encData)))
 	case InitRcv:
 		packetData, _ = EncodePayload(p, userData)
 		encData, err = encryptInitRcv(
@@ -76,9 +64,6 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 			return nil, err
 		}
 		conn.isInitSentOnSnd = true
-		slog.Debug("   Encode/InitRcv", gId(), conn.debug(),
-			slog.Int("l(packetData)", len(packetData)),
-			slog.Int("l(encData)", len(encData)))
 	case Data:
 		packetData, _ = EncodePayload(p, userData)
 		encData, err = encryptData(
@@ -92,9 +77,6 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 		if err != nil {
 			return nil, err
 		}
-		slog.Debug("   Encode/Data", gId(), conn.debug(),
-			slog.Int("len(payRaw)", len(packetData)),
-			slog.Int("len(dataEnc)", len(encData)))
 	default:
 		return nil, errors.New("unknown message type")
 	}
@@ -124,15 +106,13 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 	}
 
 	header := encData[0]
-    version := header & 0x1F           // Extract bits 0-4 (mask 0001 1111)
-    if version != CryptoVersion {
+	version := header & 0x1F // Extract bits 0-4 (mask 0001 1111)
+	if version != CryptoVersion {
 		return nil, nil, 0, errors.New("unsupported version version")
 	}
-    msgType = CryptoMsgType(header >> 5)
+	msgType = CryptoMsgType(header >> 5)
 
 	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
-
-	slog.Debug("  Decode", gId(), l.debug(), slog.Int("l(data)", len(encData)), slog.Any("msgType", msgType))
 
 	switch msgType {
 	case InitSnd:
@@ -164,7 +144,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 			return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
 		}
 		conn.sharedSecret = sharedSecret
-		slog.Debug(" Decode/InitSnd", gId(), l.debug())
 		return conn, []byte{}, InitSnd, nil
 	case InitRcv:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
@@ -185,7 +164,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
 
-		slog.Debug(" Decode/InitRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitRcv, nil
 	case InitCryptoSnd:
 		// Decode crypto S0 message
@@ -216,7 +194,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
 
 		conn.sharedSecret = sharedSecret
-		slog.Debug(" Decode/InitCryptoSnd", gId(), l.debug())
 		return conn, message.PayloadRaw, InitCryptoSnd, nil
 	case InitCryptoRcv:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
@@ -234,13 +211,11 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
 
-		slog.Debug(" Decode/InitCryptoRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitCryptoRcv, nil
 	case Data:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
 		conn := l.connMap.Get(connId)
 		if conn == nil {
-			slog.Debug("No connection", slog.Uint64("connId", connId), slog.Int("available", l.connMap.Size()))
 			return nil, nil, 0, errors.New("connection not found for DataMessage")
 		}
 
@@ -255,7 +230,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 			conn.epochCryptoRcv = message.currentEpochCrypt
 		}
 
-		slog.Debug(" Decode/Data", gId(), l.debug(), slog.Int("l(buffer)", len(encData)))
 		return conn, message.PayloadRaw, Data, nil
 	default:
 		return nil, nil, 0, fmt.Errorf("unknown message type: %v", msgType)
@@ -349,7 +323,6 @@ func offsetVarint(buf []byte, isExtend bool) uint64 {
 	}
 	return Uint24(buf)
 }
-
 
 func offsetSize(isExtend bool) int {
 	if isExtend {
