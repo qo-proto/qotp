@@ -393,27 +393,6 @@ func (l *Listener) newConn(
 		Measurements:       NewMeasurements(),
 		rcvWndSize:         rcvBufferCapacity, //initially our capacity, correct value will be sent to us when we need it
 	}
-
-	// Derive and log the shared secret for decryption in Wireshark
-	if l.keyLogWriter != nil {
-		if conn.pubKeyEpRcv != nil {
-			sharedSecret, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv)
-			if err != nil {
-				return nil, err
-			}
-
-			var sharedSecretId []byte
-			if conn.pubKeyIdRcv != nil {
-				sharedSecretId, err = conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv)
-				if err != nil {
-					return nil, err
-				}
-			}
-
-			logKey(l.keyLogWriter, conn.connId, sharedSecret, sharedSecretId)
-		}
-	}
-
 	l.connMap.Put(connId, conn)
 	return conn, nil
 }
