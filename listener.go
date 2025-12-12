@@ -266,7 +266,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 		}
 	}
 
-	s, err = conn.decode(p, data, n, nowNano)
+	s, err = conn.decode(p, data, nowNano)
 	if err != nil {
 		return nil, err
 	}
@@ -354,6 +354,8 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 	for conn, stream := range closeStream {
 		conn.cleanupStream(stream)
 	}
+
+	//if we do not set to nil, the loop will not start with the first stream, but the second
 	l.currentConnID = nil
 	l.currentStreamID = nil
 	return minPacing
@@ -459,13 +461,22 @@ func (l *Listener) DialString(remoteAddrString string) (*Conn, error) {
 	return l.Dial(remoteAddr)
 }
 
-func (l *Listener) DialWithCryptoString(remoteAddrString string, pubKeyIdRcvHex string) (*Conn, error) {
+func (l *Listener) DialStringWithCryptoString(remoteAddrString string, pubKeyIdRcvHex string) (*Conn, error) {
 	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
 	if err != nil {
 		return nil, err
 	}
 
 	pubKeyIdRcv, err := decodeHexPubKey(pubKeyIdRcvHex)
+	if err != nil {
+		return nil, err
+	}
+
+	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
+}
+
+func (l *Listener) DialStringWithCrypto(remoteAddrString string, pubKeyIdRcv *ecdh.PublicKey) (*Conn, error) {
+	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
 	if err != nil {
 		return nil, err
 	}

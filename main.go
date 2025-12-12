@@ -47,7 +47,8 @@ func setupLogger(level slog.Level) {
 		MsgColor:      color.New(color.FgHiWhite),
 		MsgLength:     24,
 	}))
-	color.NoColor = false
+	colorEnv := strings.ToLower(os.Getenv("NO_COLOR"))
+	color.NoColor = colorEnv != ""
 	slog.SetDefault(logger)
 }
 

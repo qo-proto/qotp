@@ -70,14 +70,10 @@ func NewMeasurements() Measurements {
 	}
 }
 
-func (c *Conn) updateMeasurements(rttMeasurementNano uint64, bytesAcked uint64, nowNano uint64) {
+func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano uint64) {
 	// Validation
 	if rttMeasurementNano == 0 {
 		slog.Warn("cannot update measurements, rtt is 0")
-		return
-	}
-	if bytesAcked == 0 {
-		slog.Error("cannot ack 0 bytes")
 		return
 	}
 	if rttMeasurementNano > ReadDeadLine {
@@ -118,7 +114,7 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, bytesAcked uint64, 
 	// Update BBR bandwidth estimation
 	bwCurrent := uint64(0)
 	if c.rttMinNano > 0 {
-		bwCurrent = (bytesAcked * 1_000_000_000) / c.rttMinNano
+		bwCurrent = (uint64(rawLen) * 1_000_000_000) / c.rttMinNano
 	}
 
 	if bwCurrent > c.bwMax {
@@ -172,6 +168,13 @@ func (c *Conn) rtoNano() uint64 {
 }
 
 func (c *Conn) onDuplicateAck() {
+	slog.Info("DuplicateAck",
+		slog.Uint64("bwMax", c.bwMax),
+		slog.Uint64("newBwMax", c.bwMax*lossBwReduction/100),
+		slog.Uint64("gain", c.pacingGainPct),
+		slog.Bool("startup", c.isStartup),
+	)
+	
 	c.bwMax = c.bwMax * dupAckBwReduction / 100
 	c.pacingGainPct = dupAckGain
 
@@ -181,7 +184,7 @@ func (c *Conn) onDuplicateAck() {
 }
 
 func (c *Conn) onPacketLoss() {
-	slog.Debug("PacketLoss",
+	slog.Info("PacketLoss",
 		slog.Uint64("bwMax", c.bwMax),
 		slog.Uint64("newBwMax", c.bwMax*lossBwReduction/100),
 		slog.Uint64("gain", c.pacingGainPct),

@@ -178,7 +178,7 @@ func TestCodecDataSizeZero(t *testing.T) {
 
 	if msgType == InitCryptoRcv {
 		p, u, err := DecodePayload(payload)
-		s, err := connBob.decode(p, u, 0, 0)
+		s, err := connBob.decode(p, u, 0)
 		assert.NoError(t, err)
 		assert.NotNil(t, s)
 	}
@@ -206,7 +206,7 @@ func TestCodecDataSizeOne(t *testing.T) {
 	assert.NoError(t, err)
 
 	p, u, err := DecodePayload(payload)
-	s, err := connBob.decode(p, u, 0, 0)
+	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -234,7 +234,7 @@ func TestCodecDataSizeHundred(t *testing.T) {
 	assert.NoError(t, err)
 
 	p, u, err := DecodePayload(payload)
-	s, err := connBob.decode(p, u, 0, 0)
+	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -262,7 +262,7 @@ func TestCodecDataSizeThousand(t *testing.T) {
 	assert.NoError(t, err)
 
 	p, u, err := DecodePayload(payload)
-	s, err := connBob.decode(p, u, 0, 0)
+	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -290,7 +290,7 @@ func TestCodecDataSizeLarge(t *testing.T) {
 	assert.NoError(t, err)
 
 	p, u, err := DecodePayload(payload)
-	s, err := connBob.decode(p, u, 0, 0)
+	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -338,7 +338,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	assert.Equal(t, InitRcv, msgType)
 
 	p, u, err := DecodePayload(payload)
-	s, err := c.decode(p, u, 0, 0)
+	s, err := c.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -370,7 +370,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	assert.Equal(t, Data, msgType)
 
 	p, u, err = DecodePayload(payload)
-	s, err = c.decode(p, u, 0, 0)
+	s, err = c.decode(p, u, 0)
 	assert.NoError(t, err)
 	_, rb, _ = s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, dataMsg, rb)

@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -134,11 +135,15 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
+		slog.Debug("ReadyToSend/NoStreams")
 		return nil, 0, false
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
+		slog.Debug("ReadyToSend/NoStream",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false
 	}
 
@@ -152,6 +157,8 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	// Check if all queued data has been sent
 	if len(stream.queuedData) == 0 {
 		if stream.closeAtOffset == nil || stream.bytesSentOffset < *stream.closeAtOffset {
+			slog.Debug("ReadyToSend/NoQueuedData",
+				slog.Uint64("streamID", uint64(streamID)))
 			return nil, 0, false
 		}
 		key := createPacketKey(stream.bytesSentOffset, 0)
@@ -167,6 +174,13 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 
 	// Determine how much to send
 	length := min(uint64(maxData), uint64(len(stream.queuedData)))
+	
+	slog.Debug("ReadyToSend/PreparePacket",
+		slog.Uint64("streamID", uint64(streamID)),
+		slog.Int("queuedData", len(stream.queuedData)),
+		slog.Uint64("willSend", length),
+		slog.Int("maxData", maxData),
+		slog.Any("msgType", msgType))
 
 	// Extract data from queue
 	packetData = stream.queuedData[:length]
@@ -195,17 +209,23 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
+		slog.Debug("ReadyToRetransmit/NoStreams")
 		return nil, 0, false, nil
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
+		slog.Debug("ReadyToRetransmit/NoStream",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false, nil
 	}
 
 	// Check oldest packet first
 	packetKey, rtoData, ok := stream.dataInFlightMap.First()
 	if !ok {
+		slog.Debug("ReadyToRetransmit/NoInflight",
+			slog.Uint64("streamID", uint64(streamID)))
 		return nil, 0, false, nil
 	}
 
@@ -216,6 +236,11 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 
 	actualRtoNano := nowNano - rtoData.sentTimeNano
 	if actualRtoNano <= expectedRtoBackoffNano {
+		slog.Debug("ReadyToRetransmit/NotYet",
+			slog.Uint64("streamID", uint64(streamID)),
+			slog.Uint64("actualRto:ms", actualRtoNano/msNano),
+			slog.Uint64("expectedRto:ms", expectedRtoBackoffNano/msNano),
+			slog.Int("sentNr", rtoData.sentNr))
 		return nil, 0, false, nil
 	}
 
@@ -295,7 +320,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	// Simply remove from map - no trimming needed!
 	sendInfo, ok := stream.dataInFlightMap.Remove(key)
 	if !ok {
-		slog.Debug("ACK: duplicate")
+		slog.Debug("ACK: duplicate, %s", slog.String("len/off",key.string()))
 		return AckDup, 0
 	}
 
@@ -356,6 +381,10 @@ func (p packetKey) offset() uint64 {
 
 func (p packetKey) length() uint16 {
 	return uint16(p & 0xFFFF)
+}
+
+func (p packetKey) string() string {
+	return fmt.Sprintf("[offset:%v/len:%v]", p.offset(), p.length())
 }
 
 func createPacketKey(offset uint64, length uint16) packetKey {
