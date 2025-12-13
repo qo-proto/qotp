@@ -2,8 +2,10 @@ package qotp
 
 import (
 	"crypto/ecdh"
+	"fmt"
 	"log/slog"
 	"net/netip"
+	"runtime"
 	"sync"
 )
 
@@ -97,55 +99,81 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 
 	s = c.Stream(p.StreamID)
 	if p.Ack != nil {
+
+		slog.Info("Received ACK packet",
+			"streamID", p.StreamID,
+			"offset", p.Ack.offset,
+			"len", p.Ack.len,
+			"rcvWnd", p.Ack.rcvWnd)
+
 		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
 		if ackStatus == AckStatusOk {
-			c.dataInFlight -= len(userData)
+
+			slog.Debug("ACK processed",
+				"streamID", p.StreamID,
+				"offset", p.Ack.offset,
+				"len", p.Ack.len,
+				"oldInFlight", c.dataInFlight,
+				"newInFlight", c.dataInFlight-int(p.Ack.len),
+				"rcvWnd", p.Ack.rcvWnd)
+
+			c.dataInFlight -= int(p.Ack.len)
+
+			if c.snd.checkStreamFullyAcked(s.streamID) {
+				if !s.sndClosed {
+					s.sndClosed = true
+				} else {
+					_, file, line, _ := runtime.Caller(1)
+					slog.Warn("stream sndClosed set twice",
+						"streamID", s.streamID,
+						"caller", fmt.Sprintf("%s:%d", file, line))
+				}
+			}
+
 		} else if ackStatus == AckDup {
 			c.onDuplicateAck()
-		} else {
-			slog.Debug("No stream")
 		}
 		c.rcvWndSize = p.Ack.rcvWnd
 
-		if c.checkStreamFullyAcked(s.streamID) {
-			s.closedAtNano = nowNano
-		}
-
 		if nowNano > sentTimeNano && ackStatus == AckStatusOk {
 			rttNano := nowNano - sentTimeNano
-			c.updateMeasurements(rttNano, int(p.Ack.len) + 42, nowNano) //TODO: 42 is approx.
+			c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) //TODO: 42 is approx.
 		}
 	}
 
 	if len(userData) > 0 {
 		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
 	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
+		slog.Info("EmptyInsert called", gId(),
+			"streamID", p.StreamID,
+			"offset", p.StreamOffset,
+			"isClose", p.IsClose,
+			"userDataNil", userData == nil,
+			"userDataLen", len(userData))
+
 		c.rcv.EmptyInsert(s.streamID, p.StreamOffset, nowNano)
+	} else {
+		slog.Info("ACK, do nothing",
+			"streamID", p.StreamID,
+			"offset", p.StreamOffset,
+			"isClose", p.IsClose,)
 	}
 
 	if p.IsClose {
-		c.rcv.Close(s.streamID, p.StreamOffset) //mark the stream closed at the just received offset
+		c.rcv.Close(s.streamID, p.StreamOffset + uint64(len(userData))) //mark the stream closed at the just received offset
 		c.snd.Close(s.streamID)                 //also close the send buffer at the current location
 	}
 
 	return s, nil
 }
 
-func (c *Conn) checkStreamFullyAcked(streamID uint32) bool {
-	closeOffset := c.snd.GetOffsetClosedAt(streamID)
-	if closeOffset == nil {
-		return false
-	}
-	ackedOffset := c.snd.GetOffsetAcked(streamID)
-	return ackedOffset >= *closeOffset
-}
-
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
 func (c *Conn) cleanupStream(streamID uint32) {
-	slog.Debug("Cleanup/Stream", gId(), c.debug(), slog.Uint64("streamID", uint64(streamID)))
+	slog.Debug("Cleanup/Stream", gId(), c.debug(), slog.Uint64("streamId", uint64(streamID)))
 
 	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
-		*c.listener.currentStreamID, _, _ = c.streams.Next(streamID)
+		tmp, _, _ := c.streams.Next(streamID)
+		c.listener.currentStreamID = &tmp
 	}
 	c.streams.Remove(streamID)
 	//even if the stream size is 0, do not remove the connection yet, only after a certain timeout,
@@ -153,8 +181,7 @@ func (c *Conn) cleanupStream(streamID uint32) {
 }
 
 func (c *Conn) cleanupConn() {
-	slog.Debug("Cleanup/Stream", gId(), c.debug(),
-		slog.Uint64("connID", c.connId), slog.Any("currId", c.listener.currentConnID))
+	slog.Debug("Cleanup/Conn", gId(), c.debug())
 
 	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
 		tmp, _, _ := c.listener.connMap.Next(c.connId)
@@ -171,6 +198,14 @@ func (c *Conn) HasActiveStreams() bool {
 
 func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
 
+	// Respect pacing
+	if c.nextWriteTime > nowNano {
+		slog.Debug(" Flush/Pacing", gId(), s.debug(), c.debug(),
+			slog.Uint64("waitTime:ms", (c.nextWriteTime-nowNano)/msNano))
+		//do not sent acks, as this is also data on the line
+		return 0, c.nextWriteTime - nowNano, nil
+	}
+	
 	//update state for receiver
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
@@ -179,22 +214,12 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		//slog.Debug(" Flush/NoAck", gId(), s.debug(), c.debug())
 	}
 
-	// Respect pacing
-	if c.nextWriteTime > nowNano {
-		slog.Debug(" Flush/Pacing", gId(), s.debug(), c.debug(),
-			slog.Uint64("waitTime:ms", (c.nextWriteTime-nowNano)/msNano),
-			slog.Bool("ack?", ack != nil))
-		//do not sent acks, as this is also data on the line
-		return 0, c.nextWriteTime - nowNano, nil
-	}
-
 	//Respect rwnd
 	if c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize) {
-		slog.Debug(" Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(),
-			slog.Bool("ack?", ack != nil))
+		slog.Debug("Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(), slog.Bool("ack?", ack != nil))
 		if ack != nil {
 			// Send ACK even if receiver indicated no more data, an ack does not add data
-			return c.writeAck(s, ack, nowNano)
+			return c.writeAck(s, ack, false, nowNano)
 		}
 		return 0, MinDeadLine, nil
 	}
@@ -208,7 +233,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	if splitData != nil {
 		c.onPacketLoss()
-		slog.Debug(" Flush/Retransmit", gId(), s.debug(), c.debug())
+		slog.Debug("Flush/Retransmit", gId(), s.debug(), c.debug())
 		return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, false)
 	}
 
@@ -216,17 +241,17 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
 		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
 		if splitData != nil {
-			slog.Debug(" Flush/Send", gId(), s.debug(), c.debug())
+			slog.Debug("Flush/Send", gId(), s.debug(), c.debug(), slog.Any("offset", offset), slog.Any("l(data)", len(splitData)))
 			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
-			slog.Debug(" Flush/Ack", gId(), s.debug(), c.debug())
-			return c.writeAck(s, ack, nowNano)
+			slog.Debug("Flush/Ack1", gId(), s.debug(), c.debug())
+			return c.writeAck(s, ack, isClose, nowNano)
 		}
 	}
 
 	if ack != nil {
 		slog.Debug(" Flush/Ack2", gId(), s.debug(), c.debug())
-		return c.writeAck(s, ack, nowNano)
+		return c.writeAck(s, ack, false, nowNano)
 	}
 	return 0, MinDeadLine, nil
 }
@@ -251,15 +276,20 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 
 	packetLen := len(splitData)
 	if trackInFlight {
-		c.dataInFlight += packetLen	
+		c.dataInFlight += packetLen
 	}
 	pacingNano = c.calcPacing(uint64(len(encData)))
 	c.nextWriteTime = nowNano + pacingNano
 	return packetLen, pacingNano, nil
 }
 
-func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNano uint64, err error) {
-	isClose := c.checkStreamFullyAcked(s.streamID)
+func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data int, pacingNano uint64, err error) {
+	slog.Info("Sending ACK",
+		"streamID", s.streamID,
+		"rcvWnd", ack.rcvWnd,
+		"offset", ack.offset,
+		"len", ack.len,
+		"close", isClose)
 
 	p := &PayloadHeader{
 		IsClose:  isClose,
@@ -283,6 +313,8 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, nowNano uint64) (data int, pacingNa
 
 func (c *Conn) debug() slog.Attr {
 	return slog.Group("connection",
+		slog.Uint64("connID", c.connId),
+		slog.Any("currId", c.listener.currentConnID),
 		slog.Uint64("nextWrt:ms", c.nextWriteTime/msNano),
 		//slog.Uint64("nextWrt:ns", c.nextWriteTime),
 		slog.Int("inFlight", c.dataInFlight),

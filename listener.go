@@ -222,6 +222,17 @@ func (l *Listener) Close() error {
 	}
 	return l.localConn.Close()
 }
+func (l *Listener) HasActiveStreams() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, conn := range l.connMap.items {
+		if conn.value.HasActiveStreams() {
+			return true
+		}
+	}
+	return false
+}
 
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err error) {
 	data := make([]byte, l.mtu)
@@ -234,16 +245,14 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 		if ok && netErr.Timeout() {
 			return nil, nil // Timeout is normal, return no dataToSend/error
 		} else {
-			slog.Error("   Listen/Error", slog.Any("error", err))
+			slog.Error("Listen/Error", slog.Any("error", err))
 			return nil, err
 		}
 	}
 	if n == 0 {
-		slog.Debug("   Listen/NoData")
+		slog.Debug("Listen/NoData")
 		return nil, nil
 	}
-
-	slog.Debug("   Listen/Data", gId(), l.debug(), slog.Any("len(data)", n), slog.Uint64("now:ms", nowNano/msNano))
 
 	conn, payload, msgType, err := l.decode(data[:n], remoteAddr)
 	if err != nil {
@@ -270,6 +279,8 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 	if err != nil {
 		return nil, err
 	}
+
+	slog.Debug("Listen/Data", gId(), l.debug(), s.debug(), p.debug(), slog.Any("l(data)", len(data)), slog.Uint64("now:ms", nowNano/msNano))
 
 	//Set state
 	if !conn.isHandshakeDoneOnRcv {
@@ -311,19 +322,9 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 			break
 		}
 
-		if stream.closedAtNano != 0 {
-			if conn.isSenderOnInit {
-				// stream closed on sender, mark for cleaning up, do not clean up yet, otherwise the iterator will become
-				// much more complex
-				closeStream[conn] = stream.streamID
-				continue
-			} else {
-				// stream closed on receiver, wait for 30sec timeout before cleanup
-				if stream.closedAtNano+ReadDeadLine > nowNano {
-					closeStream[conn] = stream.streamID
-					continue
-				}
-			}
+		if stream.rcvClosed && stream.sndClosed {
+			closeStream[conn] = stream.streamID
+			continue
 		}
 
 		if dataSent > 0 {
@@ -354,7 +355,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 	for conn, stream := range closeStream {
 		conn.cleanupStream(stream)
 	}
-	
+
 	//if we do not set to nil, the loop will not start with the first stream, but the second
 	l.currentConnID = nil
 	l.currentStreamID = nil

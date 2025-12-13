@@ -403,23 +403,57 @@ Open → Active → Close_Requested → Closed (30s timeout)
 - `CloseRequested`: Close initiated, waiting for offset acknowledgment
 - `Closed`: All data up to close offset delivered, 30-second grace period
 
-#### Close Protocol
+#### Bidirectional Close Protocol
 
-**Sender-Initiated**:
-1. Sender calls `Close()` on stream
-2. Marks `closeAtOffset` in send buffer (current queued data end)
-3. Marks `closeAtOffset` in receive buffer (current receive offset)
-4. Continues sending data up to `closeAtOffset`
-5. Closes stream immediately when all data up to `closeAtOffset` is ACKed
-6. No grace period on sender side
+QOTP implements a clean bidirectional close mechanism similar to TCP FIN, ensuring both sides gracefully terminate:
 
-**Receiver-Initiated**:
-1. Receiver calls `Close()` on stream
-2. Marks `closeAtOffset` in receive buffer (current receive offset)
-3. Marks `closeAtOffset` in send buffer (current queued data end)
-4. Sender receives CLOSE message and marks its send buffer `closeAtOffset`
-5. Receiver enters 30-second grace period starting when stream marked closed
-6. After grace period expires, stream is cleaned up
+**Initiator Side (calls Close() first)**:
+1. Marks `closeAtOffset` in send buffer at current write position
+2. Continues sending queued data up to `closeAtOffset`
+3. When `closeAtOffset` reached, sends CLOSE packet (may be empty if no data queued)
+4. Marks `rcvCloseAtOffset` in receive buffer at current read position
+5. Waits for CLOSE response from peer
+6. Upon receiving peer's CLOSE: marks `rcvCloseAtOffset` in receive buffer
+7. When read reaches `rcvCloseAtOffset`: receive direction closed
+8. When both `rcvClosed` and `sndClosed`: stream fully closed
+
+**Responder Side (receives CLOSE first)**:
+1. Receives CLOSE packet at offset X
+2. Marks `rcvCloseAtOffset = X` in receive buffer
+3. Marks `sndCloseAtOffset` in send buffer at current write position
+4. When send buffer reaches `sndCloseAtOffset` AND all ACKs received (including for peer's CLOSE): send direction ready to close
+5. Sends CLOSE response packet
+6. When read reaches offset X: receive direction closed
+7. When both `rcvClosed` and `sndClosed`: stream fully closed
+
+**Key Properties**:
+- Both directions close independently (half-close supported)
+- CLOSE packets must be ACKed like regular data
+- Stream fully closed only when both directions closed
+- Empty CLOSE packets allowed when no data pending
+- No grace period after bidirectional close (immediate cleanup)
+
+**Example Flow**:
+```
+A writes 100 bytes → calls Close()
+A.sndCloseOffset = 100
+A sends DATA[0-100] + CLOSE
+
+B receives CLOSE at offset 100
+B.rcvCloseOffset = 100
+B.sndCloseOffset = 50 (current position)
+B sends DATA[0-50] + CLOSE
+
+A receives CLOSE at offset 50
+A.rcvCloseOffset = 50
+When A reads to offset 50: A.rcvClosed = true
+When A gets ACK for offset 100: A.sndClosed = true
+→ A fully closed
+
+When B reads to offset 100: B.rcvClosed = true  
+When B gets ACK for offset 50: B.sndClosed = true
+→ B fully closed
+```
 
 **Grace Period**: 30 seconds (ReadDeadLine) only on receiver side to handle late packets and retransmissions.
 

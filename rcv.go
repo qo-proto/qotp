@@ -2,6 +2,7 @@ package qotp
 
 import (
 	"bytes"
+	"log/slog"
 	"sync"
 )
 
@@ -65,6 +66,18 @@ func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64, nowNano uin
 	return RcvInsertOk
 }
 
+func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	stream := rb.streams[streamID]
+	if stream == nil || stream.closeAtOffset == nil {
+		return false
+	}
+
+	return stream.nextInOrderOffsetToWaitFor >= *stream.closeAtOffset
+}
+
 func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) RcvInsertStatus {
 	dataLen := len(userData)
 
@@ -73,6 +86,34 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 
 	// Get or create stream buffer
 	stream := rb.getOrCreateStream(streamID)
+
+	slog.Debug("rcv.Insert",
+		slog.Uint64("streamID", uint64(streamID)),
+		slog.Uint64("offset", offset),
+		slog.Int("len", len(userData)),
+		slog.Any("stream.closeAtOffset", stream.closeAtOffset),
+		slog.Any("bytesReceived", stream.nextInOrderOffsetToWaitFor))
+
+	if stream.closeAtOffset != nil {
+		if offset+uint64(dataLen) == *stream.closeAtOffset {
+			// Data after close offset - protocol violation
+			// Still ACK it (already added to ackList above) but drop the data
+			slog.Warn("Rcv data after close offset",
+				slog.Uint64("streamID", uint64(streamID)),
+				slog.Uint64("offset", offset),
+				slog.Uint64("closeOffset", *stream.closeAtOffset))
+			rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
+			return RcvInsertDuplicate // Drop it
+		}
+
+		if offset+uint64(dataLen) > *stream.closeAtOffset {
+			slog.Warn("Rcv data exceeds close offset",
+				slog.Uint64("streamID", uint64(streamID)),
+				slog.Uint64("offset", offset),
+				slog.Uint64("len", uint64(dataLen)),
+				slog.Uint64("closeOffset", *stream.closeAtOffset))
+		}
+	}
 
 	if rb.size+dataLen > rb.capacity {
 		return RcvInsertBufferFull
@@ -179,9 +220,16 @@ func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	stream := rb.getOrCreateStream(streamID)
-	if stream.closeAtOffset == nil {
-		stream.closeAtOffset = &closeOffset
+	rcv := rb.getOrCreateStream(streamID)
+	if rcv.closeAtOffset == nil {
+		slog.Info("rcv close offset at", gId(),
+			slog.Uint64("streamId", uint64(streamID)),
+			slog.Uint64("new", closeOffset))
+		rcv.closeAtOffset = &closeOffset
+	} else if *rcv.closeAtOffset != closeOffset {
+		slog.Warn("rcv close offset mismatch", gId(),
+			slog.Uint64("existing", *rcv.closeAtOffset),
+			slog.Uint64("new", closeOffset))
 	}
 }
 
@@ -197,23 +245,23 @@ func (rb *ReceiveBuffer) GetOffsetClosedAt(streamID uint32) (offset *uint64) {
 	return stream.closeAtOffset
 }
 
-func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (offset uint64, data []byte, receiveTimeNano uint64) {
+func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
 	if len(rb.streams) == 0 {
-		return 0, nil, 0
+		return nil
 	}
 
 	stream := rb.streams[streamID]
 	if stream == nil {
-		return 0, nil, 0
+		return nil
 	}
 
 	// Check if there is any dataToSend at all
 	oldestOffset, oldestValue, ok := stream.segments.Min()
 	if !ok {
-		return 0, nil, 0
+		return nil
 	}
 
 	if oldestOffset == stream.nextInOrderOffsetToWaitFor {
@@ -228,14 +276,14 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (offset uint64, da
 		}
 
 		stream.nextInOrderOffsetToWaitFor = nextOffset + uint64(len(oldestValue.data))
-		return oldestOffset, oldestValue.data, oldestValue.receiveTimeNano
+		return oldestValue.data
 	} else if oldestOffset > stream.nextInOrderOffsetToWaitFor {
 		// Out of order; wait until segment offset available, signal that
-		return 0, nil, 0
+		return nil
 	} else {
 		//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
 		//it's correctly implemented, this should not happen.
-		return 0, nil, 0
+		return nil
 	}
 }
 

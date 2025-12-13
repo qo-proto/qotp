@@ -208,7 +208,7 @@ func TestCodecDataSizeOne(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -236,7 +236,7 @@ func TestCodecDataSizeHundred(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -264,7 +264,7 @@ func TestCodecDataSizeThousand(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -292,7 +292,7 @@ func TestCodecDataSizeLarge(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := connBob.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 }
 
@@ -340,7 +340,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	p, u, err := DecodePayload(payload)
 	s, err := c.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
 
 	// Step 5: Setup for Data message flow after handshake
@@ -372,7 +372,7 @@ func TestCodecFullHandshake(t *testing.T) {
 	p, u, err = DecodePayload(payload)
 	s, err = c.decode(p, u, 0)
 	assert.NoError(t, err)
-	_, rb, _ = s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	rb = s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, dataMsg, rb)
 }
 

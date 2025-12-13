@@ -27,6 +27,10 @@ type Ack struct {
 	rcvWnd   uint64
 }
 
+func (p *PayloadHeader) debug() slog.Attr {
+	return slog.Group("pkg", slog.Bool("ack", p.Ack != nil), slog.Bool("close", p.IsClose))
+}
+
 /*
 encoded | capacity
 --------|----------
