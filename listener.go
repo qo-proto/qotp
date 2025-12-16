@@ -396,20 +396,6 @@ func (l *Listener) newConn(
 		Measurements:       NewMeasurements(),
 		rcvWndSize:         rcvBufferCapacity, //initially our capacity, correct value will be sent to us when we need it
 	}
-
-	// Derive and log the shared secret for decryption in Wireshark
-	if l.keyLogWriter != nil {
-		sharedSecret, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv)
-		if err != nil {
-			return nil, err
-		}
-		sharedSecretId, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv)
-		if err != nil {
-			return nil, err
-		}
-		logKey(l.keyLogWriter, conn.connId, sharedSecret, sharedSecretId)
-	}
-
 	l.connMap.Put(connId, conn)
 	return conn, nil
 }
@@ -451,15 +437,19 @@ func (l *Listener) ForceClose(c *Conn) {
 // logKey writes the session key to the key log in a format Wireshark can understand.
 // The format is `QOTP_SHARED_SECRET <connId_hex> <secret_hex>`.
 func logKey(w io.Writer, connId uint64, secret []byte, secretId []byte) {
-	line := fmt.Sprintf("QOTP_SHARED_SECRET %x %x\n", connId, secret)
-	_, err := w.Write([]byte(line))
-	if err != nil {
-		slog.Error("Failed to write to key log", "error", err)
+	if len(secret) > 0 {
+		line := fmt.Sprintf("QOTP_SHARED_SECRET %x %x\n", connId, secret)
+		_, err := w.Write([]byte(line))
+		if err != nil {
+			slog.Error("Failed to write to key log", "error", err)
+		}
 	}
-	line = fmt.Sprintf("QOTP_SHARED_SECRET_ID %x %x\n", connId, secretId)
-	_, err = w.Write([]byte(line))
-	if err != nil {
-		slog.Error("Failed to write to key log", "error", err)
+	if len(secretId) > 0 {
+		line := fmt.Sprintf("QOTP_SHARED_SECRET_ID %x %x\n", connId, secretId)
+		_, err := w.Write([]byte(line))
+		if err != nil {
+			slog.Error("Failed to write to key log", "error", err)
+		}
 	}
 }
 
