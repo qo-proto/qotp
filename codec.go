@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"net/netip"
 	"strings"
@@ -165,12 +164,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
 
-		// Log keys for 0-RTT connections (where pubKeyEpRcv wasn't available at newConn time)
-		if err := l.logKeysIfEnabled(conn, sharedSecret); err != nil {
-			return nil, nil, 0, err
-		}
-
-		slog.Debug(" Decode/InitRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitRcv, nil
 	case InitCryptoSnd:
 		// Decode crypto S0 message
@@ -218,12 +211,6 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		conn.pubKeyEpRcv = pubKeyEpRcv
 		conn.sharedSecret = sharedSecret
 
-		// Log keys for 0-RTT connections (client side receives InitCryptoRcv)
-		if err := l.logKeysIfEnabled(conn, sharedSecret); err != nil {
-			return nil, nil, 0, err
-		}
-
-		slog.Debug(" Decode/InitCryptoRcv", gId(), l.debug())
 		return conn, message.PayloadRaw, InitCryptoRcv, nil
 	case Data:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
@@ -342,22 +329,4 @@ func offsetSize(isExtend bool) int {
 		return 6
 	}
 	return 3
-}
-
-// logKeysIfEnabled logs both shared secrets if keyLogWriter is enabled
-func (l *Listener) logKeysIfEnabled(conn *Conn, sharedSecret []byte) error {
-	if l.keyLogWriter == nil {
-		return nil
-	}
-
-	var sharedSecretId []byte
-	var err error
-	if conn.pubKeyIdRcv != nil {
-		sharedSecretId, err = conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv)
-		if err != nil {
-			return fmt.Errorf("failed to derive sharedSecretId: %w", err)
-		}
-	}
-	logKey(l.keyLogWriter, conn.connId, sharedSecret, sharedSecretId)
-	return nil
 }
