@@ -52,7 +52,7 @@ func (s *Stream) IsOpen() bool {
 	return !s.IsCloseRequested() && !s.IsClosed()
 }
 
-func (s *Stream) Read() (userData []byte, err error) {
+func (s *Stream) Read() (data []byte, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -61,7 +61,7 @@ func (s *Stream) Read() (userData []byte, err error) {
 		return nil, io.EOF
 	}
 
-	data := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	data = s.conn.rcv.RemoveOldestInOrder(s.streamID)
 
 	// check if our receive buffer is marked as closed
 	if !s.rcvClosed && s.conn.rcv.IsReadyToClose(s.streamID) {
@@ -71,7 +71,7 @@ func (s *Stream) Read() (userData []byte, err error) {
 
 	}
 
-	slog.Debug("Read", gId(), s.debug(), slog.Any("b…", userData[:min(16, len(userData))]))
+	slog.Debug("Read", gId(), s.debug(), slog.Any("b…", data[:min(16, len(data))]))
 	return data, nil
 }
 

@@ -164,12 +164,12 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 			slog.Debug("ReadyToSend/NoQueuedData", slog.Uint64("streamID", uint64(streamID)))
 			return nil, 0, false
 		}
-		
-		if stream.closeSent { 
+
+		if stream.closeSent {
 			slog.Debug("ReadyToSend/Already sent", slog.Uint64("streamID", uint64(streamID)))
-        	return nil, 0, false
-    	}
-		
+			return nil, 0, false
+		}
+
 		closeKey := createPacketKey(stream.bytesSentOffset, 0)
 
 		if stream.dataInFlightMap.Contains(closeKey) {
@@ -179,7 +179,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 
 		slog.Debug("ReadyToSend/closeKey",
 			slog.Uint64("streamID", uint64(streamID)))
-		stream.closeSent = true 
+		stream.closeSent = true
 		stream.dataInFlightMap.Put(closeKey, newSendInfo([]byte{}, nowNano, false, true))
 		return []byte{}, closeKey.offset(), true
 	}
@@ -371,17 +371,17 @@ func (sb *SendBuffer) checkStreamFullyAcked(streamID uint32) bool {
 		// No inflight data means everything sent has been acked
 		ackedOffset = stream.bytesSentOffset
 	}
-	
+
 	result := ackedOffset >= *closeOffset
-	
+
 	slog.Debug("checkStreamFullyAcked",
-			slog.Uint64("streamID", uint64(streamID)),
-			slog.Bool("hasInflight", ok),
-			slog.Uint64("ackedOffset", ackedOffset),
-			slog.Uint64("closeOffset", *closeOffset),
-			slog.Uint64("bytesSentOffset", stream.bytesSentOffset),
-			slog.Bool("result", result))
-	
+		slog.Uint64("streamID", uint64(streamID)),
+		slog.Bool("hasInflight", ok),
+		slog.Uint64("ackedOffset", ackedOffset),
+		slog.Uint64("closeOffset", *closeOffset),
+		slog.Uint64("bytesSentOffset", stream.bytesSentOffset),
+		slog.Bool("result", result))
+
 	return result
 }
 

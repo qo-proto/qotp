@@ -309,6 +309,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 	closeConn := []*Conn{}
 	closeStream := map[*Conn]uint32{}
+	isDataSent := false
 
 	iter := NestedIterator(l.connMap, func(conn *Conn) *LinkedMap[uint32, *Stream] {
 		return conn.streams
@@ -332,6 +333,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 			minPacing = 0
 			l.currentConnID = &conn.connId
 			l.currentStreamID = &stream.streamID
+			isDataSent = true
 			break
 		}
 
@@ -356,9 +358,11 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		conn.cleanupStream(stream)
 	}
 
-	//if we do not set to nil, the loop will not start with the first stream, but the second
-	l.currentConnID = nil
-	l.currentStreamID = nil
+	// Only reset if we completed full iteration without sending
+	if !isDataSent {
+		l.currentConnID = nil
+		l.currentStreamID = nil
+	}
 	return minPacing
 }
 

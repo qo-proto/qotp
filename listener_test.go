@@ -423,9 +423,11 @@ func TestListenerStreamMultipleStreams(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
-			assert.NoError(t, err)
+			
 		}
+		
+		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		assert.NoError(t, err)
 
 		// Check if all streams completed
 		allComplete := true
@@ -493,7 +495,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	connAlice, err := listenerAlice.DialStringWithCrypto(listenerBob.localConn.LocalAddrString(), testPrvKey2.PublicKey())
 	assert.NoError(t, err)
 
-	numStreams := 3
+	numStreams := 10
 	dataSize := 20000
 
 	// Alice's send state

@@ -95,7 +95,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 		slog.Any("bytesReceived", stream.nextInOrderOffsetToWaitFor))
 
 	if stream.closeAtOffset != nil {
-		if offset+uint64(dataLen) == *stream.closeAtOffset {
+		if offset+uint64(dataLen) > *stream.closeAtOffset {
 			// Data after close offset - protocol violation
 			// Still ACK it (already added to ackList above) but drop the data
 			slog.Warn("Rcv data after close offset",
@@ -104,14 +104,6 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 				slog.Uint64("closeOffset", *stream.closeAtOffset))
 			rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 			return RcvInsertDuplicate // Drop it
-		}
-
-		if offset+uint64(dataLen) > *stream.closeAtOffset {
-			slog.Warn("Rcv data exceeds close offset",
-				slog.Uint64("streamID", uint64(streamID)),
-				slog.Uint64("offset", offset),
-				slog.Uint64("len", uint64(dataLen)),
-				slog.Uint64("closeOffset", *stream.closeAtOffset))
 		}
 	}
 

@@ -118,18 +118,6 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 				"rcvWnd", p.Ack.rcvWnd)
 
 			c.dataInFlight -= int(p.Ack.len)
-
-			if c.snd.checkStreamFullyAcked(s.streamID) {
-				if !s.sndClosed {
-					s.sndClosed = true
-				} else {
-					_, file, line, _ := runtime.Caller(1)
-					slog.Warn("stream sndClosed set twice",
-						"streamID", s.streamID,
-						"caller", fmt.Sprintf("%s:%d", file, line))
-				}
-			}
-
 		} else if ackStatus == AckDup {
 			c.onDuplicateAck()
 		}
@@ -156,12 +144,31 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 		slog.Info("ACK, do nothing",
 			"streamID", p.StreamID,
 			"offset", p.StreamOffset,
-			"isClose", p.IsClose,)
+			"isClose", p.IsClose)
 	}
 
 	if p.IsClose {
-		c.rcv.Close(s.streamID, p.StreamOffset + uint64(len(userData))) //mark the stream closed at the just received offset
-		c.snd.Close(s.streamID)                 //also close the send buffer at the current location
+		closeOffset := p.StreamOffset + uint64(len(userData))
+		c.rcv.Close(s.streamID, closeOffset) //mark the stream closed at the just received offset
+		c.snd.Close(s.streamID)                                       //also close the send buffer at the current location
+
+		// Auto-close receive direction if nothing left to read
+		if !s.rcvClosed && closeOffset == 0 {
+			s.rcvClosed = true
+		}
+	}
+
+	if p.Ack != nil || p.IsClose {
+		if c.snd.checkStreamFullyAcked(s.streamID) {
+			if !s.sndClosed {
+				s.sndClosed = true
+			} else {
+				_, file, line, _ := runtime.Caller(1)
+				slog.Warn("stream sndClosed set twice",
+					"streamID", s.streamID,
+					"caller", fmt.Sprintf("%s:%d", file, line))
+			}
+		}
 	}
 
 	return s, nil
@@ -205,6 +212,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		//do not sent acks, as this is also data on the line
 		return 0, c.nextWriteTime - nowNano, nil
 	}
+
 	
 	//update state for receiver
 	ack := c.rcv.GetSndAck()
