@@ -40,7 +40,7 @@ func TestSndAcknowledgeRangeNonExistentStream(t *testing.T) {
 	sb := NewSendBuffer(1000)
 
 	status, sentTime := sb.AcknowledgeRange(&Ack{streamID: 1, offset: 0, len: 4})
-	assert.Equal(t, AckNoStream, status)
+	assert.Equal(t, AckNotFound, status)
 	assert.Equal(t, uint64(0), sentTime)
 }
 
@@ -406,23 +406,23 @@ func TestSndCheckStreamFullyAcked(t *testing.T) {
 	sb := NewSendBuffer(1000)
 
 	// No stream
-	assert.False(t, sb.checkStreamFullyAcked(1))
+	assert.False(t, sb.CheckStreamFullyAcked(1))
 
 	// Stream without close
 	sb.QueueData(1, []byte("test"))
-	assert.False(t, sb.checkStreamFullyAcked(1))
+	assert.False(t, sb.CheckStreamFullyAcked(1))
 
 	// Close but data not sent
 	sb.Close(1)
-	assert.False(t, sb.checkStreamFullyAcked(1))
+	assert.False(t, sb.CheckStreamFullyAcked(1))
 
 	// Data sent but not acked
 	sb.ReadyToSend(1, Data, nil, 43, 100)
-	assert.False(t, sb.checkStreamFullyAcked(1))
+	assert.False(t, sb.CheckStreamFullyAcked(1))
 
 	// Data acked
 	sb.AcknowledgeRange(&Ack{streamID: 1, offset: 0, len: 4})
-	assert.True(t, sb.checkStreamFullyAcked(1))
+	assert.True(t, sb.CheckStreamFullyAcked(1))
 }
 
 func TestSndCloseFlagOnDataPackets(t *testing.T) {

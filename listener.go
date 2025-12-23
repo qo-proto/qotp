@@ -435,7 +435,8 @@ func (l *Listener) Loop(callback func(s *Stream) (bool, error)) {
 		}
 		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
 
-		if !cont {
+		//if waitNextNano is zero, we still have data to flush, do not exit yet
+		if !cont && waitNextNano == 0 { 
 			break
 		}
 	}

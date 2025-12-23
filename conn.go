@@ -131,8 +131,8 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 		}
 	}
 
-	if p.Ack != nil || p.IsClose && c.snd.checkStreamFullyAcked(s.streamID) {
-		if !s.sndClosed {
+	if p.Ack != nil || p.IsClose {
+		if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
 			s.sndClosed = true
 		}
 	}

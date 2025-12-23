@@ -4,6 +4,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -423,9 +424,8 @@ func TestListenerStreamMultipleStreams(t *testing.T) {
 				assert.NoError(t, err)
 			}
 
-			
 		}
-		
+
 		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
 		assert.NoError(t, err)
 
@@ -558,9 +558,11 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 						s.Close()
 					}
 				} else if err != nil {
-					slog.Debug("EXIT LOOP BOB22", slog.Any("err", err))
-					s.Close()
-					return false, nil
+					if err != io.EOF {
+						slog.Debug("EXIT LOOP BOB22", slog.Any("err", err))
+						s.Close()
+						return false, nil
+					}
 				}
 			}
 
@@ -624,7 +626,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 			allClosed := true
 			notClosedStreams := []uint32{}
 			for i := 0; i < numStreams; i++ {
-				stream := connAlice.streams.Get(uint32(i))  
+				stream := connAlice.streams.Get(uint32(i))
 				if stream != nil && !stream.sndClosed {
 					allClosed = false
 					notClosedStreams = append(notClosedStreams, uint32(i))

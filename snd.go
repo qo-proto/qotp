@@ -2,8 +2,6 @@ package qotp
 
 import (
 	"fmt"
-	"log/slog"
-	"runtime"
 	"sync"
 )
 
@@ -19,7 +17,7 @@ type AckStatus int
 
 const (
 	AckStatusOk AckStatus = iota
-	AckNoStream
+	AckNotFound
 	AckDup
 )
 
@@ -29,15 +27,6 @@ type SendInfo struct {
 	sentNr       int
 	pingRequest  bool
 	closeRequest bool
-}
-
-func (s *SendInfo) debug() slog.Attr {
-	if s == nil {
-		return slog.String("meta", "n/a")
-	}
-	return slog.Group("meta",
-		slog.Uint64("sentTimeNano:ms", s.sentTimeNano/msNano),
-		slog.Int("sentNr", s.sentNr))
 }
 
 // StreamBuffer represents a single stream's userData and metadata
@@ -54,7 +43,7 @@ type SendBuffer struct {
 	streams  map[uint32]*StreamBuffer // Changed to LinkedHashMap
 	capacity int                      //len(dataToSend) of all streams cannot become larger than capacity
 	size     int                      //len(dataToSend) of all streams
-	mu       *sync.Mutex
+	mu       sync.Mutex
 }
 
 func NewStreamBuffer() *StreamBuffer {
@@ -67,11 +56,11 @@ func NewSendBuffer(capacity int) *SendBuffer {
 	return &SendBuffer{
 		streams:  make(map[uint32]*StreamBuffer),
 		capacity: capacity,
-		mu:       &sync.Mutex{},
 	}
 }
 
 func (sb *SendBuffer) getOrCreateStream(streamID uint32) *StreamBuffer {
+	// INTERNAL: caller must hold sb.mu
 	stream := sb.streams[streamID]
 	if stream == nil {
 		stream = NewStreamBuffer()
@@ -139,15 +128,11 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
-		slog.Debug("ReadyToSend/NoStreams")
 		return nil, 0, false
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		slog.Debug("ReadyToSend/NoStream",
-			slog.Uint64("streamID", uint64(streamID)),
-			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false
 	}
 
@@ -161,24 +146,18 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	// Check if all queued data has been sent
 	if len(stream.queuedData) == 0 {
 		if stream.closeAtOffset == nil || stream.bytesSentOffset < *stream.closeAtOffset {
-			slog.Debug("ReadyToSend/NoQueuedData", slog.Uint64("streamID", uint64(streamID)))
 			return nil, 0, false
 		}
 
 		if stream.closeSent {
-			slog.Debug("ReadyToSend/Already sent", slog.Uint64("streamID", uint64(streamID)))
 			return nil, 0, false
 		}
 
 		closeKey := createPacketKey(stream.bytesSentOffset, 0)
-
 		if stream.dataInFlightMap.Contains(closeKey) {
-			// Already sent, waiting for ACK
 			return nil, 0, false
 		}
 
-		slog.Debug("ReadyToSend/closeKey",
-			slog.Uint64("streamID", uint64(streamID)))
 		stream.closeSent = true
 		stream.dataInFlightMap.Put(closeKey, newSendInfo([]byte{}, nowNano, false, true))
 		return []byte{}, closeKey.offset(), true
@@ -192,13 +171,6 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 
 	// Determine how much to send
 	length := min(uint64(maxData), uint64(len(stream.queuedData)))
-
-	slog.Debug("ReadyToSend/PreparePacket",
-		slog.Uint64("streamID", uint64(streamID)),
-		slog.Int("queuedData", len(stream.queuedData)),
-		slog.Uint64("willSend", length),
-		slog.Int("maxData", maxData),
-		slog.Any("msgType", msgType))
 
 	// Extract data from queue
 	packetData = stream.queuedData[:length]
@@ -233,23 +205,17 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 	defer sb.mu.Unlock()
 
 	if len(sb.streams) == 0 {
-		slog.Debug("ReadyToRetransmit/NoStreams")
 		return nil, 0, false, nil
 	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		slog.Debug("ReadyToRetransmit/NoStream",
-			slog.Uint64("streamID", uint64(streamID)),
-			slog.Int("numStreams", len(sb.streams)))
 		return nil, 0, false, nil
 	}
 
 	// Check oldest packet first
 	packetKey, rtoData, ok := stream.dataInFlightMap.First()
 	if !ok {
-		slog.Debug("ReadyToRetransmit/NoInflight",
-			slog.Uint64("streamID", uint64(streamID)))
 		return nil, 0, false, nil
 	}
 
@@ -258,13 +224,8 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 		return nil, 0, false, err
 	}
 
-	actualRtoNano := nowNano - rtoData.sentTimeNano
-	if actualRtoNano <= expectedRtoBackoffNano {
-		slog.Debug("ReadyToRetransmit/NotYet",
-			slog.Uint64("streamID", uint64(streamID)),
-			slog.Uint64("actualRto:ms", actualRtoNano/msNano),
-			slog.Uint64("expectedRto:ms", expectedRtoBackoffNano/msNano),
-			slog.Int("sentNr", rtoData.sentNr))
+	// Check if RTO expired
+	if nowNano - rtoData.sentTimeNano <= expectedRtoBackoffNano {
 		return nil, 0, false, nil
 	}
 
@@ -287,9 +248,6 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 	}
 
 	if length <= uint16(maxData) {
-		// Resend entire packet
-		slog.Debug("Resend", slog.Uint64("free-space", uint64(uint16(maxData)-length)))
-
 		// Update SendInfo in place
 		rtoData.sentTimeNano = nowNano
 		rtoData.sentNr++
@@ -318,10 +276,6 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 		rtoData.data = rightData // Update data in existing SendInfo
 		stream.dataInFlightMap.Replace(packetKey, rightKey, rtoData)
 
-		slog.Debug("Resend/Split",
-			slog.Uint64("send", uint64(maxData)),
-			slog.Uint64("remain", uint64(len(rightData))))
-
 		return leftData, packetKey.offset(), leftInfo.closeRequest, nil
 	}
 }
@@ -333,8 +287,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 
 	stream := sb.streams[ack.streamID]
 	if stream == nil {
-		slog.Warn("ACK: no stream", slog.Uint64("streamID", uint64(ack.streamID)))
-		return AckNoStream, 0
+		return AckNotFound, 0
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
@@ -342,7 +295,6 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	// Simply remove from map - no trimming needed!
 	sendInfo, ok := stream.dataInFlightMap.Remove(key)
 	if !ok {
-		slog.Warn("ACK: duplicate", slog.String("len/off", key.string()), slog.Uint64("streamID", uint64(ack.streamID)))
 		return AckDup, 0
 	}
 
@@ -352,7 +304,10 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	return AckStatusOk, sendInfo.sentTimeNano
 }
 
-func (sb *SendBuffer) checkStreamFullyAcked(streamID uint32) bool {
+func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	
 	stream := sb.streams[streamID]
 	if stream == nil {
 		return false
@@ -372,17 +327,7 @@ func (sb *SendBuffer) checkStreamFullyAcked(streamID uint32) bool {
 		ackedOffset = stream.bytesSentOffset
 	}
 
-	result := ackedOffset >= *closeOffset
-
-	slog.Debug("checkStreamFullyAcked",
-		slog.Uint64("streamID", uint64(streamID)),
-		slog.Bool("hasInflight", ok),
-		slog.Uint64("ackedOffset", ackedOffset),
-		slog.Uint64("closeOffset", *closeOffset),
-		slog.Uint64("bytesSentOffset", stream.bytesSentOffset),
-		slog.Bool("result", result))
-
-	return result
+	return ackedOffset >= *closeOffset
 }
 
 func (sb *SendBuffer) GetOffsetAcked(streamID uint32) (offset uint64) {
@@ -426,19 +371,6 @@ func (sb *SendBuffer) Close(streamID uint32) {
 		// Calculate total offset: sent + queued
 		offset := stream.bytesSentOffset + uint64(len(stream.queuedData))
 		stream.closeAtOffset = &offset
-
-		_, file, line, _ := runtime.Caller(1)
-		slog.Debug("set close once", gId(),
-			"offset", *stream.closeAtOffset,
-			"caller", fmt.Sprintf("%s:%d", file, line),
-			"streamID", streamID)
-
-	} else {
-		_, file, line, _ := runtime.Caller(1)
-		slog.Warn("set close twice", gId(),
-			"offset", *stream.closeAtOffset,
-			"caller", fmt.Sprintf("%s:%d", file, line),
-			"streamID", streamID)
 	}
 }
 
