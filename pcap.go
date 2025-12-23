@@ -4,8 +4,24 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 )
+
+// logKey writes the session key to the key log in a format Wireshark can understand.
+// The format is `QOTP_SHARED_SECRET <connId_hex> <secret_hex>`.
+func logKey(w io.Writer, connId uint64, secret []byte, secretId []byte) {
+	line := fmt.Sprintf("QOTP_SHARED_SECRET %x %x\n", connId, secret)
+	_, err := w.Write([]byte(line))
+	if err != nil {
+		slog.Error("Failed to write to key log", "error", err)
+	}
+	line = fmt.Sprintf("QOTP_SHARED_SECRET_ID %x %x\n", connId, secretId)
+	_, err = w.Write([]byte(line))
+	if err != nil {
+		slog.Error("Failed to write to key log", "error", err)
+	}
+}
 
 // DecryptPcap decrypts any QOTP packet type by auto-detecting the message type.
 // Pass nil for unused secrets based on what you're decrypting.

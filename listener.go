@@ -6,9 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
+
 	"net"
 	"net/netip"
 	"sync"
@@ -206,7 +206,6 @@ func (l *Listener) PubKey() *ecdh.PublicKey {
 }
 
 func (l *Listener) Close() error {
-	slog.Debug("ListenerClose", gId())
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -250,7 +249,6 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 		}
 	}
 	if n == 0 {
-		slog.Debug("Listen/NoData")
 		return nil, nil
 	}
 
@@ -279,8 +277,6 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 	if err != nil {
 		return nil, err
 	}
-
-	slog.Debug("Listen/Data", gId(), l.debug(), s.debug(), p.debug(), slog.Any("l(data)", len(data)), slog.Uint64("now:ms", nowNano/msNano))
 
 	//Set state
 	if !conn.isHandshakeDoneOnRcv {
@@ -318,7 +314,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 	for conn, stream := range iter {
 		dataSent, pacingNano, err := conn.Flush(stream, nowNano)
 		if err != nil {
-			slog.Info("closing connection, err", conn.debug(), slog.Any("err", err))
+			slog.Info("closing connection, err", slog.Any("err", err))
 			closeConn = append(closeConn, conn)
 			break
 		}
@@ -339,7 +335,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 		//no data sent, check if we reached the timeout for the activity
 		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-			slog.Info("close connection, timeout", conn.debug(), slog.Uint64("now", nowNano),
+			slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
 				slog.Uint64("last", conn.lastReadTimeNano))
 			closeConn = append(closeConn, conn)
 			break
@@ -436,7 +432,7 @@ func (l *Listener) Loop(callback func(s *Stream) (bool, error)) {
 		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
 
 		//if waitNextNano is zero, we still have data to flush, do not exit yet
-		if !cont && waitNextNano == 0 { 
+		if !cont && waitNextNano == 0 {
 			break
 		}
 	}
@@ -453,20 +449,7 @@ func (l *Listener) ForceClose(c *Conn) {
 	c.cleanupConn()
 }
 
-// logKey writes the session key to the key log in a format Wireshark can understand.
-// The format is `QOTP_SHARED_SECRET <connId_hex> <secret_hex>`.
-func logKey(w io.Writer, connId uint64, secret []byte, secretId []byte) {
-	line := fmt.Sprintf("QOTP_SHARED_SECRET %x %x\n", connId, secret)
-	_, err := w.Write([]byte(line))
-	if err != nil {
-		slog.Error("Failed to write to key log", "error", err)
-	}
-	line = fmt.Sprintf("QOTP_SHARED_SECRET_ID %x %x\n", connId, secretId)
-	_, err = w.Write([]byte(line))
-	if err != nil {
-		slog.Error("Failed to write to key log", "error", err)
-	}
-}
+
 
 func (l *Listener) DialString(remoteAddrString string) (*Conn, error) {
 	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)

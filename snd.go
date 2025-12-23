@@ -1,7 +1,7 @@
 package qotp
 
 import (
-	"fmt"
+	"errors"
 	"sync"
 )
 
@@ -69,16 +69,6 @@ func (sb *SendBuffer) getOrCreateStream(streamID uint32) *StreamBuffer {
 	return stream
 }
 
-func newSendInfo(data []byte, nowNano uint64, isPing bool, isClose bool) *SendInfo {
-	return &SendInfo{
-		data:         data,
-		sentNr:       1,
-		sentTimeNano: nowNano,
-		pingRequest:  isPing,
-		closeRequest: isClose,
-	}
-}
-
 // QueueData stores the userData in the dataMap, does not send yet
 func (sb *SendBuffer) QueueData(streamId uint32, userData []byte) (n int, status InsertStatus) {
 	if len(userData) <= 0 {
@@ -136,14 +126,15 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		return nil, 0, false
 	}
 
+	// CASE 1: Ping request
 	if stream.pingRequest {
 		stream.pingRequest = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.dataInFlightMap.Put(key, newSendInfo([]byte{}, nowNano, true, false))
+		stream.dataInFlightMap.Put(key, &SendInfo{data: []byte{}, sentNr: 1, sentTimeNano: nowNano, pingRequest: true, closeRequest: false})
 		return []byte{}, 0, false
 	}
 
-	// Check if all queued data has been sent
+	// CASE 2: No queued data
 	if len(stream.queuedData) == 0 {
 		if stream.closeAtOffset == nil || stream.bytesSentOffset < *stream.closeAtOffset {
 			return nil, 0, false
@@ -159,13 +150,17 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		}
 
 		stream.closeSent = true
-		stream.dataInFlightMap.Put(closeKey, newSendInfo([]byte{}, nowNano, false, true))
+		stream.dataInFlightMap.Put(closeKey, &SendInfo{data: []byte{}, sentNr: 1, sentTimeNano: nowNano, pingRequest: false, closeRequest: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
+	// CASE 3: Has queued data
 	maxData := 0
 	if msgType != InitSnd {
 		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
+		if overhead > mtu {
+			return nil, 0, false
+		}
 		maxData = mtu - overhead
 	}
 
@@ -187,7 +182,8 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 			stream.closeSent = true
 		}
 	}
-	stream.dataInFlightMap.Put(key, newSendInfo(packetData, nowNano, false, isClose))
+
+	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, sentNr: 1, sentTimeNano: nowNano, pingRequest: false, closeRequest: isClose})
 
 	// Remove sent data from queue
 	stream.queuedData = stream.queuedData[length:]
@@ -225,59 +221,55 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 	}
 
 	// Check if RTO expired
-	if nowNano - rtoData.sentTimeNano <= expectedRtoBackoffNano {
+	if nowNano-rtoData.sentTimeNano <= expectedRtoBackoffNano {
 		return nil, 0, false, nil
 	}
 
-	// Timeout
+	// Ping - just remove, no retransmit
 	if rtoData.pingRequest {
-		// Just remove ping, no retransmit
 		stream.dataInFlightMap.Remove(packetKey)
 		return nil, 0, false, nil
 	}
 
 	// Get data directly from SendInfo
 	data = rtoData.data
-	length := uint16(len(data))
+	length := len(data)
 
 	// Calculate available space
 	maxData := 0
 	if msgType != InitSnd {
 		overhead := calcCryptoOverheadWithData(msgType, ack, packetKey.offset())
+		if overhead > mtu {
+			return nil, 0, false, errors.New("overhead larger than MTU")
+		}
 		maxData = mtu - overhead
 	}
 
-	if length <= uint16(maxData) {
+	if length <= maxData {
 		// Update SendInfo in place
 		rtoData.sentTimeNano = nowNano
 		rtoData.sentNr++
 
 		return data, packetKey.offset(), rtoData.closeRequest, nil
 
-	} else {
-		// Split packet
-		leftData := data[:maxData]
-		rightData := data[maxData:]
-
-		// Create new packet for left part
-		leftKey := createPacketKey(packetKey.offset(), uint16(maxData))
-		leftInfo := &SendInfo{
-			data:         leftData,
-			sentTimeNano: nowNano,
-			sentNr:       rtoData.sentNr + 1,
-			pingRequest:  false,
-			closeRequest: false,
-		}
-		stream.dataInFlightMap.Put(leftKey, leftInfo)
-
-		// Update right part (remaining data)
-		remainingOffset := packetKey.offset() + uint64(maxData)
-		rightKey := createPacketKey(remainingOffset, uint16(len(rightData)))
-		rtoData.data = rightData // Update data in existing SendInfo
-		stream.dataInFlightMap.Replace(packetKey, rightKey, rtoData)
-
-		return leftData, packetKey.offset(), leftInfo.closeRequest, nil
 	}
+
+	// Split packet
+	leftData := data[:maxData]
+	rightData := data[maxData:]
+
+	// Create new packet for left part
+	leftKey := createPacketKey(packetKey.offset(), uint16(maxData))
+	stream.dataInFlightMap.Put(leftKey, &SendInfo{data: leftData, sentTimeNano: nowNano, sentNr: rtoData.sentNr + 1})
+
+	// Update right part (remaining data)
+	remainingOffset := packetKey.offset() + uint64(maxData)
+	rightKey := createPacketKey(remainingOffset, uint16(len(rightData)))
+	rtoData.data = rightData // Update data in existing SendInfo
+	stream.dataInFlightMap.Replace(packetKey, rightKey, rtoData)
+
+	return leftData, packetKey.offset(), false, nil
+
 }
 
 // AcknowledgeRange handles acknowledgment of dataToSend
@@ -307,7 +299,7 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-	
+
 	stream := sb.streams[streamID]
 	if stream == nil {
 		return false
@@ -382,10 +374,6 @@ func (p packetKey) offset() uint64 {
 
 func (p packetKey) length() uint16 {
 	return uint16(p & 0xFFFF)
-}
-
-func (p packetKey) string() string {
-	return fmt.Sprintf("[offset:%v/len:%v]", p.offset(), p.length())
 }
 
 func createPacketKey(offset uint64, length uint16) packetKey {

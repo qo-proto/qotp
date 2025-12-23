@@ -57,7 +57,7 @@ func (rb *ReceiveBuffer) getOrCreateStream(streamID uint32) *RcvBuffer {
 	return stream
 }
 
-func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64, nowNano uint64) RcvInsertStatus {
+func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64) RcvInsertStatus {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -87,21 +87,10 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	// Get or create stream buffer
 	stream := rb.getOrCreateStream(streamID)
 
-	slog.Debug("rcv.Insert",
-		slog.Uint64("streamID", uint64(streamID)),
-		slog.Uint64("offset", offset),
-		slog.Int("len", len(userData)),
-		slog.Any("stream.closeAtOffset", stream.closeAtOffset),
-		slog.Any("bytesReceived", stream.nextInOrderOffsetToWaitFor))
-
 	if stream.closeAtOffset != nil {
 		if offset >= *stream.closeAtOffset {
 			// Data after close offset - protocol violation
 			// Still ACK it (already added to ackList above) but drop the data
-			slog.Warn("Rcv data after close offset",
-				slog.Uint64("streamID", uint64(streamID)),
-				slog.Uint64("offset", offset),
-				slog.Uint64("closeOffset", *stream.closeAtOffset))
 			rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 			return RcvInsertDuplicate // Drop it
 		}
@@ -151,7 +140,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 		// Check if the previous segment overlaps with our incoming segment
 		if prevEnd > offset {
 			//adjust our offset, move it foward, for testing, check that overlap is the same
-			overlapLen := prevOffset + uint64(len(prevData.data)) - offset
+			overlapLen := prevEnd - offset
 			if overlapLen >= uint64(dataLen) {
 				// Completely overlapped by previous - this is a duplicate
 				return RcvInsertDuplicate
@@ -214,9 +203,6 @@ func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
 
 	rcv := rb.getOrCreateStream(streamID)
 	if rcv.closeAtOffset == nil {
-		slog.Info("rcv close offset at", gId(),
-			slog.Uint64("streamId", uint64(streamID)),
-			slog.Uint64("new", closeOffset))
 		rcv.closeAtOffset = &closeOffset
 	} else if *rcv.closeAtOffset != closeOffset {
 		slog.Warn("rcv close offset mismatch", gId(),
@@ -260,14 +246,7 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 		stream.segments.Remove(oldestOffset)
 		rb.size -= len(oldestValue.data)
 
-		nextOffset := oldestOffset
-		if nextOffset < stream.nextInOrderOffsetToWaitFor {
-			diff := stream.nextInOrderOffsetToWaitFor - oldestOffset
-			oldestValue.data = oldestValue.data[diff:]
-			nextOffset = stream.nextInOrderOffsetToWaitFor
-		}
-
-		stream.nextInOrderOffsetToWaitFor = nextOffset + uint64(len(oldestValue.data))
+		stream.nextInOrderOffsetToWaitFor = oldestOffset + uint64(len(oldestValue.data))
 		return oldestValue.data
 	} else if oldestOffset > stream.nextInOrderOffsetToWaitFor {
 		// Out of order; wait until segment offset available, signal that
@@ -275,6 +254,9 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 	} else {
 		//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
 		//it's correctly implemented, this should not happen.
+		slog.Warn("RemoveOldestInOrder: unexpected overlap",
+			slog.Uint64("oldest", oldestOffset),
+			slog.Uint64("expected", stream.nextInOrderOffsetToWaitFor))
 		return nil
 	}
 }

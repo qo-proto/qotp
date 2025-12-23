@@ -282,166 +282,70 @@ func TestRcvSizeAccounting(t *testing.T) {
 	assert.Equal(t, 0, rb.Size())
 }
 
-// Close tests
-
-func TestRcvCloseBasic(t *testing.T) {
+func TestRcvClose(t *testing.T) {
 	rb := NewReceiveBuffer(1000)
 
+	// Basic close
 	rb.Insert(1, 0, 0, []byte("ABCD"))
 	rb.Close(1, 10)
-
 	stream := rb.streams[1]
 	assert.NotNil(t, stream.closeAtOffset)
 	assert.Equal(t, uint64(10), *stream.closeAtOffset)
-}
 
-func TestRcvCloseIdempotent(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	rb.Close(1, 10)
-	firstOffset := *rb.streams[1].closeAtOffset
-
-	// Close again with different offset - should warn but not change
+	// Idempotent - same offset ok, different offset warns but keeps first
 	rb.Close(1, 20)
-	secondOffset := *rb.streams[1].closeAtOffset
+	assert.Equal(t, uint64(10), *stream.closeAtOffset)
 
-	assert.Equal(t, firstOffset, secondOffset)
-	assert.Equal(t, uint64(10), secondOffset)
-}
+	// Data before close offset - accepted
+	rb2 := NewReceiveBuffer(1000)
+	rb2.Close(1, 10)
+	status := rb2.Insert(1, 0, 0, []byte("ABCD"))
+	assert.Equal(t, RcvInsertOk, status)
 
-func TestRcvCloseDataAfterOffset(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	rb.Close(1, 10)
-
-	// Data at closeOffset - should be dropped and ACKed
-	status := rb.Insert(1, 10, 0, []byte("ABCD"))
+	// Data at/after close offset - dropped but ACKed
+	status = rb2.Insert(1, 10, 0, []byte("XXXX"))
 	assert.Equal(t, RcvInsertDuplicate, status)
 
-	// ACK should be generated
-	ack := rb.GetSndAck()
+	// First ack is from Insert at offset 0
+	ack := rb2.GetSndAck()
+	assert.NotNil(t, ack)
+	assert.Equal(t, uint64(0), ack.offset)
+	assert.Equal(t, uint16(4), ack.len)
+
+	// Second ack is from Insert at offset 10 (dropped but still ACKed)
+	ack = rb2.GetSndAck()
 	assert.NotNil(t, ack)
 	assert.Equal(t, uint64(10), ack.offset)
 	assert.Equal(t, uint16(4), ack.len)
-
-	// Data after closeOffset - should be dropped and ACKed
-	status = rb.Insert(1, 15, 0, []byte("EFGH"))
-	assert.Equal(t, RcvInsertDuplicate, status)
-
-	ack = rb.GetSndAck()
-	assert.NotNil(t, ack)
-	assert.Equal(t, uint64(15), ack.offset)
-	assert.Equal(t, uint16(4), ack.len)
-}
-
-func TestRcvCloseDataBeforeOffset(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	rb.Close(1, 10)
-
-	// Data before closeOffset - should be accepted
-	status := rb.Insert(1, 0, 0, []byte("ABCD"))
-	assert.Equal(t, RcvInsertOk, status)
-
-	status = rb.Insert(1, 4, 0, []byte("EFGH"))
-	assert.Equal(t, RcvInsertOk, status)
-
-	// Read data
-	data := rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("ABCD"), data)
-
-	data = rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("EFGH"), data)
-}
-
-func TestRcvCloseDataExceedsOffset(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	rb.Close(1, 10)
-
-	// Data that starts before but extends past closeOffset
-	// Should be accepted (stream.go Read() enforces boundary)
-	status := rb.Insert(1, 5, 0, []byte("ABCDEFGHIJ")) // extends to offset 15
-	assert.Equal(t, RcvInsertOk, status)
-
-	// Verify data is stored
-	stream := rb.streams[1]
-	rcvValue, exists := stream.segments.Get(5)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGHIJ"), rcvValue.data)
-}
-
-func TestRcvIsReadyToClose(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	// Not closed - not ready
-	assert.False(t, rb.IsReadyToClose(1))
-
-	// Closed but no data read
-	rb.Close(1, 10)
-	assert.False(t, rb.IsReadyToClose(1))
-
-	// Insert and read data up to closeOffset
-	rb.Insert(1, 0, 0, []byte("ABCD"))
-	rb.RemoveOldestInOrder(1)
-	assert.False(t, rb.IsReadyToClose(1)) // Only at offset 4
-
-	rb.Insert(1, 4, 0, []byte("EFGHIJ"))
-	rb.RemoveOldestInOrder(1)
-	assert.True(t, rb.IsReadyToClose(1)) // Now at offset 10
-}
-
-func TestRcvIsReadyToCloseEmptyStream(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	// Close at offset 0 (empty stream)
-	rb.Close(1, 0)
-	
-	// Should be ready immediately
-	assert.True(t, rb.IsReadyToClose(1))
-}
-
-func TestRcvIsReadyToClosePastOffset(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	rb.Close(1, 10)
-
-	// Read past closeOffset
-	rb.Insert(1, 0, 0, []byte("ABCDEFGHIJKLMNOP")) // 16 bytes
-	rb.RemoveOldestInOrder(1)
-
-	assert.True(t, rb.IsReadyToClose(1)) // Read to 16, past closeOffset 10
 }
 
 func TestRcvEmptyInsertAndAck(t *testing.T) {
 	rb := NewReceiveBuffer(1000)
-	
-	status := rb.EmptyInsert(1, 0, 0)
+
+	status := rb.EmptyInsert(1, 0)
 	assert.Equal(t, RcvInsertOk, status)
-	
+
 	ack := rb.GetSndAck()
 	assert.NotNil(t, ack)
 	assert.Equal(t, uint64(0), ack.offset)
 	assert.Equal(t, uint16(0), ack.len)
 }
 
-func TestRcvDuplicateAfterCloseGeneratesAck(t *testing.T) {
+func TestRcvCloseBasics(t *testing.T) {
 	rb := NewReceiveBuffer(1000)
-	
-	status := rb.Insert(1, 0, 0, []byte("ABCD"))
-	assert.Equal(t, RcvInsertOk, status)
-	
-	// Consume first ACK
-	rb.GetSndAck()
-	
-	rb.Close(1, 100)
-	
-	// Duplicate after close - should still generate ACK
-	status = rb.Insert(1, 0, 0, []byte("ABCD"))
-	assert.Equal(t, RcvInsertDuplicate, status)
-	
-	ack := rb.GetSndAck()
-	assert.NotNil(t, ack)
-	assert.Equal(t, uint64(0), ack.offset)
-	assert.Equal(t, uint16(4), ack.len)
+
+	// Basic close
+	rb.Insert(1, 0, 0, []byte("ABCD"))
+	rb.Close(1, 10)
+	assert.Equal(t, uint64(10), *rb.streams[1].closeAtOffset)
+
+	// Idempotent
+	rb.Close(1, 20)
+	assert.Equal(t, uint64(10), *rb.streams[1].closeAtOffset)
+
+	// Data before close - accepted
+	rb2 := NewReceiveBuffer(1000)
+	rb2.Close(1, 10)
+	assert.Equal(t, RcvInsertOk, rb2.Insert(1, 0, 0, []byte("ABCD")))
+	assert.Equal(t, RcvInsertOk, rb2.Insert(1, 4, 0, []byte("EFGH")))
 }

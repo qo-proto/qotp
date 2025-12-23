@@ -58,6 +58,10 @@ type Measurements struct {
 	lastProbeTimeNano uint64 // When we last probed for more bandwidth
 	pacingGainPct     uint64 // Current pacing gain (100 = 1.0x, 277 = 2.77x)
 	lastReadTimeNano  uint64 // Time of last activity
+
+	//Perf numbers
+	packetLossNr int
+	packetDupNr  int
 }
 
 // NewMeasurements creates a new instance with default values
@@ -168,32 +172,20 @@ func (c *Conn) rtoNano() uint64 {
 }
 
 func (c *Conn) onDuplicateAck() {
-	slog.Info("DuplicateAck",
-		slog.Uint64("bwMax", c.bwMax),
-		slog.Uint64("newBwMax", c.bwMax*lossBwReduction/100),
-		slog.Uint64("gain", c.pacingGainPct),
-		slog.Bool("startup", c.isStartup),
-	)
-	
 	c.bwMax = c.bwMax * dupAckBwReduction / 100
 	c.pacingGainPct = dupAckGain
-
+	c.packetDupNr++
+	
 	if c.isStartup {
 		c.isStartup = false
 	}
 }
 
 func (c *Conn) onPacketLoss() {
-	slog.Info("PacketLoss",
-		slog.Uint64("bwMax", c.bwMax),
-		slog.Uint64("newBwMax", c.bwMax*lossBwReduction/100),
-		slog.Uint64("gain", c.pacingGainPct),
-		slog.Bool("startup", c.isStartup),
-	)
-
 	c.bwMax = c.bwMax * lossBwReduction / 100
 	c.pacingGainPct = normalGain
 	c.isStartup = false
+	c.packetLossNr++
 }
 
 func (c *Conn) calcPacing(packetSize uint64) uint64 {

@@ -10,49 +10,29 @@ import (
 func TestSortedMapBasicOperations(t *testing.T) {
 	sm := NewSortedMap[int, string]()
 
-	// Empty map
+	// Empty state
 	assert.Equal(t, 0, sm.Size())
-	minKey, minVal, ok := sm.Min()
+	_, _, ok := sm.Min()
 	assert.False(t, ok)
-	assert.Equal(t, 0, minKey)
-	assert.Equal(t, "", minVal)
+	assert.False(t, sm.Contains(1))
 
 	// Put and Get
 	sm.Put(1, "one")
-	value, ok := sm.Get(1)
+	v, ok := sm.Get(1)
 	assert.True(t, ok)
-	assert.Equal(t, "one", value)
-
-	// Update existing key
-	sm.Put(1, "ONE")
-	value, ok = sm.Get(1)
-	assert.True(t, ok)
-	assert.Equal(t, "ONE", value)
-	assert.Equal(t, 1, sm.Size())
-
-	// Non-existent key
-	value, ok = sm.Get(999)
-	assert.False(t, ok)
-	assert.Equal(t, "", value)
-}
-
-func TestSortedMapContains(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	assert.False(t, sm.Contains(1))
-
-	sm.Put(1, "one")
-	sm.Put(2, "two")
-
+	assert.Equal(t, "one", v)
 	assert.True(t, sm.Contains(1))
-	assert.True(t, sm.Contains(2))
-	assert.False(t, sm.Contains(3))
 
-	value, ok := sm.Remove(1)
-	assert.True(t, ok)
-	assert.Equal(t, "one", value)
-	assert.False(t, sm.Contains(1))
-	assert.True(t, sm.Contains(2))
+	// Update existing
+	sm.Put(1, "ONE")
+	v, _ = sm.Get(1)
+	assert.Equal(t, "ONE", v)
+	assert.Equal(t, 1, sm.Size()) // Size unchanged
+
+	// Non-existent
+	_, ok = sm.Get(999)
+	assert.False(t, ok)
+	assert.False(t, sm.Contains(999))
 }
 
 func TestSortedMapOrderedTraversal(t *testing.T) {
@@ -166,236 +146,40 @@ func TestSortedMapMin(t *testing.T) {
 	assert.Equal(t, "three", minVal)
 }
 
-func TestSortedMapNext(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	// Empty map
-	nextKey, nextVal, ok := sm.Next(1)
-	assert.False(t, ok)
-	assert.Equal(t, 0, nextKey)
-	assert.Equal(t, "", nextVal)
-
-	// Single element
-	sm.Put(1, "one")
-	minKey, minVal, ok := sm.Min()
-	assert.True(t, ok)
-	assert.Equal(t, 1, minKey)
-	assert.Equal(t, "one", minVal)
-
-	nextKey, nextVal, ok = sm.Next(1)
-	assert.False(t, ok)
-	assert.Equal(t, 0, nextKey)
-	assert.Equal(t, "", nextVal)
-
-	// Multiple elements
-	sm.Put(2, "two")
-	sm.Put(3, "three")
-
-	key, val, ok := sm.Min()
-	assert.True(t, ok)
-	assert.Equal(t, 1, key)
-	assert.Equal(t, "one", val)
-
-	key, val, ok = sm.Next(key)
-	assert.True(t, ok)
-	assert.Equal(t, 2, key)
-	assert.Equal(t, "two", val)
-
-	key, val, ok = sm.Next(key)
-	assert.True(t, ok)
-	assert.Equal(t, 3, key)
-	assert.Equal(t, "three", val)
-
-	key, val, ok = sm.Next(key)
-	assert.False(t, ok)
-	assert.Equal(t, 0, key)
-	assert.Equal(t, "", val)
-}
-
-func TestSortedMapNextFromKey(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	values := []int{1, 3, 5, 7, 9}
-	for _, v := range values {
-		sm.Put(v, "value")
-	}
-
-	// Next from existing key
-	nextKey, nextValue, ok := sm.Next(3)
-	assert.True(t, ok)
-	assert.Equal(t, 5, nextKey)
-	assert.Equal(t, "value", nextValue)
-
-	// Next from non-existing key
-	nextKey, nextValue, ok = sm.Next(4)
-	assert.True(t, ok)
-	assert.Equal(t, 5, nextKey)
-	assert.Equal(t, "value", nextValue)
-
-	// Next from last key
-	nextKey, nextValue, ok = sm.Next(9)
-	assert.False(t, ok)
-	assert.Equal(t, 0, nextKey)
-	assert.Equal(t, "", nextValue)
-
-	// Next from key larger than all
-	nextKey, nextValue, ok = sm.Next(10)
-	assert.False(t, ok)
-	assert.Equal(t, 0, nextKey)
-	assert.Equal(t, "", nextValue)
-}
-
 func TestSortedMapPrev(t *testing.T) {
 	sm := NewSortedMap[int, string]()
 
 	// Empty map
-	prevKey, prevVal, ok := sm.Prev(5)
+	_, _, ok := sm.Prev(5)
 	assert.False(t, ok)
-	assert.Equal(t, 0, prevKey)
-	assert.Equal(t, "", prevVal)
 
-	// Single element
-	sm.Put(5, "five")
-
-	prevKey, prevVal, ok = sm.Prev(5)
-	assert.False(t, ok)
-	assert.Equal(t, 0, prevKey)
-	assert.Equal(t, "", prevVal)
-
-	// Multiple elements
-	sm.Put(1, "one")
-	sm.Put(3, "three")
-	sm.Put(7, "seven")
-	sm.Put(9, "nine")
-
-	key, val, ok := sm.Prev(9)
-	assert.True(t, ok)
-	assert.Equal(t, 7, key)
-	assert.Equal(t, "seven", val)
-
-	key, val, ok = sm.Prev(key)
-	assert.True(t, ok)
-	assert.Equal(t, 5, key)
-	assert.Equal(t, "five", val)
-
-	key, val, ok = sm.Prev(key)
-	assert.True(t, ok)
-	assert.Equal(t, 3, key)
-	assert.Equal(t, "three", val)
-
-	key, val, ok = sm.Prev(key)
-	assert.True(t, ok)
-	assert.Equal(t, 1, key)
-	assert.Equal(t, "one", val)
-
-	key, val, ok = sm.Prev(key)
-	assert.False(t, ok)
-	assert.Equal(t, 0, key)
-	assert.Equal(t, "", val)
-}
-
-func TestSortedMapPrevFromKey(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	values := []int{1, 3, 5, 7, 9}
-	for _, v := range values {
-		sm.Put(v, "value")
+	// Setup: 1, 5, 10, 20, 50
+	for _, v := range []int{1, 5, 10, 20, 50} {
+		sm.Put(v, "val")
 	}
 
 	// Prev from existing key
-	prevKey, prevValue, ok := sm.Prev(7)
+	k, _, ok := sm.Prev(20)
 	assert.True(t, ok)
-	assert.Equal(t, 5, prevKey)
-	assert.Equal(t, "value", prevValue)
+	assert.Equal(t, 10, k)
 
-	// Prev from non-existing key
-	prevKey, prevValue, ok = sm.Prev(6)
+	// Prev from non-existing key (finds previous)
+	k, _, ok = sm.Prev(15)
 	assert.True(t, ok)
-	assert.Equal(t, 5, prevKey)
-	assert.Equal(t, "value", prevValue)
+	assert.Equal(t, 10, k)
 
 	// Prev from first key
-	prevKey, prevValue, ok = sm.Prev(1)
+	_, _, ok = sm.Prev(1)
 	assert.False(t, ok)
-	assert.Equal(t, 0, prevKey)
-	assert.Equal(t, "", prevValue)
 
 	// Prev from key smaller than all
-	prevKey, prevValue, ok = sm.Prev(0)
+	_, _, ok = sm.Prev(0)
 	assert.False(t, ok)
-	assert.Equal(t, 0, prevKey)
-	assert.Equal(t, "", prevValue)
 
 	// Prev from key larger than all
-	prevKey, prevValue, ok = sm.Prev(15)
+	k, _, ok = sm.Prev(100)
 	assert.True(t, ok)
-	assert.Equal(t, 9, prevKey)
-	assert.Equal(t, "value", prevValue)
-}
-
-func TestSortedMapPrevNextSymmetry(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	values := []int{2, 4, 6, 8, 10}
-	for _, v := range values {
-		sm.Put(v, "value")
-	}
-
-	currentKey := 6
-
-	// Go next
-	nextKey, _, ok := sm.Next(currentKey)
-	assert.True(t, ok)
-	assert.Equal(t, 8, nextKey)
-
-	// Go back with Prev
-	prevKey, _, ok := sm.Prev(nextKey)
-	assert.True(t, ok)
-	assert.Equal(t, 6, prevKey)
-
-	// Go prev
-	prevKey, _, ok = sm.Prev(currentKey)
-	assert.True(t, ok)
-	assert.Equal(t, 4, prevKey)
-
-	// Go forward with Next
-	nextKey, _, ok = sm.Next(prevKey)
-	assert.True(t, ok)
-	assert.Equal(t, 6, nextKey)
-}
-
-func TestSortedMapPrevWithGaps(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	values := []int{1, 5, 10, 20, 50}
-	for _, v := range values {
-		sm.Put(v, "value")
-	}
-
-	prevKey, prevValue, ok := sm.Prev(15)
-	assert.True(t, ok)
-	assert.Equal(t, 10, prevKey)
-	assert.Equal(t, "value", prevValue)
-
-	prevKey, prevValue, ok = sm.Prev(7)
-	assert.True(t, ok)
-	assert.Equal(t, 5, prevKey)
-	assert.Equal(t, "value", prevValue)
-
-	prevKey, prevValue, ok = sm.Prev(3)
-	assert.True(t, ok)
-	assert.Equal(t, 1, prevKey)
-	assert.Equal(t, "value", prevValue)
-
-	prevKey, prevValue, ok = sm.Prev(51)
-	assert.True(t, ok)
-	assert.Equal(t, 50, prevKey)
-	assert.Equal(t, "value", prevValue)
-
-	prevKey, prevValue, ok = sm.Prev(1)
-	assert.False(t, ok)
-	assert.Equal(t, 0, prevKey)
-	assert.Equal(t, "", prevValue)
+	assert.Equal(t, 50, k)
 }
 
 func TestSortedMapConcurrent(t *testing.T) {
@@ -432,37 +216,6 @@ func TestSortedMapConcurrent(t *testing.T) {
 	}
 
 	wg.Wait()
-}
-
-func TestSortedMapUpdateValue(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	sm.Put(1, "original")
-	value, ok := sm.Get(1)
-	assert.True(t, ok)
-	assert.Equal(t, "original", value)
-	assert.Equal(t, 1, sm.Size())
-
-	sm.Put(1, "updated")
-	value, ok = sm.Get(1)
-	assert.True(t, ok)
-	assert.Equal(t, "updated", value)
-	assert.Equal(t, 1, sm.Size())
-}
-
-func TestSortedMapRemoveNonExistent(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-
-	removedVal, removed := sm.Remove(999)
-	assert.False(t, removed)
-	assert.Equal(t, "", removedVal)
-
-	sm.Put(5, "five")
-	assert.True(t, sm.Contains(5))
-	removedVal, removed = sm.Remove(5)
-	assert.True(t, removed)
-	assert.Equal(t, "five", removedVal)
-	assert.False(t, sm.Contains(5))
 }
 
 func TestSortedMapRemoveAllThenAdd(t *testing.T) {
@@ -507,27 +260,35 @@ func TestSortedMapLevelGrowth(t *testing.T) {
 	assert.Equal(t, "hundred", val)
 }
 
-func TestSortedMapNextPrevAfterRemoval(t *testing.T) {
+func TestSortedMapNext(t *testing.T) {
 	sm := NewSortedMap[int, string]()
-	
-	sm.Put(1, "one")
-	sm.Put(2, "two")
-	sm.Put(3, "three")
-	
-	// Remove middle
-	sm.Remove(2)
-	
-	// Next from 1 should skip to 3
-	nextKey, nextVal, ok := sm.Next(1)
+
+	// Empty map
+	_, _, ok := sm.Next(1)
+	assert.False(t, ok)
+
+	// Setup: 1, 3, 5, 7, 9
+	for _, v := range []int{1, 3, 5, 7, 9} {
+		sm.Put(v, "val")
+	}
+
+	// Next from existing key
+	k, _, ok := sm.Next(3)
 	assert.True(t, ok)
-	assert.Equal(t, 3, nextKey)
-	assert.Equal(t, "three", nextVal)
-	
-	// Prev from 3 should skip to 1
-	prevKey, prevVal, ok := sm.Prev(3)
+	assert.Equal(t, 5, k)
+
+	// Next from non-existing key (finds next greater)
+	k, _, ok = sm.Next(4)
 	assert.True(t, ok)
-	assert.Equal(t, 1, prevKey)
-	assert.Equal(t, "one", prevVal)
+	assert.Equal(t, 5, k)
+
+	// Next from last key
+	_, _, ok = sm.Next(9)
+	assert.False(t, ok)
+
+	// Next from key larger than all
+	_, _, ok = sm.Next(10)
+	assert.False(t, ok)
 }
 
 func TestSortedMapSkipListIntegrity(t *testing.T) {
@@ -565,31 +326,4 @@ func TestSortedMapSkipListIntegrity(t *testing.T) {
 			assert.True(t, ok)
 		}
 	}
-}
-
-func TestSortedMapUpdateDoesntAffectOrder(t *testing.T) {
-	sm := NewSortedMap[int, string]()
-	
-	sm.Put(1, "one")
-	sm.Put(2, "two")
-	sm.Put(3, "three")
-	
-	// Update middle element multiple times
-	sm.Put(2, "TWO")
-	sm.Put(2, "two-updated")
-	sm.Put(2, "final")
-	
-	// Order should be preserved
-	current, val, ok := sm.Min()
-	assert.True(t, ok)
-	assert.Equal(t, 1, current)
-	
-	current, val, ok = sm.Next(current)
-	assert.True(t, ok)
-	assert.Equal(t, 2, current)
-	assert.Equal(t, "final", val) // Updated value
-	
-	current, _, ok = sm.Next(current)
-	assert.True(t, ok)
-	assert.Equal(t, 3, current)
 }

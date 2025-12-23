@@ -1,10 +1,7 @@
 package qotp
 
 import (
-	"fmt"
 	"io"
-	"log/slog"
-	"runtime"
 	"sync"
 )
 
@@ -29,14 +26,6 @@ func (s *Stream) Ping() {
 }
 
 func (s *Stream) Close() {
-	_, file, line, _ := runtime.Caller(1)
-	slog.Debug("Close called", gId(),
-		"caller", fmt.Sprintf("%s:%d", file, line),
-		"rcvClosed", s.rcvClosed,
-		"sndClosed", s.sndClosed,
-		"streamID", s.streamID)
-
-	slog.Debug("Close called", s.debug())
 	s.conn.snd.Close(s.streamID)
 }
 
@@ -57,7 +46,6 @@ func (s *Stream) Read() (data []byte, err error) {
 	defer s.mu.Unlock()
 
 	if s.rcvClosed {
-		slog.Debug("Read/closed", gId(), s.debug())
 		return nil, io.EOF
 	}
 
@@ -67,11 +55,8 @@ func (s *Stream) Read() (data []byte, err error) {
 	if !s.rcvClosed && s.conn.rcv.IsReadyToClose(s.streamID) {
 		// it is marked to close
 		s.rcvClosed = true
-		slog.Debug("Read/set closed", gId(), s.debug())
-
 	}
 
-	slog.Debug("Read", gId(), s.debug(), slog.Any("b…", data[:min(16, len(data))]))
 	return data, nil
 }
 
@@ -87,33 +72,14 @@ func (s *Stream) Write(userData []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	slog.Debug("Write", gId(), s.debug(), slog.Any("b…", userData[:min(16, len(userData))]))
 	n, status := s.conn.snd.QueueData(s.streamID, userData)
-	if status != InsertStatusOk {
-		slog.Debug("Status Nok", gId(), s.debug(), slog.Any("status", status))
-	} else {
+	if status == InsertStatusOk {
 		// data is read, so signal to cancel read, since we could do a flush
 		err = s.conn.listener.localConn.TimeoutReadNow()
 		if err != nil {
 			return 0, err
 		}
-		slog.Debug("TimeoutReadNow called", gId(), s.debug())
 	}
 
 	return n, nil
-}
-
-func (s *Stream) debug() slog.Attr {
-	var attr slog.Attr
-	if s.conn == nil {
-		attr = slog.String("conn", "s.conn is nil")
-	} else if s.conn.listener == nil {
-		attr = slog.String("conn", "s.conn.listener is nil")
-	} else if s.conn.listener.localConn == nil {
-		attr = slog.String("conn", "s.conn.listener.localConn is nil")
-	} else {
-		attr = slog.String("conn", s.conn.listener.localConn.LocalAddrString())
-	}
-
-	return slog.Group("net", attr, slog.Uint64("streamId", uint64(s.streamID)), s.conn.debug())
 }

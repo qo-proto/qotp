@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"crypto/ecdh"
-	"log/slog"
 	"net/netip"
 	"sync"
 )
@@ -117,7 +116,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 	if len(userData) > 0 {
 		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
 	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
-		c.rcv.EmptyInsert(s.streamID, p.StreamOffset, nowNano)
+		c.rcv.EmptyInsert(s.streamID, p.StreamOffset)
 	}
 
 	if p.IsClose {
@@ -142,8 +141,6 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
 func (c *Conn) cleanupStream(streamID uint32) {
-	slog.Debug("Cleanup/Stream", gId(), c.debug(), slog.Uint64("streamId", uint64(streamID)))
-
 	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
 		tmp, _, _ := c.streams.Next(streamID)
 		c.listener.currentStreamID = &tmp
@@ -154,8 +151,6 @@ func (c *Conn) cleanupStream(streamID uint32) {
 }
 
 func (c *Conn) cleanupConn() {
-	slog.Debug("Cleanup/Conn", gId(), c.debug())
-
 	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
 		tmp, _, _ := c.listener.connMap.Next(c.connId)
 		c.listener.currentConnID = &tmp
@@ -173,8 +168,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	// Respect pacing
 	if c.nextWriteTime > nowNano {
-		slog.Debug(" Flush/Pacing", gId(), s.debug(), c.debug(),
-			slog.Uint64("waitTime:ms", (c.nextWriteTime-nowNano)/msNano))
 		//do not sent acks, as this is also data on the line
 		return 0, c.nextWriteTime - nowNano, nil
 	}
@@ -189,7 +182,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	//Respect rwnd
 	if c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize) {
-		slog.Debug("Flush/Rwnd/Rcv", gId(), s.debug(), c.debug(), slog.Bool("ack?", ack != nil))
 		if ack != nil {
 			// Send ACK even if receiver indicated no more data, an ack does not add data
 			return c.writeAck(s, ack, false, nowNano)
@@ -206,7 +198,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	if splitData != nil {
 		c.onPacketLoss()
-		slog.Debug("Flush/Retransmit", gId(), s.debug(), c.debug())
 		return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, false)
 	}
 
@@ -214,16 +205,13 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
 		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
 		if splitData != nil {
-			slog.Debug("Flush/Send", gId(), s.debug(), c.debug(), slog.Any("offset", offset), slog.Any("l(data)", len(splitData)))
 			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
-			slog.Debug("Flush/Ack1", gId(), s.debug(), c.debug())
 			return c.writeAck(s, ack, isClose, nowNano)
 		}
 	}
 
 	if ack != nil {
-		slog.Debug(" Flush/Ack2", gId(), s.debug(), c.debug())
 		return c.writeAck(s, ack, false, nowNano)
 	}
 	return 0, MinDeadLine, nil
@@ -257,13 +245,6 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 }
 
 func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data int, pacingNano uint64, err error) {
-	slog.Info("Sending ACK",
-		"streamID", s.streamID,
-		"rcvWnd", ack.rcvWnd,
-		"offset", ack.offset,
-		"len", ack.len,
-		"close", isClose)
-
 	p := &PayloadHeader{
 		IsClose:  isClose,
 		Ack:      ack,
@@ -282,20 +263,4 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 	pacingNano = c.calcPacing(uint64(len(encData)))
 	c.nextWriteTime = nowNano + pacingNano
 	return 0, pacingNano, nil
-}
-
-func (c *Conn) debug() slog.Attr {
-	return slog.Group("connection",
-		slog.Uint64("connID", c.connId),
-		slog.Any("currId", c.listener.currentConnID),
-		slog.Uint64("nextWrt:ms", c.nextWriteTime/msNano),
-		//slog.Uint64("nextWrt:ns", c.nextWriteTime),
-		slog.Int("inFlight", c.dataInFlight),
-		slog.Int("rcvBuf", c.rcv.capacity-c.rcv.size),
-		slog.Uint64("rcvWnd", c.rcvWndSize),
-		slog.Uint64("snCrypto", c.snCrypto),
-		slog.Uint64("epochSnd", c.epochCryptoSnd),
-		slog.Uint64("epochRcv", c.epochCryptoRcv),
-		slog.Bool("initsent", c.isInitSentOnSnd),
-		slog.Bool("hndshke", c.isHandshakeDoneOnRcv))
 }

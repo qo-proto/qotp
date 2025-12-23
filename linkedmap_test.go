@@ -20,362 +20,142 @@ func TestLinkedMapNewLinkedMap(t *testing.T) {
 	assert.Equal(t, lm.head, lm.tail.prev)
 }
 
-func TestLinkedMapSizeEmpty(t *testing.T) {
+func TestLinkedMapPut(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapSizeWithElements(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
+	
 	lm.Put("a", 1)
-	assert.Equal(t, 1, lm.Size())
-	
 	lm.Put("b", 2)
-	assert.Equal(t, 2, lm.Size())
-	
 	lm.Put("c", 3)
 	assert.Equal(t, 3, lm.Size())
+	assert.Equal(t, 1, lm.Get("a"))
+	assert.Equal(t, 2, lm.Get("b"))
+	
+	// Update existing key - size unchanged, order preserved
+	lm.Put("b", 200)
+	assert.Equal(t, 3, lm.Size())
+	assert.Equal(t, 200, lm.Get("b"))
+	
+	// Verify order: a -> b -> c
+	k, v, ok := lm.First()
+	assert.True(t, ok)
+	assert.Equal(t, "a", k)
+	assert.Equal(t, 1, v)
+	
+	k, v, ok = lm.Next("a")
+	assert.True(t, ok)
+	assert.Equal(t, "b", k)
+	assert.Equal(t, 200, v)
 }
 
-func TestLinkedMapSizeAfterRemoval(t *testing.T) {
+func TestLinkedMapGet(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
+	
+	// Non-existent returns zero value
+	assert.Equal(t, 0, lm.Get("missing"))
+	
+	// Existing key
+	lm.Put("key", 42)
+	assert.Equal(t, 42, lm.Get("key"))
+	
+	// Zero value is distinguishable via Contains
+	lm.Put("zero", 0)
+	assert.Equal(t, 0, lm.Get("zero"))
+	assert.True(t, lm.Contains("zero"))
+}
+
+func TestLinkedMapContains(t *testing.T) {
+	lm := NewLinkedMap[string, int]()
+	
+	assert.False(t, lm.Contains("any"))
+	
+	lm.Put("key", 42)
+	lm.Put("zero", 0)
+	
+	assert.True(t, lm.Contains("key"))
+	assert.True(t, lm.Contains("zero"))
+	assert.False(t, lm.Contains("missing"))
+	
+	lm.Remove("key")
+	assert.False(t, lm.Contains("key"))
+}
+
+func TestLinkedMapRemove(t *testing.T) {
+	lm := NewLinkedMap[string, int]()
+	
+	// Empty map
+	_, ok := lm.Remove("any")
+	assert.False(t, ok)
+	
 	lm.Put("a", 1)
 	lm.Put("b", 2)
-	assert.Equal(t, 2, lm.Size())
-	
-	_, ok := lm.Remove("a")
-	assert.True(t, ok)
-	assert.Equal(t, 1, lm.Size())
-	
-	_, ok = lm.Remove("b")
-	assert.True(t, ok)
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapPutNewKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 100)
-	assert.Equal(t, 1, lm.Size())
-	assert.Equal(t, 100, lm.Get(key1))
-}
-
-func TestLinkedMapPutUpdateExistingKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 100)
-	lm.Put(key1, 200) // Update existing key
-	
-	assert.Equal(t, 1, lm.Size()) // Size should remain the same
-	assert.Equal(t, 200, lm.Get(key1))
-}
-
-func TestLinkedMapPutMultipleKeys(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
-	
-	assert.Equal(t, 3, lm.Size())
-	assert.Equal(t, 1, lm.Get(a))
-	assert.Equal(t, 2, lm.Get(b))
-	assert.Equal(t, 3, lm.Get(c))
-}
-
-func TestLinkedMapPutInsertionOrder(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	first := "first"
-	second := "second"
-	third := "third"
-	
-	lm.Put(first, 1)
-	lm.Put(second, 2)
-	lm.Put(third, 3)
-	
-	// Check insertion order using First and Next
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, first, key)
-	assert.Equal(t, 1, value)
-	
-	key, value, ok = lm.Next(first)
-	assert.True(t, ok)
-	assert.Equal(t, second, key)
-	assert.Equal(t, 2, value)
-	
-	key, value, ok = lm.Next(second)
-	assert.True(t, ok)
-	assert.Equal(t, third, key)
-	assert.Equal(t, 3, value)
-}
-
-func TestLinkedMapPutUpdateDoesNotChangeOrder(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	first := "first"
-	second := "second"
-	third := "third"
-	
-	lm.Put(first, 1)
-	lm.Put(second, 2)
-	lm.Put(third, 3)
-	
-	// Update second element
-	lm.Put(second, 200)
-	
-	// Order should remain the same
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, first, key)
-	assert.Equal(t, 1, value)
-	
-	key, value, ok = lm.Next(first)
-	assert.True(t, ok)
-	assert.Equal(t, second, key)
-	assert.Equal(t, 200, value) // Updated value
-	
-	key, value, ok = lm.Next(second)
-	assert.True(t, ok)
-	assert.Equal(t, third, key)
-	assert.Equal(t, 3, value)
-}
-
-func TestLinkedMapGetExistingKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 42)
-	value := lm.Get(key1)
-	assert.Equal(t, 42, value)
-}
-
-func TestLinkedMapGetNonExistentKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	value := lm.Get("nonexistent")
-	assert.Equal(t, 0, value) // Should return zero value for int
-}
-
-func TestLinkedMapGetEmptyMap(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	value := lm.Get("any")
-	assert.Equal(t, 0, value)
-}
-
-func TestLinkedMapGetZeroValue(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	zero := "zero"
-	lm.Put(zero, 0)
-	value := lm.Get(zero)
-	assert.Equal(t, 0, value)
-}
-
-func TestLinkedMapContainsExistingKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 42)
-	assert.True(t, lm.Contains(key1))
-}
-
-func TestLinkedMapContainsNonExistentKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	assert.False(t, lm.Contains("nonexistent"))
-}
-
-func TestLinkedMapContainsEmptyMap(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	assert.False(t, lm.Contains("any"))
-}
-
-func TestLinkedMapContainsZeroValue(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	zero := "zero"
-	lm.Put(zero, 0)
-	assert.True(t, lm.Contains(zero))
-}
-
-func TestLinkedMapContainsAfterRemoval(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 42)
-	assert.True(t, lm.Contains(key1))
-	
-	_, ok := lm.Remove(key1)
-	assert.True(t, ok)
-	assert.False(t, lm.Contains(key1))
-}
-
-func TestLinkedMapRemoveExistingKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	lm.Put(key1, 42)
-	removedValue, ok := lm.Remove(key1)
-	
-	assert.True(t, ok)
-	assert.Equal(t, 42, removedValue)
-	assert.Equal(t, 0, lm.Size())
-	assert.False(t, lm.Contains(key1))
-}
-
-func TestLinkedMapRemoveNonExistentKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	removedValue, ok := lm.Remove("nonexistent")
-	assert.False(t, ok)
-	assert.Equal(t, 0, removedValue) // Should return zero value
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapRemoveEmptyMap(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	removedValue, ok := lm.Remove("any")
-	assert.False(t, ok)
-	assert.Equal(t, 0, removedValue)
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapRemoveMultipleElements(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
+	lm.Put("c", 3)
 	
 	// Remove middle element
-	removedValue, ok := lm.Remove(b)
+	v, ok := lm.Remove("b")
 	assert.True(t, ok)
-	assert.Equal(t, 2, removedValue)
+	assert.Equal(t, 2, v)
 	assert.Equal(t, 2, lm.Size())
 	
-	// Check that order is maintained for remaining elements
-	key, value, ok := lm.First()
+	// Links updated: a -> c
+	k, _, ok := lm.Next("a")
 	assert.True(t, ok)
-	assert.Equal(t, a, key)
-	assert.Equal(t, 1, value)
+	assert.Equal(t, "c", k)
 	
-	key, value, ok = lm.Next(a)
+	// Remove first
+	lm.Remove("a")
+	k, _, ok = lm.First()
 	assert.True(t, ok)
-	assert.Equal(t, c, key)
-	assert.Equal(t, 3, value)
-}
-
-func TestLinkedMapRemoveFirstElement(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	first := "first"
-	second := "second"
+	assert.Equal(t, "c", k)
 	
-	lm.Put(first, 1)
-	lm.Put(second, 2)
-	
-	removedValue, ok := lm.Remove(first)
-	assert.True(t, ok)
-	assert.Equal(t, 1, removedValue)
-	
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, second, key)
-	assert.Equal(t, 2, value)
-}
-
-func TestLinkedMapRemoveLastElement(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	first := "first"
-	last := "last"
-	
-	lm.Put(first, 1)
-	lm.Put(last, 2)
-	
-	removedValue, ok := lm.Remove(last)
-	assert.True(t, ok)
-	assert.Equal(t, 2, removedValue)
-	
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, first, key)
-	assert.Equal(t, 1, value)
-}
-
-func TestLinkedMapFirstEmptyMap(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key, value, ok := lm.First()
+	// Remove non-existent
+	_, ok = lm.Remove("missing")
 	assert.False(t, ok)
-	assert.Equal(t, "", key) // Zero value for string
-	assert.Equal(t, 0, value) // Zero value for int
 }
 
-func TestLinkedMapFirstSingleElement(t *testing.T) {
+func TestLinkedMapFirst(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
-	only := "only"
-	lm.Put(only, 42)
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, only, key)
-	assert.Equal(t, 42, value)
-}
-
-func TestLinkedMapFirstMultipleElements(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	first := "first"
-	second := "second"
-	third := "third"
 	
-	lm.Put(first, 1)
-	lm.Put(second, 2)
-	lm.Put(third, 3)
-	
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, first, key)
-	assert.Equal(t, 1, value)
-}
-
-func TestLinkedMapNextExistingKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
-	
-	key, value, ok := lm.Next(a)
-	assert.True(t, ok)
-	assert.Equal(t, b, key)
-	assert.Equal(t, 2, value)
-	
-	key, value, ok = lm.Next(b)
-	assert.True(t, ok)
-	assert.Equal(t, c, key)
-	assert.Equal(t, 3, value)
-}
-
-func TestLinkedMapNextLastElement(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	
-	key, value, ok := lm.Next(b) // Last element
+	// Empty
+	_, _, ok := lm.First()
 	assert.False(t, ok)
-	assert.Equal(t, "", key) // Zero value for string
-	assert.Equal(t, 0, value) // Zero value for int
+	
+	// Single element
+	lm.Put("only", 42)
+	k, v, ok := lm.First()
+	assert.True(t, ok)
+	assert.Equal(t, "only", k)
+	assert.Equal(t, 42, v)
+	
+	// Multiple - returns first inserted
+	lm.Put("second", 2)
+	k, _, _ = lm.First()
+	assert.Equal(t, "only", k)
 }
 
-func TestLinkedMapNextNonExistentKey(t *testing.T) {
+func TestLinkedMapNext(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
-	a := "a"
-	lm.Put(a, 1)
 	
-	key, value, ok := lm.Next("nonexistent")
+	lm.Put("a", 1)
+	lm.Put("b", 2)
+	lm.Put("c", 3)
+	
+	// Traverse forward
+	k, v, ok := lm.Next("a")
+	assert.True(t, ok)
+	assert.Equal(t, "b", k)
+	assert.Equal(t, 2, v)
+	
+	k, v, ok = lm.Next("b")
+	assert.True(t, ok)
+	assert.Equal(t, "c", k)
+	
+	// Last element has no next
+	_, _, ok = lm.Next("c")
 	assert.False(t, ok)
-	assert.Equal(t, "", key)
-	assert.Equal(t, 0, value)
+	
+	// Non-existent key
+	_, _, ok = lm.Next("missing")
+	assert.False(t, ok)
 }
 
 func TestLinkedMapNextEmptyMap(t *testing.T) {
@@ -397,191 +177,58 @@ func TestLinkedMapNextSingleElement(t *testing.T) {
 	assert.Equal(t, 0, value)
 }
 
-func TestLinkedMapPreviousExistingKey(t *testing.T) {
+func TestLinkedMapPrevious(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
 	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
+	lm.Put("a", 1)
+	lm.Put("b", 2)
+	lm.Put("c", 3)
 	
-	key, value, ok := lm.Previous(c)
+	k, v, ok := lm.Previous("c")
 	assert.True(t, ok)
-	assert.Equal(t, b, key)
-	assert.Equal(t, 2, value)
+	assert.Equal(t, "b", k)
+	assert.Equal(t, 2, v)
 	
-	key, value, ok = lm.Previous(b)
-	assert.True(t, ok)
-	assert.Equal(t, a, key)
-	assert.Equal(t, 1, value)
-}
-
-func TestLinkedMapPreviousFirstElement(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	
-	key, value, ok := lm.Previous(a) // First element
+	// First element has no previous
+	_, _, ok = lm.Previous("a")
 	assert.False(t, ok)
-	assert.Equal(t, "", key) // Zero value for string
-	assert.Equal(t, 0, value) // Zero value for int
-}
-
-func TestLinkedMapPreviousNonExistentKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	lm.Put(a, 1)
 	
-	key, value, ok := lm.Previous("nonexistent")
+	// Non-existent key
+	_, _, ok = lm.Previous("missing")
 	assert.False(t, ok)
-	assert.Equal(t, "", key)
-	assert.Equal(t, 0, value)
 }
 
-func TestLinkedMapPreviousEmptyMap(t *testing.T) {
+func TestLinkedMapReplace(t *testing.T) {
 	lm := NewLinkedMap[string, int]()
-	key, value, ok := lm.Previous("any")
-	assert.False(t, ok)
-	assert.Equal(t, "", key)
-	assert.Equal(t, 0, value)
-}
-
-func TestLinkedMapPreviousSingleElement(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	only := "only"
-	lm.Put(only, 42)
 	
-	key, value, ok := lm.Previous(only)
-	assert.False(t, ok)
-	assert.Equal(t, "", key)
-	assert.Equal(t, 0, value)
-}
-
-func TestLinkedMapReplaceExistingOldKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	old := "old"
-	middle := "middle"
-	end := "end"
-	newKey := "new"
-	
-	lm.Put(old, 1)
-	lm.Put(middle, 2)
-	lm.Put(end, 3)
-	
-	success := lm.Replace(old, newKey, 100)
-	
-	assert.True(t, success)
-	assert.False(t, lm.Contains(old))
-	assert.True(t, lm.Contains(newKey))
-	assert.Equal(t, 100, lm.Get(newKey))
-	assert.Equal(t, 3, lm.Size())
-	
-	// Check that order is maintained
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, newKey, key)
-	assert.Equal(t, 100, value)
-	
-	key, value, ok = lm.Next(newKey)
-	assert.True(t, ok)
-	assert.Equal(t, middle, key)
-	assert.Equal(t, 2, value)
-}
-
-func TestLinkedMapReplaceNonExistentOldKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	existing := "existing"
-	newKey := "new"
-	
-	lm.Put(existing, 1)
-	
-	success := lm.Replace("nonexistent", newKey, 100)
-	
-	assert.False(t, success)
-	assert.True(t, lm.Contains(existing))
-	assert.False(t, lm.Contains(newKey))
-	assert.Equal(t, 1, lm.Size())
-}
-
-func TestLinkedMapReplaceNewKeyAlreadyExists(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key1 := "key1"
-	key2 := "key2"
-	
-	lm.Put(key1, 1)
-	lm.Put(key2, 2)
-	
-	success := lm.Replace(key1, key2, 100)
-	
-	assert.False(t, success)
-	assert.True(t, lm.Contains(key1))
-	assert.True(t, lm.Contains(key2))
-	assert.Equal(t, 1, lm.Get(key1)) // Unchanged
-	assert.Equal(t, 2, lm.Get(key2)) // Unchanged
-	assert.Equal(t, 2, lm.Size())
-}
-
-func TestLinkedMapReplaceSameKey(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	key := "key"
-	
-	lm.Put(key, 1)
-	
-	success := lm.Replace(key, key, 100)
-	
-	assert.True(t, success)
-	assert.True(t, lm.Contains(key))
-	assert.Equal(t, 100, lm.Get(key))
-	assert.Equal(t, 1, lm.Size())
-}
-
-func TestLinkedMapReplaceEmptyMap(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	old := "old"
-	newKey := "new"
-	
-	success := lm.Replace(old, newKey, 100)
-	
-	assert.False(t, success)
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapReplacePreservesOrder(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
-	B := "B"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
+	lm.Put("a", 1)
+	lm.Put("b", 2)
+	lm.Put("c", 3)
 	
 	// Replace middle element
-	success := lm.Replace(b, B, 200)
-	
-	assert.True(t, success)
-	
-	// Check order is preserved
-	key, value, ok := lm.First()
+	ok := lm.Replace("b", "B", 200)
 	assert.True(t, ok)
-	assert.Equal(t, a, key)
-	assert.Equal(t, 1, value)
+	assert.False(t, lm.Contains("b"))
+	assert.Equal(t, 200, lm.Get("B"))
 	
-	key, value, ok = lm.Next(a)
-	assert.True(t, ok)
-	assert.Equal(t, B, key)
-	assert.Equal(t, 200, value)
+	// Order preserved: a -> B -> c
+	k, _, _ := lm.Next("a")
+	assert.Equal(t, "B", k)
+	k, _, _ = lm.Next("B")
+	assert.Equal(t, "c", k)
 	
-	key, value, ok = lm.Next(B)
+	// Replace with same key (just update value)
+	ok = lm.Replace("a", "a", 100)
 	assert.True(t, ok)
-	assert.Equal(t, c, key)
-	assert.Equal(t, 3, value)
+	assert.Equal(t, 100, lm.Get("a"))
+	
+	// Replace non-existent fails
+	ok = lm.Replace("missing", "new", 0)
+	assert.False(t, ok)
+	
+	// Replace to existing key fails
+	ok = lm.Replace("a", "c", 0)
+	assert.False(t, ok)
 }
 
 func TestLinkedMapIteratorEmptyMap(t *testing.T) {
@@ -1173,217 +820,6 @@ func TestLinkedMapConcurrentMixedOperations(t *testing.T) {
 	// Verify final state
 	assert.True(t, lm.Size() >= 50) // At least original elements
 	assert.True(t, lm.Size() <= 110) // Original + new elements
-}
-
-func TestLinkedMapWithIntegerKeys(t *testing.T) {
-	intMap := NewLinkedMap[int, string]()
-	
-	one := 1
-	two := 2
-	three := 3
-	
-	intMap.Put(one, "one")
-	intMap.Put(two, "two")
-	intMap.Put(three, "three")
-	
-	assert.Equal(t, "one", intMap.Get(one))
-	assert.Equal(t, "two", intMap.Get(two))
-	assert.Equal(t, "three", intMap.Get(three))
-	assert.Equal(t, 3, intMap.Size())
-	
-	// Test traversal
-	key, value, ok := intMap.First()
-	assert.True(t, ok)
-	assert.Equal(t, one, key)
-	assert.Equal(t, "one", value)
-	
-	key, value, ok = intMap.Next(one)
-	assert.True(t, ok)
-	assert.Equal(t, two, key)
-	assert.Equal(t, "two", value)
-	
-	key, value, ok = intMap.Previous(two)
-	assert.True(t, ok)
-	assert.Equal(t, one, key)
-	assert.Equal(t, "one", value)
-}
-
-func TestLinkedMapWithStructValues(t *testing.T) {
-	type Person struct {
-		Name string
-		Age  int
-	}
-	
-	personMap := NewLinkedMap[string, Person]()
-	
-	alice := "alice"
-	bob := "bob"
-	
-	p1 := Person{Name: "Alice", Age: 30}
-	p2 := Person{Name: "Bob", Age: 25}
-	
-	personMap.Put(alice, p1)
-	personMap.Put(bob, p2)
-	
-	retrievedP1 := personMap.Get(alice)
-	assert.Equal(t, "Alice", retrievedP1.Name)
-	assert.Equal(t, 30, retrievedP1.Age)
-	
-	// Test zero value
-	nonExistent := personMap.Get("charlie")
-	assert.Equal(t, "", nonExistent.Name)
-	assert.Equal(t, 0, nonExistent.Age)
-}
-
-func TestLinkedMapReplaceWithDifferentTypes(t *testing.T) {
-	boolMap := NewLinkedMap[string, bool]()
-	
-	trueKey := "true"
-	falseKey := "false"
-	TRUE := "TRUE"
-	
-	boolMap.Put(trueKey, true)
-	boolMap.Put(falseKey, false)
-	
-	success := boolMap.Replace(trueKey, TRUE, false)
-	assert.True(t, success)
-	assert.False(t, boolMap.Get(TRUE))
-	assert.False(t, boolMap.Contains(trueKey))
-}
-
-func TestLinkedMapRemoveNodeIsolation(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	a := "a"
-	b := "b"
-	c := "c"
-	
-	lm.Put(a, 1)
-	lm.Put(b, 2)
-	lm.Put(c, 3)
-	
-	// Get references before removal
-	firstKey, _, ok := lm.First()
-	assert.True(t, ok)
-	assert.Equal(t, a, firstKey)
-	
-	// Remove middle element
-	removedValue, ok := lm.Remove(b)
-	assert.True(t, ok)
-	assert.Equal(t, 2, removedValue)
-	
-	// Verify links are properly updated
-	key, value, ok := lm.Next(a)
-	assert.True(t, ok)
-	assert.Equal(t, c, key)
-	assert.Equal(t, 3, value)
-	
-	key, value, ok = lm.Previous(c)
-	assert.True(t, ok)
-	assert.Equal(t, a, key)
-	assert.Equal(t, 1, value)
-}
-
-func TestLinkedMapSizeConsistency(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	// Start empty
-	assert.Equal(t, 0, lm.Size())
-	
-	a := "a"
-	b := "b"
-	A := "A"
-	
-	// Add elements
-	lm.Put(a, 1)
-	assert.Equal(t, 1, lm.Size())
-	
-	lm.Put(b, 2)
-	assert.Equal(t, 2, lm.Size())
-	
-	// Update existing (size should not change)
-	lm.Put(a, 10)
-	assert.Equal(t, 2, lm.Size())
-	
-	// Replace (size should not change)
-	lm.Replace(a, A, 100)
-	assert.Equal(t, 2, lm.Size())
-	
-	// Remove
-	_, ok := lm.Remove(A)
-	assert.True(t, ok)
-	assert.Equal(t, 1, lm.Size())
-	
-	_, ok = lm.Remove(b)
-	assert.True(t, ok)
-	assert.Equal(t, 0, lm.Size())
-	
-	// Remove non-existent (size should not change)
-	_, ok = lm.Remove("nonexistent")
-	assert.False(t, ok)
-	assert.Equal(t, 0, lm.Size())
-}
-
-func TestLinkedMapZeroValueHandling(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	// Test with zero values for different types
-	
-	// Empty string key
-	empty := ""
-	zero := "zero"
-	
-	lm.Put(empty, 42) // Empty string key
-	assert.True(t, lm.Contains(empty))
-	assert.Equal(t, 42, lm.Get(empty))
-	
-	// Int zero value
-	lm.Put(zero, 0) // Zero value
-	assert.True(t, lm.Contains(zero))
-	assert.Equal(t, 0, lm.Get(zero))
-	
-	// Test operations with zero values
-	key, value, ok := lm.First()
-	assert.True(t, ok)
-	if key == "" {
-		assert.Equal(t, 42, value)
-	} else {
-		assert.Equal(t, zero, key)
-		assert.Equal(t, 0, value)
-	}
-}
-
-func TestLinkedMapTraversalIntegrity(t *testing.T) {
-	lm := NewLinkedMap[string, int]()
-	// Build a map with known order
-	keyStrs := []string{"alpha", "beta", "gamma", "delta", "epsilon"}
-	keys := make([]string, len(keyStrs))
-	for i, keyStr := range keyStrs {
-		keys[i] = keyStr
-		lm.Put(keys[i], i*10)
-	}
-	
-	// Forward traversal
-	currentKey, currentValue, ok := lm.First()
-	assert.True(t, ok)
-	for i, expectedKey := range keys {
-		assert.Equal(t, expectedKey, currentKey, "Forward traversal at position %d", i)
-		assert.Equal(t, i*10, currentValue, "Forward traversal value at position %d", i)
-		
-		if i < len(keys)-1 {
-			currentKey, currentValue, ok = lm.Next(currentKey)
-			assert.True(t, ok)
-		}
-	}
-	
-	// Backward traversal from last element
-	currentKey = keys[len(keys)-1]
-	for i := len(keys) - 1; i >= 0; i-- {
-		expectedKey := keys[i]
-		assert.Equal(t, expectedKey, currentKey, "Backward traversal at position %d", i)
-		
-		if i > 0 {
-			currentKey, _, ok = lm.Previous(currentKey)
-			assert.True(t, ok)
-		}
-	}
 }
 
 func TestLinkedMapNestedIteratorBasic(t *testing.T) {

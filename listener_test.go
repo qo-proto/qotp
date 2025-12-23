@@ -548,7 +548,6 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 						for len(responseData) > 0 {
 							n, err := s.Write(responseData)
 							if err != nil {
-								slog.Debug("Bob write failed on stream", s.debug())
 								return false, err
 							}
 							if n > 0 {

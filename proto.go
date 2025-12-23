@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"errors"
-	"log/slog"
 	"math/bits"
 )
 
@@ -25,10 +24,6 @@ type Ack struct {
 	offset   uint64
 	len      uint16
 	rcvWnd   uint64
-}
-
-func (p *PayloadHeader) debug() slog.Attr {
-	return slog.Group("pkg", slog.Bool("ack", p.Ack != nil), slog.Bool("close", p.IsClose))
 }
 
 /*
@@ -146,8 +141,7 @@ func EncodePayload(p *PayloadHeader, userData []byte) (encoded []byte, offset in
 func DecodePayload(data []byte) (payload *PayloadHeader, userData []byte, err error) {
 	dataLen := len(data)
 	if dataLen < MinProtoSize {
-		slog.Error("payload size too low", "dataLen", dataLen, "MinProtoSize", MinProtoSize)
-		return nil, nil, errors.New("payload Size below minimum of 8 bytes")
+		return nil, nil, errors.New("payload Size below minimum")
 	}
 
 	payload = &PayloadHeader{}
