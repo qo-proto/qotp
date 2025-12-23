@@ -95,7 +95,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 		slog.Any("bytesReceived", stream.nextInOrderOffsetToWaitFor))
 
 	if stream.closeAtOffset != nil {
-		if offset+uint64(dataLen) > *stream.closeAtOffset {
+		if offset >= *stream.closeAtOffset {
 			// Data after close offset - protocol violation
 			// Still ACK it (already added to ackList above) but drop the data
 			slog.Warn("Rcv data after close offset",

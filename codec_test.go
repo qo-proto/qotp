@@ -22,8 +22,6 @@ var (
 	prvIdBob, _       = ecdh.X25519().NewPrivateKey(seed2[:])
 	prvEpAlice, _     = ecdh.X25519().NewPrivateKey(seed3[:])
 	prvEpBob, _       = ecdh.X25519().NewPrivateKey(seed4[:])
-	prvEpAliceRoll, _ = ecdh.X25519().NewPrivateKey(seed5[:])
-	prvEpBobRoll, _   = ecdh.X25519().NewPrivateKey(seed6[:])
 )
 
 // Helper functions

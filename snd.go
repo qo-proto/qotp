@@ -366,7 +366,7 @@ func (sb *SendBuffer) checkStreamFullyAcked(streamID uint32) bool {
 	var ackedOffset uint64
 	firstKey, _, ok := stream.dataInFlightMap.First()
 	if ok {
-		ackedOffset = firstKey.offset() + uint64(firstKey.length())
+		ackedOffset = firstKey.offset()
 	} else {
 		// No inflight data means everything sent has been acked
 		ackedOffset = stream.bytesSentOffset

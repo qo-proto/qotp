@@ -2,10 +2,8 @@ package qotp
 
 import (
 	"crypto/ecdh"
-	"fmt"
 	"log/slog"
 	"net/netip"
-	"runtime"
 	"sync"
 )
 
@@ -99,58 +97,33 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 
 	s = c.Stream(p.StreamID)
 	if p.Ack != nil {
-
-		slog.Info("Received ACK packet",
-			"streamID", p.StreamID,
-			"offset", p.Ack.offset,
-			"len", p.Ack.len,
-			"rcvWnd", p.Ack.rcvWnd)
-
 		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
-		if ackStatus == AckStatusOk {
-
-			slog.Debug("ACK processed",
-				"streamID", p.StreamID,
-				"offset", p.Ack.offset,
-				"len", p.Ack.len,
-				"oldInFlight", c.dataInFlight,
-				"newInFlight", c.dataInFlight-int(p.Ack.len),
-				"rcvWnd", p.Ack.rcvWnd)
-
-			c.dataInFlight -= int(p.Ack.len)
-		} else if ackStatus == AckDup {
-			c.onDuplicateAck()
-		}
 		c.rcvWndSize = p.Ack.rcvWnd
 
-		if nowNano > sentTimeNano && ackStatus == AckStatusOk {
-			rttNano := nowNano - sentTimeNano
-			c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) //TODO: 42 is approx.
+		switch ackStatus {
+		case AckStatusOk:
+			c.dataInFlight -= int(p.Ack.len)
+			if nowNano > sentTimeNano {
+				rttNano := nowNano - sentTimeNano
+				c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) // TODO: 42 is approx overhead
+			}
+		case AckDup:
+			c.onDuplicateAck()
+		default:
+			// AckNotFound, AckPartial, etc. - no action needed
 		}
 	}
 
 	if len(userData) > 0 {
 		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
 	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
-		slog.Info("EmptyInsert called", gId(),
-			"streamID", p.StreamID,
-			"offset", p.StreamOffset,
-			"isClose", p.IsClose,
-			"userDataNil", userData == nil,
-			"userDataLen", len(userData))
-
 		c.rcv.EmptyInsert(s.streamID, p.StreamOffset, nowNano)
-	} else {
-		slog.Info("ACK, do nothing",
-			"streamID", p.StreamID,
-			"offset", p.StreamOffset,
-			"isClose", p.IsClose)
 	}
 
 	if p.IsClose {
 		closeOffset := p.StreamOffset + uint64(len(userData))
 		c.rcv.Close(s.streamID, closeOffset) //mark the stream closed at the just received offset
-		c.snd.Close(s.streamID)                                       //also close the send buffer at the current location
+		c.snd.Close(s.streamID)              //also close the send buffer at the current location
 
 		// Auto-close receive direction if nothing left to read
 		if !s.rcvClosed && closeOffset == 0 {
@@ -158,16 +131,9 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 		}
 	}
 
-	if p.Ack != nil || p.IsClose {
-		if c.snd.checkStreamFullyAcked(s.streamID) {
-			if !s.sndClosed {
-				s.sndClosed = true
-			} else {
-				_, file, line, _ := runtime.Caller(1)
-				slog.Warn("stream sndClosed set twice",
-					"streamID", s.streamID,
-					"caller", fmt.Sprintf("%s:%d", file, line))
-			}
+	if p.Ack != nil || p.IsClose && c.snd.checkStreamFullyAcked(s.streamID) {
+		if !s.sndClosed {
+			s.sndClosed = true
 		}
 	}
 
@@ -213,7 +179,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 		return 0, c.nextWriteTime - nowNano, nil
 	}
 
-	
 	//update state for receiver
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
