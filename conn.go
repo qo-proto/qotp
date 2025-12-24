@@ -95,6 +95,13 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 	defer c.mu.Unlock()
 
 	s = c.Stream(p.StreamID)
+
+	if len(userData) > 0 {
+		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
+	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
+		c.rcv.EmptyInsert(s.streamID, p.StreamOffset)
+	}
+
 	if p.Ack != nil {
 		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
 		c.rcvWndSize = p.Ack.rcvWnd
@@ -106,17 +113,16 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 				rttNano := nowNano - sentTimeNano
 				c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) // TODO: 42 is approx overhead
 			}
+
+			ackStream := c.Stream(p.Ack.streamID)
+			if !ackStream.sndClosed && c.snd.CheckStreamFullyAcked(p.Ack.streamID) {
+				ackStream.sndClosed = true
+			}
 		case AckDup:
 			c.onDuplicateAck()
 		default:
 			// AckNotFound, AckPartial, etc. - no action needed
 		}
-	}
-
-	if len(userData) > 0 {
-		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
-	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
-		c.rcv.EmptyInsert(s.streamID, p.StreamOffset)
 	}
 
 	if p.IsClose {
@@ -129,12 +135,11 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 			s.rcvClosed = true
 		}
 	}
-
-	if p.Ack != nil || p.IsClose {
-		if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
-			s.sndClosed = true
-		}
-	}
+	
+	// Always check if data stream is fully acked
+    if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
+        s.sndClosed = true
+    }
 
 	return s, nil
 }

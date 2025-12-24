@@ -495,7 +495,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	connAlice, err := listenerAlice.DialStringWithCrypto(listenerBob.localConn.LocalAddrString(), testPrvKey2.PublicKey())
 	assert.NoError(t, err)
 
-	numStreams := 10
+	numStreams := 20
 	dataSize := 20000
 
 	// Alice's send state
@@ -636,7 +636,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 
 			slog.Debug("ALICE CALLBACK", "allSent", allSent, "notSent", notSentStreams,
 				"allReceived", allReceived, "notReceived", notReceivedStreams, "notClosedStreams", notClosedStreams,
-				"hasActiveStreams", hasActiveStreams)
+				"hasActiveStreams", hasActiveStreams, "rcv size", connAlice.rcv.Size())
 
 			if allSent && allReceived && allClosed {
 				slog.Debug("ALICE COMPLETE - returning false")

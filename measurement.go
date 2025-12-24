@@ -7,8 +7,6 @@ import (
 	"math"
 )
 
-const ()
-
 var (
 	defaultRTO = uint64(200 * msNano)
 	minRTO     = uint64(100 * msNano)

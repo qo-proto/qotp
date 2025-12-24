@@ -16,26 +16,26 @@ var (
 	seed3 = [32]byte{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	seed4 = [32]byte{4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
 
-	prvIdAlice, _     = ecdh.X25519().NewPrivateKey(seed1[:])
-	prvIdBob, _       = ecdh.X25519().NewPrivateKey(seed2[:])
-	prvEpAlice, _     = ecdh.X25519().NewPrivateKey(seed3[:])
-	prvEpBob, _       = ecdh.X25519().NewPrivateKey(seed4[:])
+	prvIdAlice, _ = ecdh.X25519().NewPrivateKey(seed1[:])
+	prvIdBob, _   = ecdh.X25519().NewPrivateKey(seed2[:])
+	prvEpAlice, _ = ecdh.X25519().NewPrivateKey(seed3[:])
+	prvEpBob, _   = ecdh.X25519().NewPrivateKey(seed4[:])
 )
 
 // Helper functions
 func createTestConnection(isSender, withCrypto, handshakeDone bool) *Conn {
-	conn := &Conn{	
+	conn := &Conn{
 		isSenderOnInit:       isSender,
 		isWithCryptoOnInit:   withCrypto,
 		isHandshakeDoneOnRcv: handshakeDone,
-		snCrypto: 0,
-		pubKeyIdRcv: prvIdBob.PublicKey(),
-		prvKeyEpSnd: prvEpAlice,
-		listener:     &Listener{prvKeyId: prvIdAlice, mtu: 1400},
-		snd:          NewSendBuffer(sndBufferCapacity),
-		rcv:          NewReceiveBuffer(1000),
-		streams:      NewLinkedMap[uint32, *Stream](),
-		sharedSecret: bytes.Repeat([]byte{1}, 32),
+		snCrypto:             0,
+		pubKeyIdRcv:          prvIdBob.PublicKey(),
+		prvKeyEpSnd:          prvEpAlice,
+		listener:             &Listener{prvKeyId: prvIdAlice, mtu: 1400},
+		snd:                  NewSendBuffer(sndBufferCapacity),
+		rcv:                  NewReceiveBuffer(1000),
+		streams:              NewLinkedMap[uint32, *Stream](),
+		sharedSecret:         bytes.Repeat([]byte{1}, 32),
 	}
 
 	if !isSender {
@@ -54,12 +54,12 @@ func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
 		connMap:  NewLinkedMap[uint64, *Conn](),
 		prvKeyId: prvIdAlice,
-		mtu: 1400,
+		mtu:      1400,
 	}
 	lBob := &Listener{
 		connMap:  NewLinkedMap[uint64, *Conn](),
 		prvKeyId: prvIdBob,
-		mtu: 1400,
+		mtu:      1400,
 	}
 	return lAlice, lBob
 }
@@ -201,13 +201,14 @@ func TestCodecFullHandshake(t *testing.T) {
 
 	// Alice's initial connection
 	connAlice := &Conn{
-		connId: Uint64(prvEpAlice.PublicKey().Bytes()),
+		connId:         Uint64(prvEpAlice.PublicKey().Bytes()),
 		isSenderOnInit: true,
-		snCrypto: 0,
-		prvKeyEpSnd: prvEpAlice,
-		listener: lAlice,
-		rcv:      NewReceiveBuffer(1000),
-		streams:  NewLinkedMap[uint32, *Stream](),
+		snCrypto:       0,
+		prvKeyEpSnd:    prvEpAlice,
+		listener:       lAlice,
+		rcv:            NewReceiveBuffer(1000),
+		snd:            NewSendBuffer(1000),
+		streams:        NewLinkedMap[uint32, *Stream](),
 	}
 	lAlice.connMap.Put(connAlice.connId, connAlice)
 

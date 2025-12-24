@@ -55,12 +55,9 @@ func TestRcvGapBetweenSegments(t *testing.T) {
 	status = rb.Insert(1, 5, 0, []byte("middl"))
 	assert.Equal(t, RcvInsertOk, status)
 
-	// Now can read the complete sequence
+	// Now get ALL contiguous data in one call
 	data = rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("middl"), data)
-
-	data = rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("later"), data)
+	assert.Equal(t, []byte("middllater"), data)
 }
 
 func TestRcvMultipleStreams(t *testing.T) {
@@ -76,17 +73,13 @@ func TestRcvMultipleStreams(t *testing.T) {
 	status = rb.Insert(1, 13, 0, []byte("stream1-second"))
 	assert.Equal(t, RcvInsertOk, status)
 
-	// Read from stream 1
+	// Read from stream 1 - gets ALL contiguous data
 	data := rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("stream1-first"), data)
+	assert.Equal(t, []byte("stream1-firststream1-second"), data)
 
 	// Read from stream 2
 	data = rb.RemoveOldestInOrder(2)
 	assert.Equal(t, []byte("stream2-first"), data)
-
-	// Read second segment from stream 1
-	data = rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("stream1-second"), data)
 }
 
 func TestRcvBufferFull(t *testing.T) {
@@ -266,19 +259,14 @@ func TestRcvSizeAccounting(t *testing.T) {
 	assert.Equal(t, RcvInsertOk, status)
 	assert.Equal(t, 5, rb.Size())
 
-	// Overlapping segment
+	// Overlapping segment - adds only non-overlapping part
 	status = rb.Insert(1, 2, 0, []byte("CDEFG"))
 	assert.Equal(t, RcvInsertOk, status)
 	assert.Equal(t, 7, rb.Size()) // 5 + 2
 
-	// Read first segment
+	// Read ALL contiguous data in one call
 	data := rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("ABCDE"), data)
-	assert.Equal(t, 2, rb.Size())
-
-	// Read second segment
-	data = rb.RemoveOldestInOrder(1)
-	assert.Equal(t, []byte("FG"), data)
+	assert.Equal(t, []byte("ABCDEFG"), data)
 	assert.Equal(t, 0, rb.Size())
 }
 

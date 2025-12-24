@@ -223,6 +223,14 @@ func (rb *ReceiveBuffer) GetOffsetClosedAt(streamID uint32) (offset *uint64) {
 	return stream.closeAtOffset
 }
 
+// RemoveOldestInOrder returns all contiguous in-order data for the stream.
+// It loops to collect multiple segments because UDP packets may arrive out of order.
+// Example: if pkt1 (offset=0), pkt3 (offset=2600), pkt2 (offset=1300) arrive in that order:
+//   - pkt1 arrives → returns pkt1 data
+//   - pkt3 arrives → returns nil (gap at offset 1300)
+//   - pkt2 arrives → returns pkt2 AND pkt3 data (both now contiguous)
+// Without the loop, pkt3's data would remain orphaned in the buffer since
+// the callback fired for pkt3 already returned nil due to the gap.
 func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -236,29 +244,26 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 		return nil
 	}
 
-	// Check if there is any dataToSend at all
-	oldestOffset, oldestValue, ok := stream.segments.Min()
-	if !ok {
-		return nil
+	var result []byte
+
+	for {
+		oldestOffset, oldestValue, ok := stream.segments.Min()
+		if !ok {
+			break
+		}
+
+		if oldestOffset == stream.nextInOrderOffsetToWaitFor {
+			stream.segments.Remove(oldestOffset)
+			rb.size -= len(oldestValue.data)
+			result = append(result, oldestValue.data...)
+			stream.nextInOrderOffsetToWaitFor = oldestOffset + uint64(len(oldestValue.data))
+		} else {
+			// Gap or overlap - stop
+			break
+		}
 	}
 
-	if oldestOffset == stream.nextInOrderOffsetToWaitFor {
-		stream.segments.Remove(oldestOffset)
-		rb.size -= len(oldestValue.data)
-
-		stream.nextInOrderOffsetToWaitFor = oldestOffset + uint64(len(oldestValue.data))
-		return oldestValue.data
-	} else if oldestOffset > stream.nextInOrderOffsetToWaitFor {
-		// Out of order; wait until segment offset available, signal that
-		return nil
-	} else {
-		//Dupe, overlap, do nothing. Here we could think about adding the non-overlapping part. But if
-		//it's correctly implemented, this should not happen.
-		slog.Warn("RemoveOldestInOrder: unexpected overlap",
-			slog.Uint64("oldest", oldestOffset),
-			slog.Uint64("expected", stream.nextInOrderOffsetToWaitFor))
-		return nil
-	}
+	return result
 }
 
 func (rb *ReceiveBuffer) Size() int {

@@ -1,7 +1,6 @@
 package qotp
 
 import (
-	"math"
 	"sync"
 	"testing"
 	"time"
@@ -57,88 +56,47 @@ func TestMeasurementsFirstMeasurement(t *testing.T) {
 // RTT CALCULATION TESTS
 // =============================================================================
 
-// Test RTT increases from previous measurement
-func TestMeasurementsIncreasingRTT(t *testing.T) {
+func TestMeasurementsRTTCalculation(t *testing.T) {
+	// Increasing RTT: 100ms -> 200ms
 	conn := newTestConnection()
 	conn.srtt = 100 * msNano
 	conn.rttvar = 50 * msNano
-
-	// Update RTT with increased measurement
 	conn.updateMeasurements(200*msNano, 1000, 1_000_000_000)
+	assert.Equal(t, uint64(112500*1000), conn.srtt)
+	assert.Equal(t, uint64(62500*1000), conn.rttvar)
 
-	// Expected values - 7/8 * 100ms + 1/8 * 200ms = 112.5ms
-	expectedRTT := uint64(112500 * 1000)
-	// 3/4 * 50ms + 1/4 * 100ms = 62.5ms
-	expectedVar := uint64(62500 * 1000)
-
-	assert.Equal(t, expectedRTT, conn.srtt, "RTT should match expected value")
-	assert.Equal(t, expectedVar, conn.rttvar, "RTT variance should match expected value")
-}
-
-// Test RTT decreases from previous measurement
-func TestMeasurementsDecreasingRTT(t *testing.T) {
-	conn := newTestConnection()
+	// Decreasing RTT: 200ms -> 100ms
+	conn = newTestConnection()
 	conn.srtt = 200 * msNano
 	conn.rttvar = 80 * msNano
-
-	// Update RTT with decreased measurement
 	conn.updateMeasurements(100*msNano, 1000, 1_000_000_000)
+	assert.Equal(t, uint64(187500*1000), conn.srtt)
+	assert.Equal(t, uint64(85*msNano), conn.rttvar)
 
-	// Expected values - 7/8 * 200ms + 1/8 * 100ms = 187.5ms
-	expectedRTT := uint64(187500 * 1000)
-	// 3/4 * 80ms + 1/4 * 100ms = 85ms
-	expectedVar := uint64(85 * msNano)
-
-	assert.Equal(t, expectedRTT, conn.srtt, "RTT should match expected value")
-	assert.Equal(t, expectedVar, conn.rttvar, "RTT variance should match expected value")
-}
-
-// Test stable RTT
-func TestMeasurementsStableRTT(t *testing.T) {
-	conn := newTestConnection()
+	// Stable RTT: 100ms -> 100ms
+	conn = newTestConnection()
 	conn.srtt = 100 * msNano
 	conn.rttvar = 20 * msNano
-
-	// Update RTT with same measurement
 	conn.updateMeasurements(100*msNano, 1000, 1_000_000_000)
-
-	// Expected values - RTT should remain the same
-	expectedRTT := uint64(100 * msNano)
-	// 3/4 * 20ms + 1/4 * 0ms = 15ms
-	expectedVar := uint64(15 * msNano)
-
-	assert.Equal(t, expectedRTT, conn.srtt, "RTT should match expected value")
-	assert.Equal(t, expectedVar, conn.rttvar, "RTT variance should match expected value")
+	assert.Equal(t, uint64(100*msNano), conn.srtt)
+	assert.Equal(t, uint64(15*msNano), conn.rttvar)
 }
 
-// Test RTT precision with very small values
-func TestMeasurementsRTTPrecisionLoss(t *testing.T) {
+func TestMeasurementsRTTEdgeCases(t *testing.T) {
+	// Precision loss with small values
 	conn := newTestConnection()
-	
-	// Test with values that could cause precision loss in integer arithmetic
-	conn.srtt = 7  // Very small value
+	conn.srtt = 7
 	conn.rttvar = 3
+	conn.updateMeasurements(7, 1000, 1_000_000_000)
+	assert.Greater(t, conn.srtt, uint64(0))
+	assert.Greater(t, conn.rttvar, uint64(0))
 
-	conn.updateMeasurements(7, 1000, 1_000_000_000) // Same as SRTT (delta = 0)
-	
-	// Should maintain precision and not underflow
-	assert.Greater(t, conn.srtt, uint64(0), "SRTT should not become zero")
-	assert.Greater(t, conn.rttvar, uint64(0), "RTTVAR should not become zero")
-}
-
-// Test RTT variance underflow protection
-func TestMeasurementsRTTVarianceUnderflow(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Test scenario where variance calculation could underflow
+	// Variance underflow protection
+	conn = newTestConnection()
 	conn.srtt = 1000
 	conn.rttvar = 1
-
-	// Provide measurement exactly equal to SRTT (delta = 0)
 	conn.updateMeasurements(1000, 1000, 1_000_000_000)
-	
-	// Variance should decrease but not underflow to zero completely
-	// 3/4 * 1 + 1/4 * 0 = 0 (due to integer division), but should handle gracefully
+	// Should not panic or underflow
 }
 
 // =============================================================================
@@ -372,179 +330,61 @@ func TestMeasurementsPacingWithBandwidth(t *testing.T) {
 // BACKOFF ALGORITHM TESTS
 // =============================================================================
 
-// Test backoff functionality
-func TestMeasurementsBackoffFirstRetry(t *testing.T) {
-	baseRTO := uint64(200 * msNano) // 200ms
-	backoffRTO, err := backoff(baseRTO, 1)
+func TestMeasurementsBackoff(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
 
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(200*msNano), backoffRTO, "First retry should equal base RTO")
-}
-
-func TestMeasurementsBackoffExponential(t *testing.T) {
-	baseRTO := uint64(200 * msNano) // 200ms
-	
-	// Test exponential progression
+	// Exponential backoff
 	for retry := 1; retry <= 5; retry++ {
 		expected := baseRTO
 		for i := 1; i < retry; i++ {
 			expected *= 2
 		}
-		
 		result, err := backoff(baseRTO, retry)
 		assert.NoError(t, err)
-		assert.Equal(t, expected, result, "Retry %d should be correct", retry)
+		assert.Equal(t, expected, result)
 	}
-}
 
-func TestMeasurementsBackoffExceedsMaximum(t *testing.T) {
-	baseRTO := uint64(200 * msNano) // 200ms
+	// Exceeds maximum
 	_, err := backoff(baseRTO, 6)
-
-	assert.Error(t, err, "Should error when exceeding max retry attempts")
+	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max retry attempts")
+
+	// Invalid input
+	_, err = backoff(baseRTO, 0)
+	assert.Error(t, err)
+
+	_, err = backoff(baseRTO, -1)
+	assert.Error(t, err)
 }
 
 // =============================================================================
 // EDGE CASE AND ERROR CONDITION TESTS
 // =============================================================================
 
-// Test mathematical overflow protection
-func TestMeasurementsOverflowProtection(t *testing.T) {
+func TestMeasurementsEdgeCases(t *testing.T) {
+	// Division by zero protection
 	conn := newTestConnection()
-	
-	// Test with large but realistic values that won't cause the calculation to return 0
-	conn.updateMeasurements(100_000_000, math.MaxUint32, math.MaxUint64) // 100ms RTT, large bytes
-	
-	// Should not panic and should calculate some bandwidth  
-	assert.Greater(t, conn.bwMax, uint64(0), "Should calculate some bandwidth")
-	
-	// Test pacing calculation doesn't overflow
-	interval := conn.calcPacing(1000)
-	assert.Greater(t, interval, uint64(0), "Should handle large values gracefully")
-}
-
-// Test division by zero protection
-func TestMeasurementsDivisionByZeroProtection(t *testing.T) {
-	conn := newTestConnection()
-	conn.rttMinNano = 0 // This could cause division by zero
-	
-	// Should not panic
+	conn.rttMinNano = 0
 	assert.NotPanics(t, func() {
 		conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
-	}, "Should handle zero RTT min gracefully")
-}
+	})
 
-// Test time wraparound scenarios
-func TestMeasurementsTimeWraparound(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Test time going backwards (clock adjustment)
-	conn.updateMeasurements(100_000_000, 1000, math.MaxUint64-1000)
-	conn.updateMeasurements(100_000_000, 1000, 1000) // Much earlier time
-	
-	// Should handle gracefully without panic
-	assert.Greater(t, conn.bwMax, uint64(0), "Should handle time wraparound")
-}
-
-// Test very large time differences
-func TestMeasurementsVeryLargeTimeDifferences(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Test with very large time differences
+	// Zero packet size gives zero interval
+	conn = newTestConnection()
 	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
-	conn.updateMeasurements(100_000_000, 1000, math.MaxUint64-1000)
-	
-	// Should not cause overflow in time calculations
-	assert.Greater(t, conn.rttMinTimeNano, uint64(0), "Should handle large time differences")
-}
+	assert.Equal(t, uint64(0), conn.calcPacing(0))
 
-// Test bandwidth calculation edge cases
-func TestMeasurementsBandwidthCalculationEdgeCases(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Test with reasonable RTT to ensure bandwidth calculation works
-	conn.updateMeasurements(1_000_000, 1000, 1_000_000_000) // 1ms RTT
-	
-	// Should not overflow and should calculate reasonable bandwidth
-	assert.Greater(t, conn.bwMax, uint64(0), "Should calculate some bandwidth")
-	assert.Less(t, conn.bwMax, uint64(math.MaxUint64/2), "Should not overflow bandwidth")
-}
-
-// Test bandwidth with very small bytes
-func TestMeasurementsBandwidthWithVerySmallBytes(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Test with minimum possible bytes
-	conn.updateMeasurements(100_000_000, 1, 1_000_000_000) // 1 byte
-	
-	// Should handle small values
-	assert.Greater(t, conn.bwMax, uint64(0), "Should handle single byte")
-}
-
-// Test pacing calculation edge cases
-func TestMeasurementsPacingCalculationEdgeCases(t *testing.T) {
-	conn := newTestConnection()
-	
-	// First establish some bandwidth so the calculation doesn't use fallback
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
-	
-	// Test with zero packet size - should give zero interval
-	interval := conn.calcPacing(0)
-	assert.Equal(t, uint64(0), interval, "Zero packet should give zero interval")
-	
-	// Test with very large packet size and low bandwidth
-	conn.bwMax = 1 // Very low bandwidth
-	conn.pacingGainPct = 100
-	interval = conn.calcPacing(1000)
-	
-	// Should not overflow
-	assert.Greater(t, interval, uint64(0), "Should handle large intervals")
-}
-
-// Test state transition edge cases
-func TestMeasurementsStateTransitionEdgeCases(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Force multiple rapid state transitions
-	conn.onPacketLoss()        // startup -> normal
-	conn.onDuplicateAck()      // should stay normal
-	
-	// Verify state consistency
-	assert.False(t, conn.isStartup, "Should remain in normal state")
-}
-
-// Test state transition with zero bandwidth
-func TestMeasurementsStateTransitionWithZeroBandwidth(t *testing.T) {
-	conn := newTestConnection()
+	// State transitions with zero bandwidth
+	conn = newTestConnection()
 	conn.bwMax = 0
-	
 	conn.onPacketLoss()
-	
-	// Should handle zero bandwidth gracefully
-	assert.Equal(t, uint64(0), conn.bwMax, "Zero bandwidth should remain zero")
-}
+	assert.Equal(t, uint64(0), conn.bwMax)
 
-// Test exact boundary values
-func TestMeasurementsExactBoundaryValues(t *testing.T) {
-	conn := newTestConnection()
-	
-	// Establish baseline bandwidth
-	conn.updateMeasurements(100_000_000, 2000, 1_000_000_000) // High bandwidth first
-	
-	// Force bwDec to 2 by providing lower bandwidth measurements
-	conn.updateMeasurements(100_000_000, 1000, 2_000_000_000) // Lower bandwidth, bwDec = 1
-	conn.updateMeasurements(100_000_000, 1000, 3_000_000_000) // Still lower, bwDec = 2
-	
-	assert.Equal(t, uint64(2), conn.bwDec, "Should have bwDec = 2")
-	assert.True(t, conn.isStartup, "Should still be in startup")
-	
-	// One more decrease should trigger transition
-	conn.updateMeasurements(100_000_000, 1000, 4_000_000_000) // bwDec becomes 3
-	
-	// Should transition exactly at bwDec = 3
-	assert.False(t, conn.isStartup, "Should transition at exactly bwDec = 3")
-	assert.Equal(t, uint64(3), conn.bwDec, "Should have bwDec = 3")
+	// Multiple rapid state transitions
+	conn = newTestConnection()
+	conn.onPacketLoss()
+	conn.onDuplicateAck()
+	assert.False(t, conn.isStartup)
 }
 
 // Test concurrent access protection

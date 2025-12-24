@@ -414,4 +414,7 @@ func TestStreamDuplicatePacketHandling(t *testing.T) {
 
 	// Second read of duplicate should not deliver duplicate data
 	// (depends on implementation - protocol should handle duplicates)
+	receivedData, err = streamB.Read()
+	assert.NoError(t, err)
+	assert.Nil(t, receivedData)
 }
