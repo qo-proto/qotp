@@ -6,11 +6,11 @@ import (
 )
 
 type Stream struct {
-	streamID     uint32
-	conn         *Conn
-	rcvClosed    bool // When receive direction closed
-	sndClosed    bool // When send direction closed
-	mu           sync.Mutex
+	streamID  uint32
+	conn      *Conn
+	rcvClosed bool // When receive direction closed
+	sndClosed bool // When send direction closed
+	mu        sync.Mutex
 }
 
 func (s *Stream) StreamID() uint32 {
@@ -85,13 +85,17 @@ func (s *Stream) Write(userData []byte) (n int, err error) {
 }
 
 func (s *Stream) SndClosed() bool {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    return s.sndClosed
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sndClosed
 }
 
 func (s *Stream) RcvClosed() bool {
-    s.mu.Lock()
-    defer s.mu.Unlock()
-    return s.rcvClosed
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rcvClosed
+}
+
+func (s *Stream) ConnID() uint64 {
+    return s.conn.connId
 }

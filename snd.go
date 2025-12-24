@@ -379,3 +379,9 @@ func (p packetKey) length() uint16 {
 func createPacketKey(offset uint64, length uint16) packetKey {
 	return packetKey((offset << 16) | uint64(length))
 }
+
+func (sb *SendBuffer) RemoveStream(streamID uint32) {
+    sb.mu.Lock()
+    defer sb.mu.Unlock()
+    delete(sb.streams, streamID)
+}

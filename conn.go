@@ -12,8 +12,9 @@ type Conn struct {
 	remoteAddr netip.AddrPort
 
 	// Core components
-	listener *Listener
-	streams  *LinkedMap[uint32, *Stream]
+	listener      *Listener
+	streams       *LinkedMap[uint32, *Stream]
+	closedStreams map[uint32]struct{}
 
 	// Cryptographic keys
 	prvKeyEpSnd *ecdh.PrivateKey
@@ -72,16 +73,21 @@ func (c *Conn) Close() {
 	}
 }
 
-func (c *Conn) Stream(streamID uint32) (s *Stream) {
-	//c.mu.Lock()
-	//defer c.mu.Unlock() Deadlock
+// streamLocked returns or creates a stream. Caller must hold c.mu.
+func (c *Conn) streamLocked(streamID uint32) *Stream {
+
+	if c.closedStreams != nil {
+		if _, ok := c.closedStreams[streamID]; ok {
+			return nil
+		}
+	}
 
 	v := c.streams.Get(streamID)
 	if v != nil {
 		return v
 	}
 
-	s = &Stream{
+	s := &Stream{
 		streamID: streamID,
 		conn:     c,
 		mu:       sync.Mutex{},
@@ -90,17 +96,16 @@ func (c *Conn) Stream(streamID uint32) (s *Stream) {
 	return s
 }
 
+// Stream returns or creates a stream. Thread-safe.
+func (c *Conn) Stream(streamID uint32) *Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.streamLocked(streamID)
+}
+
 func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	s = c.Stream(p.StreamID)
-
-	if len(userData) > 0 {
-		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
-	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
-		c.rcv.EmptyInsert(s.streamID, p.StreamOffset)
-	}
 
 	if p.Ack != nil {
 		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
@@ -114,8 +119,8 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 				c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) // TODO: 42 is approx overhead
 			}
 
-			ackStream := c.Stream(p.Ack.streamID)
-			if !ackStream.sndClosed && c.snd.CheckStreamFullyAcked(p.Ack.streamID) {
+			ackStream := c.streamLocked(p.Ack.streamID)
+			if ackStream != nil && !ackStream.sndClosed && c.snd.CheckStreamFullyAcked(p.Ack.streamID) {
 				ackStream.sndClosed = true
 			}
 		case AckDup:
@@ -123,6 +128,18 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 		default:
 			// AckNotFound, AckPartial, etc. - no action needed
 		}
+	}
+	
+	s = c.streamLocked(p.StreamID)
+	if s == nil {
+		// Stream is closed, ignore this packet
+		return nil, nil
+	}
+
+	if len(userData) > 0 {
+		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
+	} else if p.IsClose || userData != nil { //nil is not a ping, just an ack
+		c.rcv.EmptyInsert(s.streamID, p.StreamOffset)
 	}
 
 	if p.IsClose {
@@ -135,22 +152,36 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 			s.rcvClosed = true
 		}
 	}
-	
-	// Always check if data stream is fully acked
-    if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
-        s.sndClosed = true
-    }
+
+	if !s.rcvClosed && c.rcv.IsReadyToClose(s.streamID) {
+		s.rcvClosed = true
+	}
+
+	if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
+		s.sndClosed = true
+	}
 
 	return s, nil
 }
 
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
 func (c *Conn) cleanupStream(streamID uint32) {
+	c.mu.Lock()
+    defer c.mu.Unlock()
+    
 	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
 		tmp, _, _ := c.streams.Next(streamID)
 		c.listener.currentStreamID = &tmp
 	}
 	c.streams.Remove(streamID)
+
+	if c.closedStreams == nil {
+		c.closedStreams = make(map[uint32]struct{})
+	}
+	c.closedStreams[streamID] = struct{}{}
+	
+	c.snd.RemoveStream(streamID)
+	c.rcv.RemoveStream(streamID)
 	//even if the stream size is 0, do not remove the connection yet, only after a certain timeout,
 	// so that BBR, RTT, is preserved for a bit
 }
@@ -166,7 +197,19 @@ func (c *Conn) cleanupConn() {
 func (c *Conn) HasActiveStreams() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.streams.Size() > 0
+
+	if c.streams.Size() == 0 {
+		return false
+	}
+
+	it := c.streams.Iterator(nil)
+	for _, val := range it {
+		if val != nil && (!val.rcvClosed || !val.sndClosed) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
@@ -219,6 +262,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	if ack != nil {
 		return c.writeAck(s, ack, false, nowNano)
 	}
+
 	return 0, MinDeadLine, nil
 }
 
@@ -271,5 +315,5 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 }
 
 func (c *Conn) Rcv() *ReceiveBuffer {
-    return c.rcv
+	return c.rcv
 }

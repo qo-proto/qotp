@@ -45,31 +45,42 @@ func runServer(addr string) {
 		log.Fatal(err)
 	}
 	defer listener.Close()
-
 	fmt.Printf("Server listening on %s\n", addr)
 	fmt.Println("Waiting for clients... (Ctrl+C to stop)")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	type streamKey struct {
+		connID   uint64
+		streamID uint32
+	}
+
+	received := make(map[streamKey][]byte)
+	responded := make(map[streamKey]bool)
+
 	listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
 		if stream == nil {
 			return nil
 		}
-
 		data, err := stream.Read()
 		if err != nil {
 			fmt.Printf("Server read error: %v\n", err)
 			return nil
 		}
-
 		if len(data) > 0 {
-			msg := string(data)
-			fmt.Printf("Server received: %s\n", msg)
+			key := streamKey{connID: stream.ConnID(), streamID: stream.StreamID()}
 
-			upper := strings.ToUpper(msg)
-			stream.Write([]byte(upper))
-			stream.Close()
+			received[key] = append(received[key], data...)
+			fmt.Printf("Server received: conn=%d stream=%d data=%s\n",
+				key.connID, key.streamID, string(data))
+
+			if !responded[key] {
+				responded[key] = true
+				upper := strings.ToUpper(string(received[key]))
+				stream.Write([]byte(upper))
+				stream.Close()
+			}
 		}
 		return nil
 	})

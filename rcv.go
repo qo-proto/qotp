@@ -229,6 +229,7 @@ func (rb *ReceiveBuffer) GetOffsetClosedAt(streamID uint32) (offset *uint64) {
 //   - pkt1 arrives → returns pkt1 data
 //   - pkt3 arrives → returns nil (gap at offset 1300)
 //   - pkt2 arrives → returns pkt2 AND pkt3 data (both now contiguous)
+//
 // Without the loop, pkt3's data would remain orphaned in the buffer since
 // the callback fired for pkt3 already returned nil due to the gap.
 func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
@@ -289,4 +290,21 @@ func (rb *ReceiveBuffer) GetSndAck() *Ack {
 	ack := rb.ackList[0]
 	rb.ackList = rb.ackList[1:]
 	return ack
+}
+
+func (rb *ReceiveBuffer) GetNextOffset(streamID uint32) uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	stream := rb.streams[streamID]
+	if stream == nil {
+		return 0
+	}
+	return stream.nextInOrderOffsetToWaitFor
+}
+
+func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
+    rb.mu.Lock()
+    defer rb.mu.Unlock()
+    delete(rb.streams, streamID)
 }

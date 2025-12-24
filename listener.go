@@ -305,7 +305,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 	}
 
 	closeConn := []*Conn{}
-	closeStream := map[*Conn]uint32{}
+	closeStream := map[*Conn][]uint32{}
 	isDataSent := false
 
 	iter := NestedIterator(l.connMap, func(conn *Conn) *LinkedMap[uint32, *Stream] {
@@ -321,7 +321,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		}
 
 		if stream.rcvClosed && stream.sndClosed {
-			closeStream[conn] = stream.streamID
+			closeStream[conn] = append(closeStream[conn], stream.streamID)
 			continue
 		}
 
@@ -351,8 +351,10 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		closeConn.cleanupConn()
 	}
 
-	for conn, stream := range closeStream {
-		conn.cleanupStream(stream)
+	for conn, streamIDs := range closeStream {
+		for _, streamID := range streamIDs {
+			conn.cleanupStream(streamID)
+		}
 	}
 
 	// Only reset if we completed full iteration without sending

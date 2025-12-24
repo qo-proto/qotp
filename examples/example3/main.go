@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"time"
@@ -44,20 +45,22 @@ func runServer(addr string) {
 		log.Fatal(err)
 	}
 	defer listener.Close()
-
 	fmt.Printf("Server listening on %s (Ctrl+C to stop)\n", addr)
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	received := make(map[uint32]int)
-	responded := make(map[uint32]bool)
+	type streamKey struct {
+		connID   uint64
+		streamID uint32
+	}
+
+	received := make(map[streamKey]int)
+	responded := make(map[streamKey]bool)
 
 	listener.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 		if s == nil {
 			return nil
 		}
-
 		data, err := s.Read()
 		if err != nil {
 			if err == io.EOF {
@@ -65,23 +68,24 @@ func runServer(addr string) {
 			}
 			return err
 		}
-
 		if len(data) == 0 {
 			return nil
 		}
 
-		received[s.StreamID()] += len(data)
-		fmt.Printf("Server recv: stream=%d total=%d/%d\n",
-			s.StreamID(), received[s.StreamID()], dataSize)
+		key := streamKey{connID: s.ConnID(), streamID: s.StreamID()}
 
-		if received[s.StreamID()] >= dataSize && !responded[s.StreamID()] {
-			responded[s.StreamID()] = true
+		received[key] += len(data)
+		fmt.Printf("Server recv: conn=%d stream=%d total=%d/%d\n",
+			key.connID, key.streamID, received[key], dataSize)
+
+		if received[key] >= dataSize && !responded[key] {
+			responded[key] = true
 			go func(s *qotp.Stream) {
 				time.Sleep(100 * time.Millisecond)
 				response := makeData(byte(s.StreamID()+100), dataSize)
 				writeAll(s, response)
 				s.Close()
-				fmt.Printf("Server sent response: stream=%d\n", s.StreamID())
+				fmt.Printf("Server sent response: conn=%d stream=%d\n", s.ConnID(), s.StreamID())
 			}(s)
 		}
 		return nil
@@ -102,9 +106,10 @@ func runClient(serverAddr string) {
 	fmt.Printf("Connected to %s\n", serverAddr)
 
 	type streamState struct {
-		stream *qotp.Stream
-		data   []byte
-		sent   int
+		stream   *qotp.Stream
+		data     []byte
+		sent     int
+		received int
 	}
 
 	streams := make([]*streamState, numStreams)
@@ -117,8 +122,6 @@ func runClient(serverAddr string) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	received := make(map[uint32]int)
 
 	listener.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 		// Write: try to send on all streams
@@ -134,11 +137,6 @@ func runClient(serverAddr string) {
 				ss.sent += n
 				fmt.Printf("Client sent: stream=%d total=%d/%d\n",
 					ss.stream.StreamID(), ss.sent, dataSize)
-
-				// Close stream when done sending
-				if ss.sent >= len(ss.data) {
-					ss.stream.Close()
-				}
 			}
 		}
 
@@ -146,21 +144,29 @@ func runClient(serverAddr string) {
 		if s != nil {
 			data, _ := s.Read()
 			if len(data) > 0 {
-				received[s.StreamID()] += len(data)
-				fmt.Printf("Client recv: stream=%d total=%d/%d\n",
-					s.StreamID(), received[s.StreamID()], dataSize)
+				for _, ss := range streams {
+					if ss.stream.StreamID() == s.StreamID() {
+						ss.received += len(data)
+						fmt.Printf("Client recv: stream=%d total=%d/%d\n",
+							s.StreamID(), ss.received, dataSize)
+
+						// Close after receiving full response
+						if ss.received >= dataSize {
+							fmt.Println("Close")
+							ss.stream.Close()
+						}
+						break
+					}
+				}
 			}
 		}
 
 		if !conn.HasActiveStreams() {
 			cancel()
 		} else {
-			// Debug: why still active?
-			for i := 0; i < numStreams; i++ {
-				stream := conn.Stream(uint32(i))
-				closeAt := conn.Rcv().GetOffsetClosedAt(uint32(i))
-				fmt.Printf("Stream %d: sndClosed=%v rcvClosed=%v closeAt=%v\n",
-					i, stream.SndClosed(), stream.RcvClosed(), closeAt)
+			for _, ss := range streams {
+				fmt.Printf("Stream %d (%p): sndClosed=%v rcvClosed=%v, %p\n",
+					ss.stream.StreamID(), ss.stream, ss.stream.SndClosed(), ss.stream.RcvClosed(), ss.stream)
 			}
 		}
 		return nil
@@ -180,6 +186,7 @@ func makeData(fill byte, size int) []byte {
 func writeAll(s *qotp.Stream, data []byte) {
 	for len(data) > 0 {
 		n, err := s.Write(data)
+		slog.Debug("writeAll", slog.Int("n", n), slog.Any("err", err), slog.Int("remaining", len(data)))
 		if err != nil {
 			return
 		}

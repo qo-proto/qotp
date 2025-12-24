@@ -54,30 +54,37 @@ func runServer(addr string) {
 		log.Fatal(err)
 	}
 	defer listener.Close()
-
 	fmt.Printf("Server listening on %s\n", addr)
 	fmt.Println("Waiting for clients... (Ctrl+C to stop)")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	n := 0
+	type streamKey struct {
+		connID   uint64
+		streamID uint32
+	}
+
+	received := make(map[streamKey]int)
+	responded := make(map[streamKey]bool)
 
 	listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
 		if stream == nil {
 			return nil
 		}
-
 		data, err := stream.Read()
 		if err != nil {
 			return nil
 		}
-
 		if len(data) > 0 {
-			n += len(data)
-			fmt.Printf("Server received: [%v] %s\n", n, data)
+			key := streamKey{connID: stream.ConnID(), streamID: stream.StreamID()}
 
-			if n == 20000 {
+			received[key] += len(data)
+			fmt.Printf("Server received: conn=%d stream=%d [%v] %s\n",
+				key.connID, key.streamID, received[key], data)
+
+			if received[key] >= 20000 && !responded[key] {
+				responded[key] = true
 				stream.Write(repeatText("Hello from server! ", 20000))
 				stream.Close()
 			}
