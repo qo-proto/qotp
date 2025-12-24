@@ -83,3 +83,15 @@ func (s *Stream) Write(userData []byte) (n int, err error) {
 
 	return n, nil
 }
+
+func (s *Stream) SndClosed() bool {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.sndClosed
+}
+
+func (s *Stream) RcvClosed() bool {
+    s.mu.Lock()
+    defer s.mu.Unlock()
+    return s.rcvClosed
+}

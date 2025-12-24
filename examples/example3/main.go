@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/qo-proto/qotp"
@@ -43,47 +45,46 @@ func runServer(addr string) {
 	}
 	defer listener.Close()
 
-	fmt.Printf("Server listening on %s\n", addr)
+	fmt.Printf("Server listening on %s (Ctrl+C to stop)\n", addr)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	received := make(map[uint32]int)
 	responded := make(map[uint32]bool)
 
-	listener.Loop(func(s *qotp.Stream) (bool, error) {
+	listener.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 		if s == nil {
-			return true, nil
+			return nil
 		}
 
 		data, err := s.Read()
 		if err != nil {
 			if err == io.EOF {
-				return true, nil
+				return nil
 			}
-			return false, err
+			return err
 		}
 
 		if len(data) == 0 {
-			return true, nil
+			return nil
 		}
 
 		received[s.StreamID()] += len(data)
 		fmt.Printf("Server recv: stream=%d total=%d/%d\n",
 			s.StreamID(), received[s.StreamID()], dataSize)
 
-		// Once we receive all data for a stream, send response
 		if received[s.StreamID()] >= dataSize && !responded[s.StreamID()] {
 			responded[s.StreamID()] = true
-
 			go func(s *qotp.Stream) {
-				time.Sleep(100 * time.Millisecond) // Simulate processing delay
-
+				time.Sleep(100 * time.Millisecond)
 				response := makeData(byte(s.StreamID()+100), dataSize)
 				writeAll(s, response)
 				s.Close()
 				fmt.Printf("Server sent response: stream=%d\n", s.StreamID())
 			}(s)
 		}
-
-		return true, nil
+		return nil
 	})
 }
 
@@ -100,7 +101,6 @@ func runClient(serverAddr string) {
 	}
 	fmt.Printf("Connected to %s\n", serverAddr)
 
-	// Prepare streams
 	type streamState struct {
 		stream *qotp.Stream
 		data   []byte
@@ -115,9 +115,12 @@ func runClient(serverAddr string) {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	received := make(map[uint32]int)
 
-	listener.Loop(func(s *qotp.Stream) (bool, error) {
+	listener.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 		// Write: try to send on all streams
 		for _, ss := range streams {
 			if ss.sent >= len(ss.data) {
@@ -125,12 +128,17 @@ func runClient(serverAddr string) {
 			}
 			n, err := ss.stream.Write(ss.data[ss.sent:])
 			if err != nil {
-				return false, err
+				return err
 			}
 			if n > 0 {
 				ss.sent += n
 				fmt.Printf("Client sent: stream=%d total=%d/%d\n",
 					ss.stream.StreamID(), ss.sent, dataSize)
+
+				// Close stream when done sending
+				if ss.sent >= len(ss.data) {
+					ss.stream.Close()
+				}
 			}
 		}
 
@@ -144,7 +152,18 @@ func runClient(serverAddr string) {
 			}
 		}
 
-		return conn.HasActiveStreams(), nil
+		if !conn.HasActiveStreams() {
+			cancel()
+		} else {
+			// Debug: why still active?
+			for i := 0; i < numStreams; i++ {
+				stream := conn.Stream(uint32(i))
+				closeAt := conn.Rcv().GetOffsetClosedAt(uint32(i))
+				fmt.Printf("Stream %d: sndClosed=%v rcvClosed=%v closeAt=%v\n",
+					i, stream.SndClosed(), stream.RcvClosed(), closeAt)
+			}
+		}
+		return nil
 	})
 
 	fmt.Println("Done")

@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
@@ -414,27 +415,28 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) Loop(callback func(s *Stream) (bool, error)) {
+func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, s *Stream) error) error {
 	waitNextNano := MinDeadLine
 	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
 		s, err := l.Listen(waitNextNano, uint64(time.Now().UnixNano()))
 		if err != nil {
-			slog.Error("Error in loop listen", slog.Any("error", err))
-			break
+			return err
 		}
 		// callback in any case, s may be null, but this gives the user
 		// the control to cancel the Loop every MinDeadLine
-		cont, err := callback(s)
+		err = callback(ctx, s)
 		if err != nil {
-			slog.Error("Error in loop callback", slog.Any("error", err))
-			break
+			return err
 		}
 		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
-
 		//if waitNextNano is zero, we still have data to flush, do not exit yet
-		if !cont && waitNextNano == 0 {
-			break
-		}
+		//TODO
 	}
 }
 
@@ -448,8 +450,6 @@ func (l *Listener) debug() slog.Attr {
 func (l *Listener) ForceClose(c *Conn) {
 	c.cleanupConn()
 }
-
-
 
 func (l *Listener) DialString(remoteAddrString string) (*Conn, error) {
 	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)

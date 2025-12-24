@@ -1,11 +1,11 @@
 package qotp
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"fmt"
 	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -509,7 +509,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	for i := 0; i < numStreams; i++ {
 		data := make([]byte, dataSize)
 		for j := range data {
-			data[j] = byte(i) // Fill with stream ID
+			data[j] = byte(i)
 		}
 		aliceStreams[i] = &StreamState{
 			stream: connAlice.Stream(uint32(i)),
@@ -527,16 +527,19 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	bobReceived := make(map[uint32]int)
 	bobResponded := make(map[uint32]bool)
 
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
 	// Bob goroutine - server side
-	bobDone := make(chan bool, 1)
+	bobDone := make(chan struct{})
 	go func() {
-		listenerBob.Loop(func(s *Stream) (bool, error) {
+		defer close(bobDone)
+		listenerBob.Loop(ctx, func(ctx context.Context, s *Stream) error {
 			if s != nil {
 				data, err := s.Read()
 				if err == nil && len(data) > 0 {
 					bobReceived[s.streamID] += len(data)
 
-					// When Bob receives complete stream, write response immediately
 					if bobReceived[s.streamID] >= dataSize && !bobResponded[s.streamID] {
 						bobResponded[s.streamID] = true
 
@@ -544,11 +547,10 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 						for j := range responseData {
 							responseData[j] = byte(s.streamID + 100)
 						}
-						//time.Sleep(200*time.Millisecond)
 						for len(responseData) > 0 {
 							n, err := s.Write(responseData)
 							if err != nil {
-								return false, err
+								return err
 							}
 							if n > 0 {
 								responseData = responseData[n:]
@@ -556,40 +558,31 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 						}
 						s.Close()
 					}
-				} else if err != nil {
-					if err != io.EOF {
-						slog.Debug("EXIT LOOP BOB22", slog.Any("err", err))
-						s.Close()
-						return false, nil
-					}
+				} else if err != nil && err != io.EOF {
+					s.Close()
 				}
 			}
 
-			// Continue until no active streams
-			hasStreams := listenerBob.HasActiveStreams()
 			allStreamsStarted := len(bobReceived) >= numStreams
-			cont := !allStreamsStarted || hasStreams
-			if !cont {
-				slog.Debug("EXIT LOOP BOB33", slog.Any("err", err))
+			if allStreamsStarted && !listenerBob.HasActiveStreams() {
+				cancel()
 			}
-			return cont, nil
+			return nil
 		})
-		slog.Debug("EXIT LOOP BOB")
-		bobDone <- true
 	}()
 
 	// Alice goroutine - client side
-	aliceDone := make(chan bool, 1)
+	aliceDone := make(chan struct{})
 	go func() {
-		listenerAlice.Loop(func(s *Stream) (bool, error) {
-			// Write phase - try to write on all streams
+		defer close(aliceDone)
+		listenerAlice.Loop(ctx, func(ctx context.Context, s *Stream) error {
+			// Write phase
 			for _, ss := range aliceStreams {
 				if ss.sent < len(ss.data) {
 					remaining := ss.data[ss.sent:]
 					n, err := ss.stream.Write(remaining)
 					if err != nil {
-						t.Logf("Alice write failed: %v", err)
-						return false, err
+						return err
 					}
 					if n > 0 {
 						ss.sent += n
@@ -597,7 +590,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 				}
 			}
 
-			// Read phase - process incoming data
+			// Read phase
 			if s != nil {
 				data, err := s.Read()
 				if err == nil && len(data) > 0 {
@@ -605,73 +598,42 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 				}
 			}
 
-			// Check if Alice is done
+			// Check completion
 			allSent := true
-			notSentStreams := []uint32{}
 			for _, ss := range aliceStreams {
 				if ss.sent < len(ss.data) {
 					allSent = false
-					notSentStreams = append(notSentStreams, ss.stream.streamID)
+					break
 				}
 			}
+
 			allReceived := true
-			notReceivedStreams := []uint32{}
 			for i := 0; i < numStreams; i++ {
 				if len(aliceReceived[uint32(i)]) < dataSize {
 					allReceived = false
-					notReceivedStreams = append(notReceivedStreams, uint32(i))
+					break
 				}
 			}
+
 			allClosed := true
-			notClosedStreams := []uint32{}
 			for i := 0; i < numStreams; i++ {
 				stream := connAlice.streams.Get(uint32(i))
 				if stream != nil && !stream.sndClosed {
 					allClosed = false
-					notClosedStreams = append(notClosedStreams, uint32(i))
+					break
 				}
 			}
 
-			hasActiveStreams := connAlice.HasActiveStreams()
-
-			slog.Debug("ALICE CALLBACK", "allSent", allSent, "notSent", notSentStreams,
-				"allReceived", allReceived, "notReceived", notReceivedStreams, "notClosedStreams", notClosedStreams,
-				"hasActiveStreams", hasActiveStreams, "rcv size", connAlice.rcv.Size())
-
 			if allSent && allReceived && allClosed {
-				slog.Debug("ALICE COMPLETE - returning false")
-				aliceDone <- true
-				return false, nil
+				cancel()
 			}
-
-			if !hasActiveStreams {
-				slog.Warn("ALICE NO ACTIVE STREAMS - returning false",
-					"notSent", notSentStreams, "notReceived", notReceivedStreams)
-			}
-
-			return hasActiveStreams, nil
+			return nil
 		})
-		slog.Debug("EXIT LOOP ALICE")
 	}()
 
-	// Wait for both to complete or timeout
-	timeout := time.After(10 * time.Second)
-	select {
-	case <-aliceDone:
-		t.Log("Alice completed")
-	case <-bobDone:
-		t.Log("Bob completed")
-	case <-timeout:
-		t.Fatal("Test timed out after 10 seconds")
-	}
-
-	// Give a moment for both to finish
-	select {
-	case <-aliceDone:
-	case <-bobDone:
-	case <-time.After(2 * time.Second):
-		t.Log("Second goroutine didn't complete in time")
-	}
+	// Wait for both
+	<-aliceDone
+	<-bobDone
 
 	// Verify Alice received all responses
 	for i := 0; i < numStreams; i++ {

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 
 	"github.com/qo-proto/qotp"
 )
@@ -12,12 +14,10 @@ func repeatText(text string, targetBytes int) []byte {
 	if len(text) == 0 {
 		return []byte{}
 	}
-
 	result := make([]byte, 0, targetBytes)
 	for len(result) < targetBytes {
 		result = append(result, []byte(text)...)
 	}
-
 	return result[:targetBytes]
 }
 
@@ -49,7 +49,6 @@ func main() {
 }
 
 func runServer(addr string) {
-	// Create server listener (will auto-generate keys)
 	listener, err := qotp.Listen(qotp.WithListenAddr(addr))
 	if err != nil {
 		log.Fatal(err)
@@ -57,51 +56,49 @@ func runServer(addr string) {
 	defer listener.Close()
 
 	fmt.Printf("Server listening on %s\n", addr)
-	fmt.Println("Waiting for clients...")
+	fmt.Println("Waiting for clients... (Ctrl+C to stop)")
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	n := 0
 
-	// Handle incoming streams
-	listener.Loop(func(stream *qotp.Stream) (bool, error) {
-		if stream == nil { //nothing to read
-			return true, nil
+	listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
+		if stream == nil {
+			return nil
 		}
+
 		data, err := stream.Read()
 		if err != nil {
-			return false, nil
+			return nil
 		}
 
 		if len(data) > 0 {
 			n += len(data)
 			fmt.Printf("Server received: [%v] %s\n", n, data)
 
-			// Send reply
 			if n == 20000 {
 				stream.Write(repeatText("Hello from server! ", 20000))
 				stream.Close()
 			}
 		}
-		return true, nil
+		return nil
 	})
 }
 
 func runClient(serverAddr string) {
-	// Create client listener (will auto-generate keys)
 	listener, err := qotp.Listen()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer listener.Close()
 
-	// Connect to server without crypto (in-band key exchange)
 	conn, err := listener.DialString(serverAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	fmt.Printf("Connected to server at %s\n", serverAddr)
 
-	// Send message
 	stream := conn.Stream(0)
 	_, err = stream.Write(repeatText("Hello from client! ", 20000))
 	if err != nil {
@@ -109,20 +106,25 @@ func runClient(serverAddr string) {
 	}
 	fmt.Println("Sent: Hello from client!")
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	n := 0
-	// Read reply
-	listener.Loop(func(s *qotp.Stream) (bool, error) {
-		if s == nil { //nothing to read
-			return true, nil //continue
+
+	listener.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
+		if s == nil {
+			return nil
 		}
+
 		data, _ := s.Read()
 		if len(data) > 0 {
 			n += len(data)
 			fmt.Printf("Received: [%v] %s\n", n, data)
+
 			if n == 20000 {
-				return false, nil //exit
+				cancel()
 			}
 		}
-		return true, nil //continue
+		return nil
 	})
 }
