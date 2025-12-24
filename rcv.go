@@ -20,7 +20,7 @@ type RcvValue struct {
 }
 
 type RcvBuffer struct {
-	segments                   *SortedMap[uint64, RcvValue]
+	segments                   *LinkedMap[uint64, RcvValue]
 	nextInOrderOffsetToWaitFor uint64 // Next expected offset
 	closeAtOffset              *uint64
 }
@@ -35,7 +35,7 @@ type ReceiveBuffer struct {
 
 func NewRcvBuffer() *RcvBuffer {
 	return &RcvBuffer{
-		segments: NewSortedMap[uint64, RcvValue](),
+		segments: NewLinkedMap[uint64, RcvValue](),
 	}
 }
 
@@ -127,7 +127,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 			rb.size -= existingLen
 		}
 
-		stream.segments.Put(offset, RcvValue{data: userData, receiveTimeNano: nowNano})
+		stream.segments.PutOrdered(offset, RcvValue{data: userData, receiveTimeNano: nowNano})
 		rb.size += dataLen
 		return RcvInsertOk
 	}
@@ -157,18 +157,24 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 		}
 	}
 
-	if nextOffset, nextData, exists := stream.segments.Next(offset); exists {
+	// Insert first, then check for next overlap
+	stream.segments.PutOrdered(finalOffset, RcvValue{data: finalUserData, receiveTimeNano: nowNano})
+	rb.size += len(finalUserData)
+
+	if nextOffset, nextData, exists := stream.segments.Next(finalOffset); exists {
 		ourEnd := finalOffset + uint64(len(finalUserData))
 		if ourEnd > nextOffset {
-			// We overlap with next segment
+			// We overlap with next segment - remove what we just inserted
+			stream.segments.Remove(finalOffset)
+			rb.size -= len(finalUserData)
+
 			nextEnd := nextOffset + uint64(len(nextData.data))
 
 			if ourEnd >= nextEnd {
-				// We completely overlap the next segment - remove it since we have more data
+				// We completely overlap the next segment - remove it
 				stream.segments.Remove(nextOffset)
 				rb.size -= len(nextData.data)
 
-				// Assert that our overlapping portion matches the next segment data
 				ourOverlapStart := nextOffset - finalOffset
 				incomingOverlap := finalUserData[ourOverlapStart : ourOverlapStart+uint64(len(nextData.data))]
 				if !bytes.Equal(nextData.data, incomingOverlap) {
@@ -184,15 +190,14 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 					panic("Next segment partial overlap mismatch - data integrity violation")
 				}
 
-				// Shorten our data to remove overlap
 				finalUserData = finalUserData[:ourOverlapStart]
 			}
+
+			// Re-insert adjusted data
+			stream.segments.PutOrdered(finalOffset, RcvValue{data: finalUserData, receiveTimeNano: nowNano})
+			rb.size += len(finalUserData)
 		}
 	}
-
-	// Now we have the correct offset and data slice - store it
-	stream.segments.Put(finalOffset, RcvValue{data: finalUserData, receiveTimeNano: nowNano})
-	rb.size += len(finalUserData)
 
 	return RcvInsertOk
 }
@@ -304,7 +309,7 @@ func (rb *ReceiveBuffer) GetNextOffset(streamID uint32) uint64 {
 }
 
 func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
-    rb.mu.Lock()
-    defer rb.mu.Unlock()
-    delete(rb.streams, streamID)
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	delete(rb.streams, streamID)
 }

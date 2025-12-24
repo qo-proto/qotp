@@ -3,12 +3,13 @@
 package qotp
 
 import (
+	"cmp"
 	"iter"
 	"sync"
 )
 
 // LinkedMap implements a thread-safe hash map with insertion order preservation.
-type LinkedMap[K comparable, V any] struct {
+type LinkedMap[K cmp.Ordered, V any] struct {
 	items map[K]*lmNode[K, V]
 	head  *lmNode[K, V] // Sentinel head node
 	tail  *lmNode[K, V] // Sentinel tail node
@@ -17,7 +18,7 @@ type LinkedMap[K comparable, V any] struct {
 }
 
 // node represents an internal node in the linked list.
-type lmNode[K comparable, V any] struct {
+type lmNode[K cmp.Ordered, V any] struct {
 	key   K
 	value V
 	next  *lmNode[K, V] // Next element in insertion order
@@ -25,7 +26,7 @@ type lmNode[K comparable, V any] struct {
 }
 
 // NewLinkedMap creates a new linked hash map.
-func NewLinkedMap[K comparable, V any]() *LinkedMap[K, V] {
+func NewLinkedMap[K cmp.Ordered, V any]() *LinkedMap[K, V] {
 	m := &LinkedMap[K, V]{
 		items: make(map[K]*lmNode[K, V]),
 	}
@@ -77,17 +78,46 @@ func (m *LinkedMap[K, V]) Put(key K, value V) {
 	m.size++
 }
 
+// PutOrdered inserts in sorted position, starting search from the end.
+// O(1) for in-order arrivals, O(k) for k positions out of order.
+func (m *LinkedMap[K, V]) PutOrdered(key K, value V) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, ok := m.items[key]; ok {
+		existing.value = value
+		return
+	}
+
+	// Walk backwards from tail to find insertion point
+	insertAfter := m.tail.prev
+	for insertAfter != m.head && insertAfter.key > key {
+		insertAfter = insertAfter.prev
+	}
+
+	newNode := &lmNode[K, V]{key: key, value: value}
+
+	// Splice in after insertAfter
+	newNode.next = insertAfter.next
+	newNode.prev = insertAfter
+	insertAfter.next.prev = newNode
+	insertAfter.next = newNode
+
+	m.items[key] = newNode
+	m.size++
+}
+
 // Get retrieves a value from the map. Returns zero value if not found.
-func (m *LinkedMap[K, V]) Get(key K) V {
+func (m *LinkedMap[K, V]) Get(key K) (V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	if node, exists := m.items[key]; exists {
-		return node.value
+		return node.value, true
 	}
 
 	var zero V
-	return zero
+	return zero, false
 }
 
 // Contains checks if a key exists in the map.
@@ -135,6 +165,12 @@ func (m *LinkedMap[K, V]) First() (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
+// Min returns the smallest key and value in the map.
+// For ordered insertion (PutOrdered), this is the first element.
+func (m *LinkedMap[K, V]) Min() (K, V, bool) {
+	return m.First()
+}
+
 // Next finds the next key in insertion order after the given key.
 // This is O(1) if the key exists in the map!
 // Returns the next key, its value, and true if a next element exists.
@@ -155,20 +191,31 @@ func (m *LinkedMap[K, V]) Next(key K) (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
-// Previous finds the previous key in insertion order before the given key.
-// Returns the previous key, its value, and true if a previous element exists.
-func (m *LinkedMap[K, V]) Previous(key K) (K, V, bool) {
+// Prev finds the previous key in sorted order before the given key.
+// If key exists, returns the previous element. O(1).
+// If key doesn't exist, searches backwards from end. O(n) worst case.
+func (m *LinkedMap[K, V]) Prev(key K) (K, V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Fast path: if key exists in map, just follow the 'prev' pointer - O(1)!
+	// Fast path: if key exists in map, just follow the 'prev' pointer
 	if node, exists := m.items[key]; exists {
 		if node.prev != m.head {
 			return node.prev.key, node.prev.value, true
 		}
+		var zeroK K
+		var zeroV V
+		return zeroK, zeroV, false
 	}
 
-	// If key doesn't exist or no previous element
+	// Slow path: key doesn't exist, find largest key < given key
+	// Walk backwards from tail
+	for node := m.tail.prev; node != m.head; node = node.prev {
+		if node.key < key {
+			return node.key, node.value, true
+		}
+	}
+
 	var zeroK K
 	var zeroV V
 	return zeroK, zeroV, false
@@ -232,7 +279,7 @@ func (m *LinkedMap[K, V]) Iterator(startKey *K) iter.Seq2[K, V] {
 	}
 }
 
-func NestedIterator[K1, K2 comparable, V1, V2 any](
+func NestedIterator[K1, K2 cmp.Ordered, V1, V2 any](
 	outerMap *LinkedMap[K1, V1],
 	getInnerMap func(V1) *LinkedMap[K2, V2],
 	startKey1 *K1,

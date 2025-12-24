@@ -82,8 +82,8 @@ func (c *Conn) streamLocked(streamID uint32) *Stream {
 		}
 	}
 
-	v := c.streams.Get(streamID)
-	if v != nil {
+	v, exists := c.streams.Get(streamID)
+	if exists {
 		return v
 	}
 
@@ -129,7 +129,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 			// AckNotFound, AckPartial, etc. - no action needed
 		}
 	}
-	
+
 	s = c.streamLocked(p.StreamID)
 	if s == nil {
 		// Stream is closed, ignore this packet
@@ -167,8 +167,8 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
 func (c *Conn) cleanupStream(streamID uint32) {
 	c.mu.Lock()
-    defer c.mu.Unlock()
-    
+	defer c.mu.Unlock()
+
 	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
 		tmp, _, _ := c.streams.Next(streamID)
 		c.listener.currentStreamID = &tmp
@@ -179,7 +179,7 @@ func (c *Conn) cleanupStream(streamID uint32) {
 		c.closedStreams = make(map[uint32]struct{})
 	}
 	c.closedStreams[streamID] = struct{}{}
-	
+
 	c.snd.RemoveStream(streamID)
 	c.rcv.RemoveStream(streamID)
 	//even if the stream size is 0, do not remove the connection yet, only after a certain timeout,

@@ -121,11 +121,11 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("failed to decode InitHandshakeS0: %w", err)
 		}
-		conn := l.connMap.Get(connId)
+		conn, exists := l.connMap.Get(connId)
 		//we might have received this a multiple times due to retransmission in the first packet
 		//however the other side send us this, so we are expected to drop the old keys
 		var prvKeyEpRcv *ecdh.PrivateKey
-		if conn == nil {
+		if !exists {
 			prvKeyEpRcv, err = generateKey()
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
@@ -147,8 +147,8 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		return conn, []byte{}, InitSnd, nil
 	case InitRcv:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn := l.connMap.Get(connId)
-		if conn == nil {
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
 			return nil, nil, 0, errors.New("connection not found for InitRcv")
 		}
 
@@ -174,10 +174,10 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		}
 		//we might have received this a multiple times due to retransmission in the first packet
 		//however the other side send us this, so we are expected to drop the old keys
-		conn := l.connMap.Get(connId)
+		conn, exists := l.connMap.Get(connId)
 
 		var prvKeyEpRcv *ecdh.PrivateKey
-		if conn == nil {
+		if !exists {
 			prvKeyEpRcv, err = generateKey()
 			if err != nil {
 				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
@@ -197,8 +197,8 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		return conn, message.PayloadRaw, InitCryptoSnd, nil
 	case InitCryptoRcv:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn := l.connMap.Get(connId)
-		if conn == nil {
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
 			return nil, nil, 0, errors.New("connection not found for InitWithCryptoR0")
 		}
 
@@ -214,8 +214,8 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 		return conn, message.PayloadRaw, InitCryptoRcv, nil
 	case Data:
 		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn := l.connMap.Get(connId)
-		if conn == nil {
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
 			return nil, nil, 0, errors.New("connection not found for DataMessage")
 		}
 
