@@ -269,3 +269,7 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 	c.nextWriteTime = nowNano + pacingNano
 	return 0, pacingNano, nil
 }
+
+func (c *Conn) Rcv() *ReceiveBuffer {
+    return c.rcv
+}
