@@ -60,6 +60,8 @@ type Measurements struct {
 	//Perf numbers
 	packetLossNr int
 	packetDupNr  int
+
+	cwnd uint64
 }
 
 // NewMeasurements creates a new instance with default values
@@ -69,6 +71,7 @@ func NewMeasurements() Measurements {
 		pacingGainPct:  startupGain,
 		rttMinNano:     math.MaxUint64,
 		rttMinTimeNano: math.MaxUint64,
+		cwnd:           10 * 1400,
 	}
 }
 
@@ -137,6 +140,8 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano
 			c.isStartup = false
 			c.pacingGainPct = normalGain
 		}
+
+		c.cwnd += uint64(rawLen) * c.pacingGainPct / 100
 	} else {
 		// Normal state logic
 		rttRatioPct := (c.srtt * 100) / c.rttMinNano
@@ -151,6 +156,9 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano
 		} else {
 			c.pacingGainPct = normalGain
 		}
+
+		bdp := (c.bwMax * c.rttMinNano) / 1_000_000_000
+		c.cwnd = max(bdp*2, 10*1400)
 	}
 }
 
@@ -173,10 +181,14 @@ func (c *Conn) onDuplicateAck() {
 	c.bwMax = c.bwMax * dupAckBwReduction / 100
 	c.pacingGainPct = dupAckGain
 	c.packetDupNr++
-	
+
 	if c.isStartup {
 		c.isStartup = false
 	}
+	
+	// Reduce cwnd immediately
+    c.cwnd = c.cwnd * dupAckBwReduction / 100
+    c.cwnd = max(c.cwnd, 10*1400)
 }
 
 func (c *Conn) onPacketLoss() {
@@ -184,6 +196,10 @@ func (c *Conn) onPacketLoss() {
 	c.pacingGainPct = normalGain
 	c.isStartup = false
 	c.packetLossNr++
+	
+	// Reduce cwnd immediately
+    c.cwnd = c.cwnd * lossBwReduction / 100
+    c.cwnd = max(c.cwnd, 10*1400)
 }
 
 func (c *Conn) calcPacing(packetSize uint64) uint64 {

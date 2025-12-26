@@ -277,6 +277,8 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
+	//slog.Debug("ACK received", "stream", ack.streamID, "offset", ack.offset, "status", status)
+
 	stream := sb.streams[ack.streamID]
 	if stream == nil {
 		return AckNotFound, 0
@@ -319,7 +321,8 @@ func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
 		ackedOffset = stream.bytesSentOffset
 	}
 
-	return ackedOffset >= *closeOffset
+	// !ok -> standalone fin needs also to be acked
+	return !ok && ackedOffset >= *closeOffset
 }
 
 func (sb *SendBuffer) GetOffsetAcked(streamID uint32) (offset uint64) {
@@ -381,7 +384,27 @@ func createPacketKey(offset uint64, length uint16) packetKey {
 }
 
 func (sb *SendBuffer) RemoveStream(streamID uint32) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	delete(sb.streams, streamID)
+}
+
+func (sb *SendBuffer) GetInflightSize(streamID uint32) int {
     sb.mu.Lock()
     defer sb.mu.Unlock()
-    delete(sb.streams, streamID)
+    stream := sb.streams[streamID]
+    if stream == nil {
+        return -1
+    }
+    return stream.dataInFlightMap.Size()
+}
+
+func (sb *SendBuffer) IsCloseSent(streamID uint32) bool {
+    sb.mu.Lock()
+    defer sb.mu.Unlock()
+    stream := sb.streams[streamID]
+    if stream == nil {
+        return false
+    }
+    return stream.closeSent
 }

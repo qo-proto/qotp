@@ -227,7 +227,7 @@ func (l *Listener) HasActiveStreams() bool {
 	defer l.mu.Unlock()
 
 	for _, conn := range l.connMap.items {
-		if conn.value.HasActiveStreams() {
+		if conn.value.HasActiveStreams() || conn.value.rcv.HasPendingAcks() {
 			return true
 		}
 	}
@@ -314,13 +314,14 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 	for conn, stream := range iter {
 		dataSent, pacingNano, err := conn.Flush(stream, nowNano)
+		//slog.Debug("flush result", "stream", stream.streamID, "dataSent", dataSent, "rcvClosed", stream.rcvClosed, "sndClosed", stream.sndClosed, "pendingAcks", conn.rcv.HasPendingAcks())
 		if err != nil {
 			slog.Info("closing connection, err", slog.Any("err", err))
 			closeConn = append(closeConn, conn)
 			break
 		}
 
-		if stream.rcvClosed && stream.sndClosed {
+		if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
 			closeStream[conn] = append(closeStream[conn], stream.streamID)
 			continue
 		}
@@ -353,7 +354,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 
 	for conn, streamIDs := range closeStream {
 		for _, streamID := range streamIDs {
-			conn.cleanupStream(streamID)
+			conn.cleanupStream(streamID, nowNano)
 		}
 	}
 

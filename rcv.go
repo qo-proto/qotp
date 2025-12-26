@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"bytes"
-	"log/slog"
 	"sync"
 )
 
@@ -26,11 +25,12 @@ type RcvBuffer struct {
 }
 
 type ReceiveBuffer struct {
-	streams  map[uint32]*RcvBuffer
-	capacity int // Max buffer size
-	size     int // Current size
-	ackList  []*Ack
-	mu       *sync.Mutex
+	streams         map[uint32]*RcvBuffer
+	finishedStreams map[uint32]bool
+	capacity        int // Max buffer size
+	size            int // Current size
+	ackList         []*Ack
+	mu              *sync.Mutex
 }
 
 func NewRcvBuffer() *RcvBuffer {
@@ -41,10 +41,11 @@ func NewRcvBuffer() *RcvBuffer {
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 	return &ReceiveBuffer{
-		streams:  make(map[uint32]*RcvBuffer),
-		capacity: capacity,
-		ackList:  []*Ack{},
-		mu:       &sync.Mutex{},
+		streams:         make(map[uint32]*RcvBuffer),
+		finishedStreams: make(map[uint32]bool),
+		capacity:        capacity,
+		ackList:         []*Ack{},
+		mu:              &sync.Mutex{},
 	}
 }
 
@@ -78,8 +79,15 @@ func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
 	return stream.nextInOrderOffsetToWaitFor >= *stream.closeAtOffset
 }
 
+func (rb *ReceiveBuffer) QueueAckForClosedStream(streamID uint32, offset uint64, length uint16) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: length})
+}
+
 func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) RcvInsertStatus {
 	dataLen := len(userData)
+	//slog.Debug("ACK queued", "stream", streamID, "offset", offset, "len", dataLen)
 
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -209,10 +217,6 @@ func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
 	rcv := rb.getOrCreateStream(streamID)
 	if rcv.closeAtOffset == nil {
 		rcv.closeAtOffset = &closeOffset
-	} else if *rcv.closeAtOffset != closeOffset {
-		slog.Warn("rcv close offset mismatch", gId(),
-			slog.Uint64("existing", *rcv.closeAtOffset),
-			slog.Uint64("new", closeOffset))
 	}
 }
 
@@ -311,5 +315,31 @@ func (rb *ReceiveBuffer) GetNextOffset(streamID uint32) uint64 {
 func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
+
+	rb.finishedStreams[streamID] = true // need to pass this in
 	delete(rb.streams, streamID)
+}
+
+func (rb *ReceiveBuffer) IsFinished(streamID uint32) bool {
+    rb.mu.Lock()
+    defer rb.mu.Unlock()
+    _, ok := rb.finishedStreams[streamID]
+    return ok
+}
+
+func (rb *ReceiveBuffer) HasPendingAcks() bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return len(rb.ackList) > 0
+}
+
+func (rb *ReceiveBuffer) HasPendingAckForStream(streamID uint32) bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	for _, ack := range rb.ackList {
+		if ack.streamID == streamID {
+			return true
+		}
+	}
+	return false
 }

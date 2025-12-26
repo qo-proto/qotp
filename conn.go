@@ -12,9 +12,8 @@ type Conn struct {
 	remoteAddr netip.AddrPort
 
 	// Core components
-	listener      *Listener
-	streams       *LinkedMap[uint32, *Stream]
-	closedStreams map[uint32]struct{}
+	listener *Listener
+	streams  *LinkedMap[uint32, *Stream]
 
 	// Cryptographic keys
 	prvKeyEpSnd *ecdh.PrivateKey
@@ -75,11 +74,9 @@ func (c *Conn) Close() {
 
 // streamLocked returns or creates a stream. Caller must hold c.mu.
 func (c *Conn) streamLocked(streamID uint32) *Stream {
-
-	if c.closedStreams != nil {
-		if _, ok := c.closedStreams[streamID]; ok {
-			return nil
-		}
+	// Check if stream is in TIME_WAIT (receive side completed)
+	if c.rcv.IsFinished(streamID) {
+		return nil // Stream is closed, decode() will handle TIME_WAIT ACKs
 	}
 
 	v, exists := c.streams.Get(streamID)
@@ -132,7 +129,14 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 
 	s = c.streamLocked(p.StreamID)
 	if s == nil {
-		// Stream is closed, ignore this packet
+		// Stream is finished - just ACK and return
+		if c.rcv.IsFinished(p.StreamID) {
+			if len(userData) > 0 {
+				c.rcv.QueueAckForClosedStream(p.StreamID, p.StreamOffset, uint16(len(userData)))
+			} else if p.IsClose || userData != nil {
+				c.rcv.QueueAckForClosedStream(p.StreamID, p.StreamOffset, 0)
+			}
+		}
 		return nil, nil
 	}
 
@@ -145,12 +149,6 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 	if p.IsClose {
 		closeOffset := p.StreamOffset + uint64(len(userData))
 		c.rcv.Close(s.streamID, closeOffset) //mark the stream closed at the just received offset
-		c.snd.Close(s.streamID)              //also close the send buffer at the current location
-
-		// Auto-close receive direction if nothing left to read
-		if !s.rcvClosed && closeOffset == 0 {
-			s.rcvClosed = true
-		}
 	}
 
 	if !s.rcvClosed && c.rcv.IsReadyToClose(s.streamID) {
@@ -165,7 +163,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 }
 
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
-func (c *Conn) cleanupStream(streamID uint32) {
+func (c *Conn) cleanupStream(streamID uint32, nowNano uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -175,15 +173,8 @@ func (c *Conn) cleanupStream(streamID uint32) {
 	}
 	c.streams.Remove(streamID)
 
-	if c.closedStreams == nil {
-		c.closedStreams = make(map[uint32]struct{})
-	}
-	c.closedStreams[streamID] = struct{}{}
-
 	c.snd.RemoveStream(streamID)
 	c.rcv.RemoveStream(streamID)
-	//even if the stream size is 0, do not remove the connection yet, only after a certain timeout,
-	// so that BBR, RTT, is preserved for a bit
 }
 
 func (c *Conn) cleanupConn() {
@@ -198,12 +189,7 @@ func (c *Conn) HasActiveStreams() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.streams.Size() == 0 {
-		return false
-	}
-
-	it := c.streams.Iterator(nil)
-	for _, val := range it {
+	for _, val := range c.streams.Iterator(nil) {
 		if val != nil && (!val.rcvClosed || !val.sndClosed) {
 			return true
 		}
@@ -215,9 +201,16 @@ func (c *Conn) HasActiveStreams() bool {
 func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
 
 	// Respect pacing
-	if c.nextWriteTime > nowNano {
-		//do not sent acks, as this is also data on the line
-		return 0, c.nextWriteTime - nowNano, nil
+	if c.nextWriteTime > nowNano || c.dataInFlight >= int(c.cwnd) {
+		ack := c.rcv.GetSndAck()
+		if ack != nil {
+			ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
+			return c.writeAck(s, ack, false, nowNano)
+		}
+		if c.nextWriteTime > nowNano {
+			return 0, c.nextWriteTime - nowNano, nil
+		}
+		return 0, MinDeadLine, nil
 	}
 
 	//update state for receiver
@@ -299,6 +292,8 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 		Ack:      ack,
 		StreamID: s.streamID,
 	}
+
+	//slog.Debug("ACK sent", "stream", ack.streamID, "offset", ack.offset)
 
 	encData, err := c.encode(p, nil, c.msgType())
 	if err != nil {

@@ -247,14 +247,21 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	_, err = streamB.Read()
 	assert.Equal(t, err, io.EOF)
 
-	assert.True(t, streamB.IsCloseRequested())
+	// With half-close: receiving FIN closes receive side, NOT send side
+	// IsCloseRequested checks send side, so it should be false
+	assert.False(t, streamB.IsCloseRequested()) // Bob's send side is NOT auto-closed
+	assert.True(t, streamB.RcvClosed())         // Bob's receive side IS closed
 
 	assert.Equal(t, a1, buffer)
 
-	minPacing = streamB.conn.listener.Flush(0)
-	// ACK should be sent
+	// Bob explicitly closes his send side to complete the handshake
+	streamB.Close()
+	assert.True(t, streamB.IsCloseRequested())
 
-	// B sends ACK back to A
+	minPacing = streamB.conn.listener.Flush(connPair.Conn2.partner.localTime)
+	// ACK + FIN should be sent
+
+	// B sends ACK + FIN back to A
 	_, err = connPair.recipientToSender(0)
 	assert.Nil(t, err)
 
@@ -267,6 +274,7 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 	assert.True(t, streamA.IsCloseRequested())
 	assert.Nil(t, err)
 
+	// Now Alice should be fully closed (received Bob's FIN + her FIN was ACKed)
 	assert.True(t, streamA.IsClosed())
 }
 
@@ -282,7 +290,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
 	assert.Equal(t, uint64(0), minPacing) // Data should be sent
 
-	// Simulate packet transfer (data packet with FIN flag)
+	// Simulate packet transfer (data packet, no FIN)
 	_, err = connPair.senderToRecipient(0)
 	assert.Nil(t, err)
 
@@ -293,6 +301,8 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	}
 	assert.NotNil(t, streamB, "timeout waiting for stream")
 	assert.Nil(t, err)
+
+	// Bob initiates close (closes his send side)
 	streamB.conn.Close()
 	assert.True(t, streamB.IsCloseRequested())
 
@@ -305,9 +315,9 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	assert.Equal(t, a1, buffer)
 
 	minPacing = streamB.conn.listener.Flush(connPair.Conn2.partner.localTime)
-	// Close packet should be sent
+	// ACK + FIN should be sent
 
-	// B sends ACK back to A
+	// B sends ACK + FIN back to A
 	_, err = connPair.recipientToSender(0)
 	assert.Nil(t, err)
 
@@ -320,7 +330,9 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 
 	buffer, err = streamA.Read()
 
-	assert.True(t, streamA.IsCloseRequested())
+	// With half-close: receiving Bob's FIN closes Alice's receive side, NOT send side
+	assert.False(t, streamA.IsCloseRequested()) // Alice's send side is NOT auto-closed
+	assert.True(t, streamA.RcvClosed())         // Alice's receive side IS closed
 }
 
 func TestStreamFlowControl(t *testing.T) {

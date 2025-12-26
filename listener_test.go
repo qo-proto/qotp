@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -527,46 +528,64 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	bobReceived := make(map[uint32]int)
 	bobResponded := make(map[uint32]bool)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctxAlice, cancelAlice := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelAlice()
+
+	ctxBob, cancelBob := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelBob()
 
 	// Bob goroutine - server side
 	bobDone := make(chan struct{})
 	go func() {
 		defer close(bobDone)
-		listenerBob.Loop(ctx, func(ctx context.Context, s *Stream) error {
+		listenerBob.Loop(ctxBob, func(ctx context.Context, s *Stream) error {
 			if s != nil {
+				slog.Debug("bob-callback", "streamID", s.streamID,
+					"connID", s.ConnID(),
+					"received", bobReceived[s.streamID],
+					"responded", bobResponded[s.streamID])
 				data, err := s.Read()
+				slog.Debug("bob-received", "stream", s.streamID, "len", len(data), "total", bobReceived[s.streamID], "err", err)
 				if err == nil && len(data) > 0 {
 					bobReceived[s.streamID] += len(data)
-
-					if bobReceived[s.streamID] >= dataSize && !bobResponded[s.streamID] {
-						bobResponded[s.streamID] = true
-
-						responseData := make([]byte, dataSize)
-						for j := range responseData {
-							responseData[j] = byte(s.streamID + 100)
-						}
-						for len(responseData) > 0 {
-							n, err := s.Write(responseData)
-							if err != nil {
-								return err
-							}
-							if n > 0 {
-								responseData = responseData[n:]
-							}
-						}
-						s.Close()
-					}
 				} else if err != nil && err != io.EOF {
+					s.Close()
+					return nil
+				}
+
+				// Moved OUTSIDE the len(data) > 0 block
+				if bobReceived[s.streamID] >= dataSize && !bobResponded[s.streamID] {
+					bobResponded[s.streamID] = true
+					slog.Debug("bob-writing", "stream", s.streamID, "connID", s.ConnID())
+
+					responseData := make([]byte, dataSize)
+					for j := range responseData {
+						responseData[j] = byte(s.streamID + 100)
+					}
+					for len(responseData) > 0 {
+						n, err := s.Write(responseData)
+						if err != nil {
+							return err
+						}
+						if n > 0 {
+							responseData = responseData[n:]
+						}
+					}
 					s.Close()
 				}
 			}
 
+			slog.Debug("bob-state-all",
+				"responded", bobResponded,
+				"received-lens", len(bobReceived))
+
 			allStreamsStarted := len(bobReceived) >= numStreams
 			if allStreamsStarted && !listenerBob.HasActiveStreams() {
-				cancel()
+				slog.Debug("Bob exiting", "allStreamsStarted", allStreamsStarted)
+				cancelBob()
 			}
+
+			slog.Debug("bob-state", "stream0-received", bobReceived[0], "stream0-responded", bobResponded[0])
 			return nil
 		})
 	}()
@@ -575,7 +594,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	aliceDone := make(chan struct{})
 	go func() {
 		defer close(aliceDone)
-		listenerAlice.Loop(ctx, func(ctx context.Context, s *Stream) error {
+		listenerAlice.Loop(ctxAlice, func(ctx context.Context, s *Stream) error {
 			// Write phase
 			for _, ss := range aliceStreams {
 				if ss.sent < len(ss.data) {
@@ -587,6 +606,9 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 					if n > 0 {
 						ss.sent += n
 					}
+				}
+				if ss.sent >= len(ss.data) && !ss.stream.IsCloseRequested() {
+					ss.stream.Close()
 				}
 			}
 
@@ -624,8 +646,10 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 				}
 			}
 
-			if allSent && allReceived && allClosed {
-				cancel()
+			slog.Debug("Alice check", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.HasPendingAcks(), "activeStreams", listenerAlice.HasActiveStreams())
+			if allSent && allReceived && allClosed && !connAlice.rcv.HasPendingAcks() && !listenerAlice.HasActiveStreams() {
+				slog.Debug("Alice exiting", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.HasPendingAcks())
+				cancelAlice()
 			}
 			return nil
 		})
