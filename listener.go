@@ -20,7 +20,7 @@ type Listener struct {
 	// this is the port we are listening to
 	localConn       NetworkConn
 	prvKeyId        *ecdh.PrivateKey          //never nil
-	connMap         *LinkedMap[uint64, *Conn] // here we store the connection to remote peers, we can have up to
+	connMap         *LinkedMap[uint64, *conn] // here we store the connection to remote peers, we can have up to
 	currentConnID   *uint64
 	currentStreamID *uint32
 	closed          bool
@@ -191,7 +191,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		prvKeyId:     lOpts.prvKeyId,
 		mtu:          lOpts.mtu,
 		keyLogWriter: lOpts.keyLogWriter,
-		connMap:      NewLinkedMap[uint64, *Conn](),
+		connMap:      NewLinkedMap[uint64, *conn](),
 	}
 
 	slog.Info(
@@ -213,7 +213,7 @@ func (l *Listener) Close() error {
 	l.closed = true
 
 	for _, conn := range l.connMap.Iterator(nil) {
-		conn.Close()
+		conn.close()
 	}
 
 	err := l.localConn.TimeoutReadNow()
@@ -241,7 +241,7 @@ func (l *Listener) newConn(
 	pubKeyIdRcv *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
 	isSender bool,
-	withCrypto bool) (*Conn, error) {
+	withCrypto bool) (*conn, error) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -251,7 +251,7 @@ func (l *Listener) newConn(
 		return nil, errors.New("conn already exists")
 	}
 
-	conn := &Conn{
+	conn := &conn{
 		connId:             connId,
 		streams:            NewLinkedMap[uint32, *Stream](),
 		remoteAddr:         remoteAddr,
@@ -286,7 +286,7 @@ func (l *Listener) newConn(
 }
 
 func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
-	conn *Conn, userData []byte, msgType CryptoMsgType, err error) {
+	conn *conn, userData []byte, msgType cryptoMsgType, err error) {
 	// Read the header byte and connId
 	if len(encData) < MinPacketSize {
 		return nil, nil, 0, fmt.Errorf("header needs to be at least %v bytes", MinPacketSize)
@@ -297,7 +297,7 @@ func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
 	if version != CryptoVersion {
 		return nil, nil, 0, errors.New("unsupported version")
 	}
-	msgType = CryptoMsgType(header >> 5)
+	msgType = cryptoMsgType(header >> 5)
 
 	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
 

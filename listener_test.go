@@ -90,7 +90,7 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 	connPair.Conn1.latencyNano = latencyNano
 	connPair.Conn2.latencyNano = latencyNano
 
-	streamA := connA.Stream(0)
+	streamA := connA.stream(0)
 
 	// Generate test data
 	testData := make([]byte, testDataSize)
@@ -232,7 +232,7 @@ func TestListenerStreamWithReordering(t *testing.T) {
 	connPair.Conn1.latencyNano = 50 * msNano
 	connPair.Conn2.latencyNano = 50 * msNano
 
-	streamA := connA.Stream(0)
+	streamA := connA.stream(0)
 
 	testDataSize := 10 * 1024
 	testData := make([]byte, testDataSize)
@@ -336,7 +336,7 @@ func TestListenerStreamMultipleStreams(t *testing.T) {
 	testDataSize := 5 * 1024
 
 	for i := 0; i < numStreams; i++ {
-		streams[i] = connA.Stream(uint32(i))
+		streams[i] = connA.stream(uint32(i))
 		testData[i] = make([]byte, testDataSize)
 		_, err := rand.Read(testData[i])
 		assert.NoError(t, err)
@@ -514,7 +514,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 			data[j] = byte(i)
 		}
 		aliceStreams[i] = &StreamState{
-			stream: connAlice.Stream(uint32(i)),
+			stream: connAlice.stream(uint32(i)),
 			data:   data,
 			sent:   0,
 		}
@@ -675,7 +675,7 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 
 func TestListenerDecodeErrors(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *Conn](),
+		connMap:  NewLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdAlice,
 		mtu:      defaultMTU,
 	}
@@ -700,7 +700,7 @@ func TestListenerDecodeErrors(t *testing.T) {
 
 func TestListenerDecodeConnNotFound(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *Conn](),
+		connMap:  NewLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdAlice,
 		mtu:      defaultMTU,
 	}

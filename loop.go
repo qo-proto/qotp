@@ -36,9 +36,9 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 		conn.lastReadTimeNano = nowNano
 	}
 
-	var p *PayloadHeader
+	var p *payloadHeader
 	if len(payload) == 0 && msgType == InitSnd { //InitSnd is the only message without any payload
-		p = &PayloadHeader{}
+		p = &payloadHeader{}
 		data = []byte{}
 	} else {
 		p, data, err = DecodePayload(payload)
@@ -78,16 +78,16 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		return minPacing
 	}
 
-	closeConn := []*Conn{}
-	closeStream := map[*Conn][]uint32{}
+	closeConn := []*conn{}
+	closeStream := map[*conn][]uint32{}
 	isDataSent := false
 
-	iter := NestedIterator(l.connMap, func(conn *Conn) *LinkedMap[uint32, *Stream] {
+	iter := NestedIterator(l.connMap, func(conn *conn) *LinkedMap[uint32, *Stream] {
 		return conn.streams
 	}, l.currentConnID, l.currentStreamID)
 
 	for conn, stream := range iter {
-		dataSent, pacingNano, err := conn.Flush(stream, nowNano)
+		dataSent, pacingNano, err := conn.sendNext(stream, nowNano)
 		if err != nil {
 			slog.Info("closing connection, err", slog.Any("err", err))
 			closeConn = append(closeConn, conn)

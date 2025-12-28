@@ -7,7 +7,7 @@ import (
 
 type Stream struct {
 	streamID  uint32
-	conn      *Conn
+	conn      *conn
 	rcvClosed bool // When receive direction closed
 	sndClosed bool // When send direction closed
 	mu        sync.Mutex

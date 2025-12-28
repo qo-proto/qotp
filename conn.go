@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-type Conn struct {
+type conn struct {
 	// Identity
 	connId     uint64
 	remoteAddr netip.AddrPort
@@ -44,35 +44,28 @@ type Conn struct {
 	mu sync.Mutex
 }
 
-func (c *Conn) msgType() CryptoMsgType {
-	if c.isHandshakeDoneOnRcv {
-		return Data
-	}
-
-	switch {
-	case c.isWithCryptoOnInit && c.isSenderOnInit:
-		return InitCryptoSnd
-	case c.isWithCryptoOnInit && !c.isSenderOnInit:
-		return InitCryptoRcv
-	case c.isSenderOnInit:
-		return InitSnd
-	default:
-		return InitRcv
-	}
-}
-
-func (c *Conn) Close() {
+func (c *conn) Stream(streamID uint32) *Stream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, s := range c.streams.Iterator(nil) {
-		s.Close()
-	}
+	return c.stream(streamID)
 }
 
-// streamLocked returns or creates a stream. Caller must hold c.mu.
-func (c *Conn) streamLocked(streamID uint32) *Stream {
-	// Check if stream is in TIME_WAIT (receive side completed)
+func (c *conn) HasActiveStreams() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, val := range c.streams.Iterator(nil) {
+		if val != nil && (!val.rcvClosed || !val.sndClosed) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Stream returns or creates a stream.
+func (c *conn) stream(streamID uint32) *Stream {
 	if c.rcv.IsFinished(streamID) {
 		return nil // Stream is closed, decode() will handle TIME_WAIT ACKs
 	}
@@ -90,14 +83,38 @@ func (c *Conn) streamLocked(streamID uint32) *Stream {
 	return s
 }
 
-// Stream returns or creates a stream. Thread-safe.
-func (c *Conn) Stream(streamID uint32) *Stream {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.streamLocked(streamID)
+func (c *conn) close() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    for _, s := range c.streams.Iterator(nil) {
+        s.Close()
+    }
 }
 
-func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgType) (encData []byte, err error) {
+// We need to check if we remove the current state, if yes, then move the state to the previous stream
+func (c *conn) cleanupStream(streamID uint32, nowNano uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
+		tmp, _, _ := c.streams.Next(streamID)
+		c.listener.currentStreamID = &tmp
+	}
+	c.streams.Remove(streamID)
+
+	c.snd.RemoveStream(streamID)
+	c.rcv.RemoveStream(streamID)
+}
+
+func (c *conn) cleanupConn() {
+	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
+		tmp, _, _ := c.listener.connMap.Next(c.connId)
+		c.listener.currentConnID = &tmp
+	}
+	c.listener.connMap.Remove(c.connId)
+}
+
+func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) (encData []byte, err error) {
 	// Create payload early for cases that need it
 	var packetData []byte
 
@@ -185,7 +202,7 @@ func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgTyp
 	return encData, nil
 }
 
-func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
+func (c *conn) decode(p *payloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -201,7 +218,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 				c.updateMeasurements(rttNano, packetSize, nowNano) // TODO: 42 is approx overhead
 			}
 
-			ackStream := c.streamLocked(p.Ack.streamID)
+			ackStream := c.stream(p.Ack.streamID)
 			if ackStream != nil && !ackStream.sndClosed && c.snd.CheckStreamFullyAcked(p.Ack.streamID) {
 				ackStream.sndClosed = true
 			}
@@ -212,7 +229,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 		}
 	}
 
-	s = c.streamLocked(p.StreamID)
+	s = c.stream(p.StreamID)
 	if s == nil {
 		// Stream is finished - just ACK and return
 		if c.rcv.IsFinished(p.StreamID) {
@@ -247,44 +264,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 	return s, nil
 }
 
-// We need to check if we remove the current state, if yes, then move the state to the previous stream
-func (c *Conn) cleanupStream(streamID uint32, nowNano uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
-		tmp, _, _ := c.streams.Next(streamID)
-		c.listener.currentStreamID = &tmp
-	}
-	c.streams.Remove(streamID)
-
-	c.snd.RemoveStream(streamID)
-	c.rcv.RemoveStream(streamID)
-}
-
-func (c *Conn) cleanupConn() {
-	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
-		tmp, _, _ := c.listener.connMap.Next(c.connId)
-		c.listener.currentConnID = &tmp
-	}
-	c.listener.connMap.Remove(c.connId)
-}
-
-func (c *Conn) HasActiveStreams() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for _, val := range c.streams.Iterator(nil) {
-		if val != nil && (!val.rcvClosed || !val.sndClosed) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
-
+func (c *conn) sendNext(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
 	// Respect pacing
 	if c.nextWriteTime > nowNano || c.dataInFlight >= int(c.cwnd) {
 		ack := c.rcv.GetSndAck()
@@ -293,7 +273,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 			return c.writeAck(s, ack, false, nowNano)
 		}
 		if c.nextWriteTime > nowNano {
-			return 0, c.nextWriteTime - nowNano, nil
+			return 0, c.nextWriteTime - nowNano, nil 
 		}
 		return 0, MinDeadLine, nil
 	}
@@ -322,14 +302,14 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	if splitData != nil {
 		c.onPacketLoss()
-		return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, false)
+		return c.writePacket(s, ack, splitData, offset, isClose, msgType, nowNano, false)
 	}
 
 	//next check if we can send packets, during handshake we can only send 1 packet
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
 		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu)
 		if splitData != nil {
-			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
+			return c.writePacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
 			return c.writeAck(s, ack, isClose, nowNano)
 		}
@@ -342,8 +322,8 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	return 0, MinDeadLine, nil
 }
 
-func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, isClose bool, msgType CryptoMsgType, nowNano uint64, trackInFlight bool) (data int, pacingNano uint64, err error) {
-	p := &PayloadHeader{
+func (c *conn) writePacket(s *Stream, ack *Ack, splitData []byte, offset uint64, isClose bool, msgType cryptoMsgType, nowNano uint64, trackInFlight bool) (data int, pacingNano uint64, err error) {
+	p := &payloadHeader{
 		IsClose:      isClose,
 		Ack:          ack,
 		StreamID:     s.streamID,
@@ -354,8 +334,8 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 	if err != nil {
 		return 0, 0, err
 	}
-	
- 	c.snd.UpdatePacketSize(s.streamID, offset, uint16(len(splitData)), uint16(len(encData)), nowNano)
+
+	c.snd.UpdatePacketSize(s.streamID, offset, uint16(len(splitData)), uint16(len(encData)), nowNano)
 
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
 	if err != nil {
@@ -371,8 +351,8 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 	return packetLen, pacingNano, nil
 }
 
-func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data int, pacingNano uint64, err error) {
-	p := &PayloadHeader{
+func (c *conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data int, pacingNano uint64, err error) {
+	p := &payloadHeader{
 		IsClose:  isClose,
 		Ack:      ack,
 		StreamID: s.streamID,
@@ -392,6 +372,20 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 	return 0, pacingNano, nil
 }
 
-func (c *Conn) Rcv() *ReceiveBuffer {
-	return c.rcv
+
+func (c *conn) msgType() cryptoMsgType {
+	if c.isHandshakeDoneOnRcv {
+		return Data
+	}
+
+	switch {
+	case c.isWithCryptoOnInit && c.isSenderOnInit:
+		return InitCryptoSnd
+	case c.isWithCryptoOnInit && !c.isSenderOnInit:
+		return InitCryptoRcv
+	case c.isSenderOnInit:
+		return InitSnd
+	default:
+		return InitRcv
+	}
 }

@@ -44,7 +44,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret
 		return nil, errors.New("unsupported protocol version")
 	}
 
-	msgType := CryptoMsgType(header >> 5)
+	msgType := cryptoMsgType(header >> 5)
 	slog.Debug("DecryptPcap detected message type",
 		"msgType", msgType,
 		"header", fmt.Sprintf("0x%02x", header))

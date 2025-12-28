@@ -9,8 +9,8 @@ import (
 )
 
 // Helper function to create a minimal Connection for testing
-func newTestConnection() *Conn {
-	return &Conn{
+func newTestConnection() *conn {
+	return &conn{
 		Measurements: NewMeasurements(),
 	}
 }
@@ -182,23 +182,23 @@ func TestMeasurementsNormalStateRTTBased(t *testing.T) {
 	conn := newTestConnection()
 	conn.isStartup = false
 	conn.bwMax = 10000
-	conn.rttMinNano = 100_000_000      // Set min RTT to 100ms
+	conn.rttMinNano = 100_000_000       // Set min RTT to 100ms
 	conn.rttMinTimeNano = 1_000_000_000 // Set time for min RTT
 	conn.lastProbeTimeNano = 1_000_000_000 // Initialize to prevent probing
 
 	// Test high RTT inflation (SRTT > 1.5x min)
-	conn.srtt = 160_000_000                        // 160ms
+	conn.srtt = 160_000_000                                   // 160ms
 	conn.updateMeasurements(200_000_000, 1000, 1_100_000_000) // New measurement won't replace min
 	assert.Equal(t, uint64(75), conn.pacingGainPct, "Should reduce to 75% when RTT > 1.5x min")
 
 	// Test moderate RTT inflation (SRTT > 1.25x min)
-	conn.srtt = 130_000_000                        // 130ms
+	conn.srtt = 130_000_000 // 130ms
 	conn.updateMeasurements(200_000_000, 1000, 1_200_000_000)
 	assert.Equal(t, uint64(90), conn.pacingGainPct, "Should reduce to 90% when RTT > 1.25x min")
 
 	// Test normal RTT (ensure we're not in probe window)
-	conn.srtt = 100_000_000                        // 100ms
-	conn.lastProbeTimeNano = 1_200_000_000         // Recent probe time
+	conn.srtt = 100_000_000                                   // 100ms
+	conn.lastProbeTimeNano = 1_200_000_000                    // Recent probe time
 	conn.updateMeasurements(200_000_000, 1000, 1_300_000_000) // Only 100ms later (1 RTT, not 8)
 	assert.Equal(t, uint64(100), conn.pacingGainPct, "Should be 100% when RTT is normal")
 }
@@ -208,9 +208,9 @@ func TestMeasurementsBandwidthProbing(t *testing.T) {
 	conn := newTestConnection()
 	conn.isStartup = false
 	conn.bwMax = 10000
-	conn.rttMinNano = 100_000_000      // 100ms min RTT
+	conn.rttMinNano = 100_000_000 // 100ms min RTT
 	conn.rttMinTimeNano = 1_000_000_000
-	conn.srtt = 100_000_000              // 100ms
+	conn.srtt = 100_000_000 // 100ms
 	conn.lastProbeTimeNano = 1_000_000_000
 
 	// Update before probe time (less than 8 RTTs = 800ms)
@@ -254,7 +254,7 @@ func TestMeasurementsRTOCalculationStandard(t *testing.T) {
 // Test RTO calculation with capping
 func TestMeasurementsRTOCalculationCapped(t *testing.T) {
 	conn := newTestConnection()
-	conn.srtt = 3000 * msNano // 3s
+	conn.srtt = 3000 * msNano  // 3s
 	conn.rttvar = 500 * msNano // 500ms
 
 	rto := conn.rtoNano()
@@ -327,34 +327,61 @@ func TestMeasurementsPacingWithBandwidth(t *testing.T) {
 }
 
 // =============================================================================
-// BACKOFF ALGORITHM TESTS
+// BACKOFF ALGORITHM TESTS (0-based rtoNr)
 // =============================================================================
 
-func TestMeasurementsBackoff(t *testing.T) {
+func TestBackoff(t *testing.T) {
 	baseRTO := uint64(200 * msNano)
 
-	// Exponential backoff
-	for retry := 1; retry <= 5; retry++ {
-		expected := baseRTO
-		for i := 1; i < retry; i++ {
-			expected *= 2
-		}
-		result, err := backoff(baseRTO, retry)
-		assert.NoError(t, err)
-		assert.Equal(t, expected, result)
+	tests := []struct {
+		name        string
+		rtoNr       uint
+		expectedRTO uint64
+		expectError bool
+	}{
+		{"no backoff (first attempt)", 0, baseRTO, false},
+		{"1x backoff", 1, baseRTO * 2, false},
+		{"2x backoff", 2, baseRTO * 4, false},
+		{"3x backoff", 3, baseRTO * 8, false},
+		{"4x backoff (max allowed)", 4, baseRTO * 16, false},
+		{"exceeds max retry", 5, 0, true},
+		{"way over max", 100, 0, true},
 	}
 
-	// Exceeds maximum
-	_, err := backoff(baseRTO, 6)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "max retry attempts")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := backoff(baseRTO, tt.rtoNr)
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "max retry attempts")
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, tt.expectedRTO, result)
+			}
+		})
+	}
+}
 
-	// Invalid input
-	_, err = backoff(baseRTO, 0)
-	assert.Error(t, err)
+func TestBackoffEdgeCases(t *testing.T) {
+	// Zero base RTO
+	result, err := backoff(0, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), result)
 
-	_, err = backoff(baseRTO, -1)
-	assert.Error(t, err)
+	result, err = backoff(0, 3)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), result)
+
+	// Very small RTO
+	result, err = backoff(1, 2)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(4), result) // 1 * 2 * 2 = 4
+
+	// Large RTO (check no overflow for reasonable values)
+	largeRTO := uint64(1000 * msNano) // 1 second
+	result, err = backoff(largeRTO, 4)
+	assert.NoError(t, err)
+	assert.Equal(t, largeRTO*16, result)
 }
 
 // =============================================================================
@@ -390,12 +417,12 @@ func TestMeasurementsEdgeCases(t *testing.T) {
 // Test concurrent access protection
 func TestMeasurementsConcurrentAccess(t *testing.T) {
 	conn := newTestConnection()
-	
+
 	var wg sync.WaitGroup
-	
+
 	// Test that concurrent calls don't cause race conditions
 	wg.Add(3)
-	
+
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
@@ -403,7 +430,7 @@ func TestMeasurementsConcurrentAccess(t *testing.T) {
 			time.Sleep(time.Microsecond)
 		}
 	}()
-	
+
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 10; i++ {
@@ -411,7 +438,7 @@ func TestMeasurementsConcurrentAccess(t *testing.T) {
 			time.Sleep(time.Microsecond)
 		}
 	}()
-	
+
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 5; i++ {
@@ -419,10 +446,10 @@ func TestMeasurementsConcurrentAccess(t *testing.T) {
 			time.Sleep(time.Microsecond * 2)
 		}
 	}()
-	
+
 	// Wait for all goroutines to complete
 	wg.Wait()
-	
+
 	// Should not panic and should have valid state
 	assert.Greater(t, conn.bwMax, uint64(0), "Should maintain valid bandwidth after concurrent access")
 }

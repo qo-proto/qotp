@@ -12,7 +12,7 @@ const (
 	MinProtoSize     = 8
 )
 
-type PayloadHeader struct {
+type payloadHeader struct {
 	IsClose      bool
 	Ack          *Ack
 	StreamID     uint32
@@ -82,7 +82,7 @@ func DecodeRcvWindow(encoded uint8) uint64 {
 	return base + uint64(subStep)*increment
 }
 
-func EncodePayload(p *PayloadHeader, userData []byte) (encoded []byte, offset int) {
+func EncodePayload(p *payloadHeader, userData []byte) (encoded []byte, offset int) {
 	isAck := p.Ack != nil
 	isEmptyDataHeader := !p.IsClose && isAck && userData == nil
 
@@ -138,13 +138,13 @@ func EncodePayload(p *PayloadHeader, userData []byte) (encoded []byte, offset in
 	return encoded, offset
 }
 
-func DecodePayload(data []byte) (payload *PayloadHeader, userData []byte, err error) {
+func DecodePayload(data []byte) (payload *payloadHeader, userData []byte, err error) {
 	dataLen := len(data)
 	if dataLen < MinProtoSize {
 		return nil, nil, errors.New("payload size below minimum")
 	}
 
-	payload = &PayloadHeader{}
+	payload = &payloadHeader{}
 
 	// Decode header byte
 	header := data[0]

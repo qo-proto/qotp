@@ -9,13 +9,6 @@ import (
 	"github.com/fatih/color"
 )
 
-const (
-	rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
-	sndBufferCapacity = 16 * 1024 * 1024 // 16MB
-	secondNano        = 1_000_000_000
-	msNano            = 1_000_000
-)
-
 func init() {
 	levelStr := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	var slogLevel slog.Level

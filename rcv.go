@@ -11,6 +11,8 @@ const (
 	RcvInsertOk RcvInsertStatus = iota
 	RcvInsertDuplicate
 	RcvInsertBufferFull
+	
+	rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
 )
 
 type RcvValue struct {

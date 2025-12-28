@@ -11,10 +11,10 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-type CryptoMsgType int8
+type cryptoMsgType int8
 
 const (
-	InitSnd CryptoMsgType = iota
+	InitSnd cryptoMsgType = iota
 	InitRcv
 	InitCryptoSnd
 	InitCryptoRcv
@@ -523,7 +523,7 @@ func generateKey() (*ecdh.PrivateKey, error) {
 	return prvKey1, nil
 }
 
-func calcCryptoOverheadWithData(msgType CryptoMsgType, ack *Ack, offset uint64) (overhead int) {
+func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *Ack, offset uint64) (overhead int) {
 	hasAck := ack != nil
 	needsExtension := (hasAck && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF
 

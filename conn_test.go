@@ -22,8 +22,8 @@ var (
 	prvEpBob, _   = ecdh.X25519().NewPrivateKey(seed4[:])
 )
 
-func createTestConn(isSender, withCrypto, handshakeDone bool) *Conn {
-	conn := &Conn{
+func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
+	conn := &conn{
 		isSenderOnInit:       isSender,
 		isWithCryptoOnInit:   withCrypto,
 		isHandshakeDoneOnRcv: handshakeDone,
@@ -51,12 +51,12 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *Conn {
 
 func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
-		connMap:  NewLinkedMap[uint64, *Conn](),
+		connMap:  NewLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdAlice,
 		mtu:      defaultMTU,
 	}
 	lBob := &Listener{
-		connMap:  NewLinkedMap[uint64, *Conn](),
+		connMap:  NewLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdBob,
 		mtu:      defaultMTU,
 	}
@@ -101,19 +101,19 @@ func TestConnMsgType(t *testing.T) {
 func TestConnEncodeClosedStates(t *testing.T) {
 	// Stream closed - encode still works
 	conn := createTestConn(true, false, true)
-	stream := conn.Stream(1)
+	stream := conn.stream(1)
 	stream.Close()
 
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 	output, err := conn.encode(p, []byte("test data"), conn.msgType())
 	assert.NotNil(t, output)
 	assert.NoError(t, err)
 
 	// Connection closed - encode still works
 	conn = createTestConn(true, false, true)
-	conn.Close()
+	conn.close()
 
-	p = &PayloadHeader{}
+	p = &payloadHeader{}
 	output, err = conn.encode(p, []byte("test data"), conn.msgType())
 	assert.NotNil(t, output)
 	assert.NoError(t, err)
@@ -122,8 +122,8 @@ func TestConnEncodeClosedStates(t *testing.T) {
 func TestConnEncodeUnknownMsgType(t *testing.T) {
 	conn := createTestConn(true, false, true)
 
-	p := &PayloadHeader{}
-	_, err := conn.encode(p, []byte("test"), CryptoMsgType(99))
+	p := &payloadHeader{}
+	_, err := conn.encode(p, []byte("test"), cryptoMsgType(99))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown message type")
 }
@@ -133,7 +133,7 @@ func TestConnSequenceNumberRollover(t *testing.T) {
 	conn.snCrypto = (1 << 48) - 2
 	conn.epochCryptoSnd = 0
 
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 
 	// First encode: snCrypto goes to max
 	_, err := conn.encode(p, []byte("test"), Data)
@@ -152,7 +152,7 @@ func TestConnSequenceNumberExhaustion(t *testing.T) {
 	conn.snCrypto = (1 << 48) - 1
 	conn.epochCryptoSnd = (1 << 47) - 1
 
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 	_, err := conn.encode(p, []byte("test"), Data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "exhausted")
@@ -171,7 +171,7 @@ func TestConnEncodeDecodeRoundtripEmpty(t *testing.T) {
 
 	testData := createTestData(0)
 
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -202,7 +202,7 @@ func TestConnEncodeDecodeRoundtripData(t *testing.T) {
 	// 1295 bytes is max payload for InitCryptoSnd
 	testData := createTestData(1295)
 
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -223,7 +223,7 @@ func TestConnFullHandshake(t *testing.T) {
 	remoteAddr := getTestRemoteAddr()
 
 	// Alice's initial connection
-	connAlice := &Conn{
+	connAlice := &conn{
 		connId:         Uint64(prvEpAlice.PublicKey().Bytes()),
 		isSenderOnInit: true,
 		snCrypto:       0,
@@ -236,7 +236,7 @@ func TestConnFullHandshake(t *testing.T) {
 	lAlice.connMap.Put(connAlice.connId, connAlice)
 
 	// Step 1: Alice encodes InitSnd
-	p := &PayloadHeader{}
+	p := &payloadHeader{}
 	encoded, err := connAlice.encode(p, nil, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -249,7 +249,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	// Step 3: Bob responds with InitRcv
 	testData := []byte("handshake response")
-	p = &PayloadHeader{}
+	p = &payloadHeader{}
 	encodedR0, err := connBob.encode(p, testData, connBob.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encodedR0)
@@ -281,7 +281,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	// Step 6: Alice sends Data message
 	dataMsg := []byte("data message")
-	p = &PayloadHeader{}
+	p = &payloadHeader{}
 	encoded, err = connAlice.encode(p, dataMsg, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)

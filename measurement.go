@@ -1,7 +1,6 @@
 package qotp
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -10,6 +9,9 @@ import (
 const (
 	defaultMTU     = 1400
 	minCwndPackets = 10
+	
+	secondNano        = 1_000_000_000
+	msNano            = 1_000_000
 )
 
 var (
@@ -42,7 +44,7 @@ var (
 	ReadDeadLine = uint64(30 * secondNano) // 30 seconds
 
 	//backoff
-	maxRetry      = 5
+	maxRetry      = uint(5)
 	rtoBackoffPct = uint64(200)
 )
 
@@ -80,7 +82,7 @@ func NewMeasurements() Measurements {
 	}
 }
 
-func (c *Conn) updateMeasurements(rttMeasurementNano uint64, packetSize uint16, nowNano uint64) {
+func (m *Measurements) updateMeasurements(rttMeasurementNano uint64, packetSize uint16, nowNano uint64) {
 	// Validation
 	if rttMeasurementNano == 0 {
 		slog.Warn("cannot update measurements, rtt is 0")
@@ -96,78 +98,78 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, packetSize uint16, 
 	}
 
 	// Update RTT (smoothed RTT and variation)
-	if c.srtt == 0 {
+	if m.srtt == 0 {
 		// First measurement
-		c.srtt = rttMeasurementNano
-		c.rttvar = rttMeasurementNano / 2
+		m.srtt = rttMeasurementNano
+		m.rttvar = rttMeasurementNano / 2
 	} else {
 		// Calculate absolute difference for RTT variation
 		var delta uint64
-		if rttMeasurementNano > c.srtt {
-			delta = rttMeasurementNano - c.srtt
+		if rttMeasurementNano > m.srtt {
+			delta = rttMeasurementNano - m.srtt
 		} else {
-			delta = c.srtt - rttMeasurementNano
+			delta = m.srtt - rttMeasurementNano
 		}
 
 		// Integer-based updates using exact fractions
-		c.rttvar = (c.rttvar*3)/4 + (delta*1)/4
-		c.srtt = (c.srtt*7)/8 + (rttMeasurementNano*1)/8
+		m.rttvar = (m.rttvar*3)/4 + (delta*1)/4
+		m.srtt = (m.srtt*7)/8 + (rttMeasurementNano*1)/8
 	}
 
 	// Update BBR minimum RTT tracking
-	if (nowNano > c.rttMinTimeNano && nowNano-c.rttMinTimeNano >= rttExpiry) ||
-		rttMeasurementNano < c.rttMinNano {
-		c.rttMinNano = rttMeasurementNano
-		c.rttMinTimeNano = nowNano
+	if (nowNano > m.rttMinTimeNano && nowNano-m.rttMinTimeNano >= rttExpiry) ||
+		rttMeasurementNano < m.rttMinNano {
+		m.rttMinNano = rttMeasurementNano
+		m.rttMinTimeNano = nowNano
 	}
 
 	// Update BBR bandwidth estimation
 	bwCurrent := uint64(0)
-	if c.rttMinNano > 0 {
-		bwCurrent = (uint64(packetSize) * 1_000_000_000) / c.rttMinNano
+	if m.rttMinNano > 0 {
+		bwCurrent = (uint64(packetSize) * 1_000_000_000) / m.rttMinNano
 	}
 
-	if bwCurrent > c.bwMax {
-		c.bwMax = bwCurrent
-		c.bwDec = 0
+	if bwCurrent > m.bwMax {
+		m.bwMax = bwCurrent
+		m.bwDec = 0
 	} else {
-		c.bwDec++
+		m.bwDec++
 	}
 
 	// Initialize probe time on first measurement
-	if c.lastProbeTimeNano == 0 {
-		c.lastProbeTimeNano = nowNano
+	if m.lastProbeTimeNano == 0 {
+		m.lastProbeTimeNano = nowNano
 	}
 
 	// BBR state-specific behavior
-	if c.isStartup {
-		if c.bwDec >= bwDecThreshold {
-			c.isStartup = false
-			c.pacingGainPct = normalGain
+	if m.isStartup {
+		if m.bwDec >= bwDecThreshold {
+			m.isStartup = false
+			m.pacingGainPct = normalGain
 		}
 
-		c.cwnd += uint64(packetSize) * c.pacingGainPct / 100
+		m.cwnd += uint64(packetSize) * m.pacingGainPct / 100
 	} else {
 		// Normal state logic
-		rttRatioPct := (c.srtt * 100) / c.rttMinNano
+		rttRatioPct := (m.srtt * 100) / m.rttMinNano
 
 		if rttRatioPct > rttInflationHigh {
-			c.pacingGainPct = drainGain
+			m.pacingGainPct = drainGain
 		} else if rttRatioPct > rttInflationModerate {
-			c.pacingGainPct = dupAckGain
-		} else if nowNano-c.lastProbeTimeNano > c.rttMinNano*probeMultiplier {
-			c.pacingGainPct = probeGain
-			c.lastProbeTimeNano = nowNano
+			m.pacingGainPct = dupAckGain
+		} else if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
+			m.pacingGainPct = probeGain
+			m.lastProbeTimeNano = nowNano
 		} else {
-			c.pacingGainPct = normalGain
+			m.pacingGainPct = normalGain
 		}
 
-		bdp := (c.bwMax * c.rttMinNano) / 1_000_000_000
-		c.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
+		bdp := (m.bwMax * m.rttMinNano) / 1_000_000_000
+		m.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
 	}
 }
 
-func (c *Conn) rtoNano() uint64 {
+func (c *Measurements) rtoNano() uint64 {
 	rto := c.srtt + 4*c.rttvar
 
 	switch {
@@ -182,40 +184,40 @@ func (c *Conn) rtoNano() uint64 {
 	}
 }
 
-func (c *Conn) onDuplicateAck() {
-	c.bwMax = c.bwMax * dupAckBwReduction / 100
-	c.pacingGainPct = dupAckGain
-	c.packetDupNr++
+func (m *Measurements) onDuplicateAck() {
+	m.bwMax = m.bwMax * dupAckBwReduction / 100
+	m.pacingGainPct = dupAckGain
+	m.packetDupNr++
 
-	if c.isStartup {
-		c.isStartup = false
+	if m.isStartup {
+		m.isStartup = false
 	}
 
 	// Reduce cwnd immediately
-	c.cwnd = c.cwnd * dupAckBwReduction / 100
-	c.cwnd = max(c.cwnd, minCwndPackets*defaultMTU)
+	m.cwnd = m.cwnd * dupAckBwReduction / 100
+	m.cwnd = max(m.cwnd, minCwndPackets*defaultMTU)
 }
 
-func (c *Conn) onPacketLoss() {
-	c.bwMax = c.bwMax * lossBwReduction / 100
-	c.pacingGainPct = normalGain
-	c.isStartup = false
-	c.packetLossNr++
+func (m *Measurements) onPacketLoss() {
+	m.bwMax = m.bwMax * lossBwReduction / 100
+	m.pacingGainPct = normalGain
+	m.isStartup = false
+	m.packetLossNr++
 
 	// Reduce cwnd immediately
-	c.cwnd = c.cwnd * lossBwReduction / 100
-	c.cwnd = max(c.cwnd, minCwndPackets*defaultMTU)
+	m.cwnd = m.cwnd * lossBwReduction / 100
+	m.cwnd = max(m.cwnd, minCwndPackets*defaultMTU)
 }
 
-func (c *Conn) calcPacing(packetSize uint64) uint64 {
-	if c.bwMax == 0 {
-		if c.srtt > 0 {
-			return c.srtt / rttDivisor
+func (m *Measurements) calcPacing(packetSize uint64) uint64 {
+	if m.bwMax == 0 {
+		if m.srtt > 0 {
+			return m.srtt / rttDivisor
 		}
 		return fallbackInterval
 	}
 
-	adjustedBandwidth := (c.bwMax * c.pacingGainPct) / 100
+	adjustedBandwidth := (m.bwMax * m.pacingGainPct) / 100
 	if adjustedBandwidth == 0 {
 		return fallbackInterval
 	}
@@ -223,17 +225,12 @@ func (c *Conn) calcPacing(packetSize uint64) uint64 {
 	return (packetSize * 1_000_000_000) / adjustedBandwidth
 }
 
-func backoff(rtoNano uint64, rtoNr int) (uint64, error) {
-	if rtoNr <= 0 {
-		return 0, errors.New("backoff requires a positive rto number")
-	}
-	if rtoNr > maxRetry {
+func backoff(rtoNano uint64, rtoNr uint) (uint64, error) {
+	if rtoNr >= maxRetry {
 		return 0, fmt.Errorf("max retry attempts: %v exceeded limit %v", rtoNr, maxRetry)
 	}
-
-	for i := 1; i < rtoNr; i++ {
+	for i := uint(0); i < rtoNr; i++ {
 		rtoNano = (rtoNano * rtoBackoffPct) / 100
 	}
-
 	return rtoNano, nil
 }

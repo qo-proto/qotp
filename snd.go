@@ -19,13 +19,15 @@ const (
 	AckStatusOk AckStatus = iota
 	AckNotFound
 	AckDup
+	
+	sndBufferCapacity = 16 * 1024 * 1024 // 16MB
 )
 
 type SendInfo struct {
 	data         []byte
 	packetSize   uint16
 	sentTimeNano uint64
-	sentNr       int
+	sentNr       uint
 	pingRequest  bool
 	closeRequest bool
 }
@@ -113,7 +115,7 @@ func (sb *SendBuffer) QueuePing(streamId uint32) {
 }
 
 // ReadyToSend gets data from dataToSend and creates an entry in dataInFlightMap
-func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *Ack, mtu int) (
+func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType cryptoMsgType, ack *Ack, mtu int) (
 	packetData []byte, offset uint64, isClose bool) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -131,7 +133,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	if stream.pingRequest {
 		stream.pingRequest = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.dataInFlightMap.Put(key, &SendInfo{data: []byte{}, sentNr: 1, pingRequest: true, closeRequest: false})
+		stream.dataInFlightMap.Put(key, &SendInfo{pingRequest: true,})
 		return []byte{}, 0, false
 	}
 
@@ -151,7 +153,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		}
 
 		stream.closeSent = true
-		stream.dataInFlightMap.Put(closeKey, &SendInfo{data: []byte{}, sentNr: 1, pingRequest: false, closeRequest: true})
+		stream.dataInFlightMap.Put(closeKey, &SendInfo{closeRequest: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
@@ -184,7 +186,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		}
 	}
 
-	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, sentNr: 1, pingRequest: false, closeRequest: isClose})
+	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, closeRequest: isClose})
 
 	// Remove sent data from queue
 	stream.queuedData = stream.queuedData[length:]
@@ -196,7 +198,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 }
 
 // ReadyToRetransmit finds expired dataInFlightMap that need to be resent
-func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expectedRtoNano uint64, msgType CryptoMsgType, nowNano uint64) (
+func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expectedRtoNano uint64, msgType cryptoMsgType, nowNano uint64) (
 	data []byte, offset uint64, isClose bool, err error) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()

@@ -9,12 +9,12 @@ import (
 func FuzzPayload(f *testing.F) {
 	// Add seed corpus
 	payloads := []struct {
-		header *PayloadHeader
+		header *payloadHeader
 		data   []byte
 	}{
 		{
 			// Type 00: DATA with ACK
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				StreamID:     1,
 				StreamOffset: 100,
 				Ack:          &Ack{streamID: 10, offset: 200, len: 10, rcvWnd: 1000},
@@ -23,7 +23,7 @@ func FuzzPayload(f *testing.F) {
 		},
 		{
 			// Type 01: DATA no ACK (ping with empty data)
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				StreamID:     5,
 				StreamOffset: 50,
 			},
@@ -31,7 +31,7 @@ func FuzzPayload(f *testing.F) {
 		},
 		{
 			// Type 10: CLOSE with ACK
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				IsClose:      true,
 				StreamID:     10,
 				StreamOffset: 1000,
@@ -41,7 +41,7 @@ func FuzzPayload(f *testing.F) {
 		},
 		{
 			// Type 11: CLOSE no ACK
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				IsClose:      true,
 				StreamID:     15,
 				StreamOffset: 200,
@@ -50,14 +50,14 @@ func FuzzPayload(f *testing.F) {
 		},
 		{
 			// Type 00: regular ack (nil userData, no data header)
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				Ack: &Ack{streamID: 30, offset: 300, len: 50, rcvWnd: 2000},
 			},
 			data: nil,
 		},
 		{
 			// Max values
-			header: &PayloadHeader{
+			header: &payloadHeader{
 				StreamID:     math.MaxUint32,
 				StreamOffset: math.MaxUint64,
 			},
