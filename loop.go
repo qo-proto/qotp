@@ -53,7 +53,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		p = &payloadHeader{}
 		payload = []byte{}
 	} else {
-		p, payload, err = decodePayload(payload)
+		p, payload, err = decodeProto(payload)
 		if err != nil {
 			slog.Info("error decoding payload", slog.Any("error", err))
 			return nil, err

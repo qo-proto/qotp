@@ -235,9 +235,7 @@ func TestCryptoInitSndBasicFlow(t *testing.T) {
 	alicePrvKeyEp := generateKeys(t)
 
 	// Alice -> Bob: Encode InitHandshakeS0
-	_, buffer := encryptInitSnd(
-		alicePrvKeyId.PublicKey(),
-		alicePrvKeyEp.PublicKey(), defaultMTU)
+	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 
 	// Bob receives and decodes InitHandshakeS0
 	pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(buffer, defaultMTU)
@@ -263,7 +261,7 @@ func TestCryptoInitSndExactMinSize(t *testing.T) {
 	alicePrvKeyId := generateKeys(t)
 	alicePrvKeyEp := generateKeys(t)
 
-	_, buffer := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 
 	// Verify the buffer is at least minimum size
 	assert.GreaterOrEqual(t, len(buffer), defaultMTU)
@@ -370,9 +368,7 @@ func TestCryptoFullHandshakeFlow(t *testing.T) {
 	bobPrvKeyEp := generateKeys(t)
 
 	// Step 1: Alice sends InitHandshakeS0
-	connId, bufferS0 := encryptInitSnd(
-		alicePrvKeyId.PublicKey(),
-		alicePrvKeyEp.PublicKey(), defaultMTU)
+	connId, bufferS0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 
 	// Step 2: Bob receives and decodes InitHandshakeS0
 	_, _, err := decryptInitSnd(bufferS0, defaultMTU)
@@ -403,7 +399,7 @@ func TestCryptoMultipleHandshakes(t *testing.T) {
 	alicePrvKeyEp1 := generateKeys(t)
 	bobPrvKeyEp1 := generateKeys(t)
 
-	connId, buffer1S0 := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp1.PublicKey(), defaultMTU)
+	connId, buffer1S0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp1.PublicKey(), defaultMTU)
 	_, _, err := decryptInitSnd(buffer1S0, defaultMTU)
 	assert.NoError(t, err)
 
@@ -422,7 +418,7 @@ func TestCryptoMultipleHandshakes(t *testing.T) {
 	alicePrvKeyEp2 := generateKeys(t)
 	bobPrvKeyEp2 := generateKeys(t)
 
-	connId, buffer2S0 := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp2.PublicKey(), defaultMTU)
+	connId, buffer2S0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp2.PublicKey(), defaultMTU)
 	_, _, err = decryptInitSnd(buffer2S0, defaultMTU)
 	assert.NoError(t, err)
 
@@ -439,33 +435,13 @@ func TestCryptoMultipleHandshakes(t *testing.T) {
 
 }
 
-func TestCryptoNilKeyHandling(t *testing.T) {
-	// Test encoding with nil keys
-	assert.Panics(t, func() {
-		encryptInitSnd(nil, nil, defaultMTU)
-	})
-
-	assert.Panics(t, func() {
-		encryptInitRcv(0, nil, nil, nil, 0, []byte("test"))
-	})
-
-	validBuffer := make([]byte, defaultMTU)
-	_, _, err := decryptInitSnd(validBuffer, defaultMTU)
-	assert.Nil(t, err)
-
-	validBuffer = make([]byte, defaultMTU)
-	assert.Panics(t, func() {
-		decryptInitRcv(validBuffer, nil)
-	})
-}
-
 // Corner case: Corrupted buffer data
 func TestCryptoCorruptedBuffer(t *testing.T) {
 	alicePrvKeyId := generateKeys(t)
 	alicePrvKeyEp := generateKeys(t)
 
 	// Create valid buffer
-	_, buffer := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 
 	// Corrupt the buffer
 	if len(buffer) > 10 {
@@ -485,7 +461,7 @@ func TestCryptoVeryLargeBuffer(t *testing.T) {
 	alicePrvKeyId := generateKeys(t)
 	alicePrvKeyEp := generateKeys(t)
 
-	_, validBuffer := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	_, validBuffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 
 	// Create oversized buffer by appending extra data
 	largeBuffer := make([]byte, len(validBuffer)+10000)

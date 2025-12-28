@@ -184,29 +184,21 @@ func (c *Measurements) rtoNano() uint64 {
 	}
 }
 
+func (m *Measurements) reduceCwnd(reduction, gain uint64) {
+    m.bwMax = m.bwMax * reduction / 100
+    m.pacingGainPct = gain
+    m.isStartup = false
+    m.cwnd = max(m.cwnd * reduction / 100, minCwndPackets*defaultMTU)
+}
+
 func (m *Measurements) onDuplicateAck() {
-	m.bwMax = m.bwMax * dupAckBwReduction / 100
-	m.pacingGainPct = dupAckGain
-	m.packetDupNr++
-
-	if m.isStartup {
-		m.isStartup = false
-	}
-
-	// Reduce cwnd immediately
-	m.cwnd = m.cwnd * dupAckBwReduction / 100
-	m.cwnd = max(m.cwnd, minCwndPackets*defaultMTU)
+    m.reduceCwnd(dupAckBwReduction, dupAckGain)
+    m.packetDupNr++
 }
 
 func (m *Measurements) onPacketLoss() {
-	m.bwMax = m.bwMax * lossBwReduction / 100
-	m.pacingGainPct = normalGain
-	m.isStartup = false
-	m.packetLossNr++
-
-	// Reduce cwnd immediately
-	m.cwnd = m.cwnd * lossBwReduction / 100
-	m.cwnd = max(m.cwnd, minCwndPackets*defaultMTU)
+    m.reduceCwnd(lossBwReduction, normalGain)
+    m.packetLossNr++
 }
 
 func (m *Measurements) calcPacing(packetSize uint64) uint64 {

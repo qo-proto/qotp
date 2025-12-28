@@ -46,7 +46,7 @@ encoded | capacity
 255     | ~896GB+ (max)
 */
 
-func EncodeRcvWindow(actualBytes uint64) uint8 {
+func encodeRcvWindow(actualBytes uint64) uint8 {
 	if actualBytes == 0 {
 		return 0
 	}
@@ -64,7 +64,7 @@ func EncodeRcvWindow(actualBytes uint64) uint8 {
 	return uint8(encoded)
 }
 
-func DecodeRcvWindow(encoded uint8) uint64 {
+func decodeRcvWindow(encoded uint8) uint64 {
 	if encoded == 0 {
 		return 0
 	}
@@ -82,7 +82,7 @@ func DecodeRcvWindow(encoded uint8) uint64 {
 	return base + uint64(subStep)*increment
 }
 
-func EncodePayload(p *payloadHeader, userData []byte) (encoded []byte, offset int) {
+func encodeProto(p *payloadHeader, userData []byte) (encoded []byte, offset int) {
 	isAck := p.Ack != nil
 	isEmptyDataHeader := !p.IsClose && isAck && userData == nil
 
@@ -119,7 +119,7 @@ func EncodePayload(p *payloadHeader, userData []byte) (encoded []byte, offset in
 		offset += PutUint32(encoded[offset:], p.Ack.streamID)
 		offset += putOffsetVarint(encoded[offset:], p.Ack.offset, isExtend)
 		offset += PutUint16(encoded[offset:], p.Ack.len)
-		encoded[offset] = EncodeRcvWindow(p.Ack.rcvWnd)
+		encoded[offset] = encodeRcvWindow(p.Ack.rcvWnd)
 		offset++
 	}
 
@@ -138,7 +138,7 @@ func EncodePayload(p *payloadHeader, userData []byte) (encoded []byte, offset in
 	return encoded, offset
 }
 
-func decodePayload(data []byte) (payload *payloadHeader, userData []byte, err error) {
+func decodeProto(data []byte) (payload *payloadHeader, userData []byte, err error) {
 	dataLen := len(data)
 	if dataLen < MinProtoSize {
 		return nil, nil, errors.New("payload size below minimum")
@@ -179,7 +179,7 @@ func decodePayload(data []byte) (payload *payloadHeader, userData []byte, err er
 		offset += offsetSize(isExtend)
 		payload.Ack.len = Uint16(data[offset:])
 		offset += 2
-		payload.Ack.rcvWnd = DecodeRcvWindow(data[offset])
+		payload.Ack.rcvWnd = decodeRcvWindow(data[offset])
 		offset++
 	}
 

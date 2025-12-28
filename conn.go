@@ -209,14 +209,14 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 	// Handle message encoding based on connection state
 	switch msgType {
 	case InitSnd:
-		_, encData = encryptInitSnd(
+		_, encData, err = encryptInitSnd(
 			conn.listener.prvKeyId.PublicKey(),
 			conn.prvKeyEpSnd.PublicKey(),
 			conn.listener.mtu,
 		)
 		conn.isInitSentOnSnd = true
 	case InitCryptoSnd:
-		packetData, _ = EncodePayload(p, userData)
+		packetData, _ = encodeProto(p, userData)
 		_, encData, err = encryptInitCryptoSnd(
 			conn.pubKeyIdRcv,
 			conn.listener.prvKeyId.PublicKey(),
@@ -225,12 +225,9 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 			conn.listener.mtu,
 			packetData,
 		)
-		if err != nil {
-			return nil, err
-		}
 		conn.isInitSentOnSnd = true
 	case InitCryptoRcv:
-		packetData, _ = EncodePayload(p, userData)
+		packetData, _ = encodeProto(p, userData)
 		encData, err = encryptInitCryptoRcv(
 			conn.connId,
 			conn.pubKeyEpRcv,
@@ -238,12 +235,9 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 			conn.snCrypto,
 			packetData,
 		)
-		if err != nil {
-			return nil, err
-		}
 		conn.isInitSentOnSnd = true
 	case InitRcv:
-		packetData, _ = EncodePayload(p, userData)
+		packetData, _ = encodeProto(p, userData)
 		encData, err = encryptInitRcv(
 			conn.connId,
 			conn.listener.prvKeyId.PublicKey(),
@@ -252,12 +246,9 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 			conn.snCrypto,
 			packetData,
 		)
-		if err != nil {
-			return nil, err
-		}
 		conn.isInitSentOnSnd = true
 	case Data:
-		packetData, _ = EncodePayload(p, userData)
+		packetData, _ = encodeProto(p, userData)
 		encData, err = encryptData(
 			conn.connId,
 			conn.isSenderOnInit,
@@ -266,11 +257,11 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 			conn.epochCryptoSnd,
 			packetData,
 		)
-		if err != nil {
-			return nil, err
-		}
 	default:
 		return nil, errors.New("unknown message type")
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	//update state ofter encode of packet
@@ -413,25 +404,23 @@ func (c *conn) writePacket(s *Stream, ack *Ack, splitData []byte, offset uint64,
 		StreamID:     s.streamID,
 		StreamOffset: offset,
 	}
-
+	
 	encData, err := c.encode(p, splitData, msgType)
 	if err != nil {
 		return 0, 0, err
 	}
-
 	c.snd.UpdatePacketSize(s.streamID, offset, uint16(len(splitData)), uint16(len(encData)), nowNano)
 
-	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
+	pacingNano, err = c.write(encData, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
-
+	
 	packetLen := len(splitData)
 	if trackInFlight {
 		c.dataInFlight += packetLen
 	}
-	pacingNano = c.calcPacing(uint64(len(encData)))
-	c.nextWriteTime = nowNano + pacingNano
+
 	return packetLen, pacingNano, nil
 }
 
@@ -441,20 +430,24 @@ func (c *conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 		Ack:      ack,
 		StreamID: s.streamID,
 	}
-
 	encData, err := c.encode(p, nil, c.msgType())
 	if err != nil {
 		return 0, 0, err
 	}
+	pacingNano, err = c.write(encData, nowNano)
+	return 0, pacingNano, err
+}
+
+func (c *conn) write(encData []byte, nowNano uint64) (pacingNano uint64, err error) {
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-
 	pacingNano = c.calcPacing(uint64(len(encData)))
 	c.nextWriteTime = nowNano + pacingNano
-	return 0, pacingNano, nil
+	return pacingNano, nil
 }
+
 
 func (c *conn) msgType() cryptoMsgType {
 	if c.isHandshakeDoneOnRcv {

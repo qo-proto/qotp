@@ -53,10 +53,10 @@ type Message struct {
 // ************************************* Encoder *************************************
 
 func encryptInitSnd(pubKeyIdSnd *ecdh.PublicKey, pubKeyEpSnd *ecdh.PublicKey, mtu int) (
-	connId uint64, encData []byte) {
+	connId uint64, encData []byte, err error) {
 
 	if pubKeyIdSnd == nil || pubKeyEpSnd == nil {
-		panic("handshake keys cannot be nil")
+		return 0, nil, errors.New("handshake keys cannot be nil")
 	}
 
 	// Create the buffer with the correct size
@@ -70,7 +70,7 @@ func encryptInitSnd(pubKeyIdSnd *ecdh.PublicKey, pubKeyEpSnd *ecdh.PublicKey, mt
 	// Directly copy the isSender's public key to the buffer following the connection ID
 	copy(headerCryptoDataBuffer[HeaderSize+PubKeySize:], pubKeyIdSnd.Bytes())
 
-	return Uint64(headerCryptoDataBuffer[HeaderSize:]), headerCryptoDataBuffer
+	return Uint64(headerCryptoDataBuffer[HeaderSize:]), headerCryptoDataBuffer, nil
 }
 
 func encryptInitRcv(connId uint64,
@@ -81,7 +81,7 @@ func encryptInitRcv(connId uint64,
 	packetData []byte) (encData []byte, err error) {
 
 	if pubKeyIdSnd == nil || pubKeyEpRcv == nil || prvKeyEpSnd == nil {
-		panic("handshake keys cannot be nil")
+		return nil, errors.New("handshake keys cannot be nil")
 	}
 
 	// Create the buffer with the correct size, INIT_HANDSHAKE_R0 has 3 public keys
@@ -116,7 +116,7 @@ func encryptInitCryptoSnd(
 	packetData []byte) (connId uint64, encData []byte, err error) {
 
 	if pubKeyIdRcv == nil || pubKeyIdSnd == nil || prvKeyEpSnd == nil {
-		panic("handshake keys cannot be nil")
+		return 0, nil, errors.New("handshake keys cannot be nil")
 	}
 
 	// Create the buffer with the correct size, INIT_WITH_CRYPTO_S0 has 3 public keys
@@ -317,7 +317,6 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		SnConn:            snConn,
 		currentEpochCrypt: currentEpochCrypt,
 	}, nil
-
 }
 
 func decryptInitCryptoSnd(

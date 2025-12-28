@@ -215,7 +215,7 @@ func TestConnEncodeDecodeRoundtripEmpty(t *testing.T) {
 	assert.NoError(t, err)
 
 	if msgType == InitCryptoRcv {
-		p, u, err := decodePayload(payload)
+		p, u, err := decodeProto(payload)
 		assert.NoError(t, err)
 		s, err := connBob.handlePayload(p, u, 0)
 		assert.NoError(t, err)
@@ -245,7 +245,7 @@ func TestConnEncodeDecodeRoundtripData(t *testing.T) {
 	connBob, payload, _, err := testDecodeConn(lBob, encoded, getTestRemoteAddr())
 	assert.NoError(t, err)
 
-	p, u, err := decodePayload(payload)
+	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
 	s, err := connBob.handlePayload(p, u, 0)
 	assert.NoError(t, err)
@@ -298,7 +298,7 @@ func TestConnFullHandshake(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, InitRcv, msgType)
 
-	p, u, err := decodePayload(payload)
+	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
 	s, err := c.handlePayload(p, u, 0)
 	assert.NoError(t, err)
@@ -331,7 +331,7 @@ func TestConnFullHandshake(t *testing.T) {
 	assert.NotNil(t, c)
 	assert.Equal(t, Data, msgType)
 
-	p, u, err = decodePayload(payload)
+	p, u, err = decodeProto(payload)
 	assert.NoError(t, err)
 	s, err = c.handlePayload(p, u, 0)
 	assert.NoError(t, err)

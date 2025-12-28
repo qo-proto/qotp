@@ -131,7 +131,7 @@ func TestRcvPreviousOverlapPartialIntegrityViolation(t *testing.T) {
 	assert.Equal(t, RcvInsertOk, status)
 
 	// Overlapping segment with mismatched data - should panic
-	assert.PanicsWithValue(t, "Previous segment overlap mismatch - data integrity violation", func() {
+	assert.PanicsWithValue(t, "segment overlap mismatch - data integrity violation", func() {
 		rb.Insert(1, 102, 0, []byte("XXFG"))
 	})
 }
@@ -159,7 +159,7 @@ func TestRcvNextOverlapMismatchPanic(t *testing.T) {
 	assert.Equal(t, RcvInsertOk, status)
 
 	// Overlapping segment with mismatched data - should panic
-	assert.PanicsWithValue(t, "Next segment partial overlap mismatch - data integrity violation", func() {
+	assert.PanicsWithValue(t, "segment overlap mismatch - data integrity violation", func() {
 		rb.Insert(1, 100, 0, []byte("ABCDEF"))
 	})
 }

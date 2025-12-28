@@ -8,12 +8,12 @@ import (
 )
 
 func encodePayload(payload *payloadHeader, data []byte) []byte {
-	encoded, _ := EncodePayload(payload, data)
+	encoded, _ := encodeProto(payload, data)
 	return encoded
 }
 
 func mustDecodePayload(t *testing.T, encoded []byte) (*payloadHeader, []byte) {
-	decoded, data, err := decodePayload(encoded)
+	decoded, data, err := decodeProto(encoded)
 	require.NoError(t, err)
 	return decoded, data
 }
@@ -36,8 +36,8 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 		assert.Equal(t, expected.Ack.offset, actual.Ack.offset)
 		assert.Equal(t, expected.Ack.len, actual.Ack.len)
 
-		encoded := EncodeRcvWindow(expected.Ack.rcvWnd)
-		expectedDecoded := DecodeRcvWindow(encoded)
+		encoded := encodeRcvWindow(expected.Ack.rcvWnd)
+		expectedDecoded := decodeRcvWindow(encoded)
 		assert.Equal(t, expectedDecoded, actual.Ack.rcvWnd)
 	}
 }
@@ -192,21 +192,21 @@ func TestProtoOffsetSizes(t *testing.T) {
 func TestProtoDecodeErrors(t *testing.T) {
 	// Below minimum size
 	for _, size := range []int{0, 1, 7} {
-		_, _, err := decodePayload(make([]byte, size))
+		_, _, err := decodeProto(make([]byte, size))
 		assert.Error(t, err)
 	}
 
 	// Invalid version
 	data := make([]byte, 8)
 	data[0] = 0x1F // version bits = 31
-	_, _, err := decodePayload(data)
+	_, _, err := decodeProto(data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 
 	// Insufficient data for ACK
 	data = make([]byte, 10)
 	data[0] = 0x00 // Type 00 (ACK) needs >= 11 bytes
-	_, _, err = decodePayload(data)
+	_, _, err = decodeProto(data)
 	assert.Error(t, err)
 }
 
@@ -216,33 +216,33 @@ func TestProtoDecodeErrors(t *testing.T) {
 
 func TestProtoRcvWindow(t *testing.T) {
 	// Edge cases
-	assert.Equal(t, uint8(0), EncodeRcvWindow(0))
-	assert.Equal(t, uint8(1), EncodeRcvWindow(1))
-	assert.Equal(t, uint8(1), EncodeRcvWindow(128))
-	assert.Equal(t, uint8(1), EncodeRcvWindow(255))
-	assert.Equal(t, uint8(2), EncodeRcvWindow(256))
+	assert.Equal(t, uint8(0), encodeRcvWindow(0))
+	assert.Equal(t, uint8(1), encodeRcvWindow(1))
+	assert.Equal(t, uint8(1), encodeRcvWindow(128))
+	assert.Equal(t, uint8(1), encodeRcvWindow(255))
+	assert.Equal(t, uint8(2), encodeRcvWindow(256))
 
-	assert.Equal(t, uint64(0), DecodeRcvWindow(0))
-	assert.Equal(t, uint64(128), DecodeRcvWindow(1))
-	assert.Equal(t, uint64(256), DecodeRcvWindow(2))
+	assert.Equal(t, uint64(0), decodeRcvWindow(0))
+	assert.Equal(t, uint64(128), decodeRcvWindow(1))
+	assert.Equal(t, uint64(256), decodeRcvWindow(2))
 
 	// Monotonically increasing
-	prev := DecodeRcvWindow(2)
+	prev := decodeRcvWindow(2)
 	for i := uint8(3); i <= 254; i++ {
-		curr := DecodeRcvWindow(i)
+		curr := decodeRcvWindow(i)
 		assert.Greater(t, curr, prev)
 		prev = curr
 	}
 
 	// Max value
-	assert.Equal(t, uint8(255), EncodeRcvWindow(1<<63))
-	decoded := DecodeRcvWindow(255)
+	assert.Equal(t, uint8(255), encodeRcvWindow(1<<63))
+	decoded := decodeRcvWindow(255)
 	assert.Greater(t, decoded, uint64(800_000_000_000))
 
 	// Round trip preserves or increases
 	for _, input := range []uint64{0, 512, 1024, 65536, 1048576} {
-		encoded := EncodeRcvWindow(input)
-		decoded := DecodeRcvWindow(encoded)
+		encoded := encodeRcvWindow(input)
+		decoded := decodeRcvWindow(encoded)
 		assert.LessOrEqual(t, input, decoded)
 	}
 }

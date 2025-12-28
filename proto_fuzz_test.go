@@ -66,19 +66,19 @@ func FuzzPayload(f *testing.F) {
 	}
 
 	for _, p := range payloads {
-		encoded, _ := EncodePayload(p.header, p.data)
+		encoded, _ := encodeProto(p.header, p.data)
 		f.Add(encoded)
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		decoded, payloadData, err := decodePayload(data)
+		decoded, payloadData, err := decodeProto(data)
 		if err != nil {
 			t.Skip()
 		}
 
 		// Re-encode and decode
-		reEncoded, _ := EncodePayload(decoded, payloadData)
-		reDecoded, reDecodedData, err := decodePayload(reEncoded)
+		reEncoded, _ := encodeProto(decoded, payloadData)
+		reDecoded, reDecodedData, err := decodeProto(reEncoded)
 		if err != nil {
 			t.Fatal("Failed to decode our own encoded data:", err)
 		}
@@ -114,8 +114,8 @@ func FuzzPayload(f *testing.F) {
 				t.Fatal("Ack.len mismatch")
 			}
 			// rcvWnd has lossy encoding - verify both encode to same value
-			enc1 := EncodeRcvWindow(decoded.Ack.rcvWnd)
-			enc2 := EncodeRcvWindow(reDecoded.Ack.rcvWnd)
+			enc1 := encodeRcvWindow(decoded.Ack.rcvWnd)
+			enc2 := encodeRcvWindow(reDecoded.Ack.rcvWnd)
 			if enc1 != enc2 {
 				t.Fatalf("rcvWnd encodes differently: %d->%d vs %d->%d",
 					decoded.Ack.rcvWnd, enc1, reDecoded.Ack.rcvWnd, enc2)
