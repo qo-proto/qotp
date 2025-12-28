@@ -2,12 +2,10 @@ package qotp
 
 import (
 	"context"
-	"crypto/ecdh"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
-	"net/netip"
 	"time"
 )
 
@@ -78,116 +76,6 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	}
 
 	return s, nil
-}
-
-func (l *Listener) handleIncomingInit(encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (
-	*conn, []byte, error) {
-
-	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-
-	switch msgType {
-	case InitSnd:
-		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
-		if err != nil {
-			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
-		}
-
-		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, false)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("ECDH: %w", err)
-		}
-		conn.sharedSecret = sharedSecret
-
-		return conn, []byte{}, nil
-
-	case InitCryptoSnd:
-		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.mtu)
-		if err != nil {
-			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
-		}
-
-		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, true)
-		if err != nil {
-			return nil, nil, err
-		}
-
-		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("ECDH: %w", err)
-		}
-		conn.sharedSecret = sharedSecret
-
-		return conn, message.PayloadRaw, nil
-	}
-
-	return nil, nil, errors.New("invalid init message type")
-}
-
-func (l *Listener) getOrCreateConn(
-	connId uint64,
-	rAddr netip.AddrPort,
-	pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey,
-	isSender, withCrypto bool,
-) (*conn, error) {
-
-	if conn, exists := l.connMap.Get(connId); exists {
-		return conn, nil
-	}
-
-	prvKeyEp, err := generateKey()
-	if err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
-	}
-
-	return l.newConn(connId, rAddr, prvKeyEp, pubKeyIdRcv, pubKeyEpRcv, isSender, withCrypto)
-}
-
-func (l *Listener) handleIncomingReply(encData []byte, msgType cryptoMsgType) (
-	*conn, []byte, error) {
-
-	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-	conn, exists := l.connMap.Get(connId)
-	if !exists {
-		return nil, nil, fmt.Errorf("connection not found: %d", connId)
-	}
-
-	switch msgType {
-	case InitRcv:
-		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(encData, conn.prvKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("decrypt InitRcv: %w", err)
-		}
-		conn.pubKeyIdRcv = pubKeyIdRcv
-		conn.pubKeyEpRcv = pubKeyEpRcv
-		conn.sharedSecret = sharedSecret
-		return conn, message.PayloadRaw, nil
-
-	case InitCryptoRcv:
-		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, conn.prvKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
-		}
-		conn.pubKeyEpRcv = pubKeyEpRcv
-		conn.sharedSecret = sharedSecret
-		return conn, message.PayloadRaw, nil
-
-	case Data:
-		message, err := decryptData(encData, conn.isSenderOnInit, conn.epochCryptoRcv, conn.sharedSecret)
-		if err != nil {
-			return nil, nil, err
-		}
-		if message.currentEpochCrypt > conn.epochCryptoRcv {
-			conn.epochCryptoRcv = message.currentEpochCrypt
-		}
-		return conn, message.PayloadRaw, nil
-	}
-
-	return nil, nil, errors.New("invalid reply message type")
 }
 
 // Flush sends pending data for all connections using round-robin

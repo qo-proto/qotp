@@ -852,7 +852,7 @@ func TestLinkedMapPutOrderedBasicOperations(t *testing.T) {
 
 	// Empty state
 	assert.Equal(t, 0, sm.Size())
-	_, _, ok := sm.Min()
+	_, _, ok := sm.First()
 	assert.False(t, ok)
 	assert.False(t, sm.Contains(1))
 
@@ -897,7 +897,7 @@ func TestLinkedMapPutOrderedTraversal(t *testing.T) {
 
 	expected := []int{1, 3, 4, 5, 6, 7, 9}
 
-	currentKey, currentVal, ok := sm.Min()
+	currentKey, currentVal, ok := sm.First()
 	assert.True(t, ok)
 	assert.Equal(t, 1, currentKey)
 	assert.Equal(t, "one", currentVal)
@@ -955,7 +955,7 @@ func TestLinkedMapPutOrderedRemove(t *testing.T) {
 func TestLinkedMapPutOrderedMin(t *testing.T) {
 	sm := NewLinkedMap[int, string]()
 
-	minKey, minVal, ok := sm.Min()
+	minKey, minVal, ok := sm.First()
 	assert.False(t, ok)
 	assert.Equal(t, 0, minKey)
 	assert.Equal(t, "", minVal)
@@ -971,7 +971,7 @@ func TestLinkedMapPutOrderedMin(t *testing.T) {
 		sm.PutOrdered(k, v)
 	}
 
-	minKey, minVal, ok = sm.Min()
+	minKey, minVal, ok = sm.First()
 	assert.True(t, ok)
 	assert.Equal(t, 1, minKey)
 	assert.Equal(t, "one", minVal)
@@ -980,7 +980,7 @@ func TestLinkedMapPutOrderedMin(t *testing.T) {
 	assert.True(t, removed)
 	assert.Equal(t, "one", removedVal)
 
-	minKey, minVal, ok = sm.Min()
+	minKey, minVal, ok = sm.First()
 	assert.True(t, ok)
 	assert.Equal(t, 3, minKey)
 	assert.Equal(t, "three", minVal)
@@ -1075,7 +1075,7 @@ func TestLinkedMapPutOrderedRemoveAllThenAdd(t *testing.T) {
 	sm.PutOrdered(5, "five")
 	sm.PutOrdered(10, "ten")
 
-	minKey, _, ok := sm.Min()
+	minKey, _, ok := sm.First()
 	assert.True(t, ok)
 	assert.Equal(t, 5, minKey)
 }
@@ -1122,7 +1122,7 @@ func TestLinkedMapPutOrderedIntegrity(t *testing.T) {
 
 	// Verify complete forward traversal
 	expected := []int{5, 15, 30, 35, 50, 55, 65, 75, 80, 85}
-	current, _, ok := sm.Min()
+	current, _, ok := sm.First()
 	assert.True(t, ok)
 
 	for _, exp := range expected {
@@ -1155,7 +1155,7 @@ func TestLinkedMapPutOrderedInOrderArrival(t *testing.T) {
 	assert.Equal(t, 1000, sm.Size())
 
 	// Verify sorted order
-	minKey, _, ok := sm.Min()
+	minKey, _, ok := sm.First()
 	assert.True(t, ok)
 	assert.Equal(t, uint64(0), minKey)
 
@@ -1180,7 +1180,7 @@ func TestLinkedMapPutOrderedOutOfOrderArrival(t *testing.T) {
 
 	// Verify sorted order: 250, 500, 750, 1000, 1250, 1500, 1750
 	expected := []uint64{250, 500, 750, 1000, 1250, 1500, 1750}
-	current, _, ok := sm.Min()
+	current, _, ok := sm.First()
 	assert.True(t, ok)
 
 	for i, exp := range expected {
@@ -1204,7 +1204,7 @@ func TestLinkedMapPutOrderedMixedInAndOutOfOrder(t *testing.T) {
 
 	// Verify sorted: 0, 50, 100, 150, 200, 300, 400, 500
 	expected := []uint64{0, 50, 100, 150, 200, 300, 400, 500}
-	current, _, ok := sm.Min()
+	current, _, ok := sm.First()
 	assert.True(t, ok)
 
 	for i, exp := range expected {

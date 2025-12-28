@@ -258,7 +258,7 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) (data []byte) {
 	var result []byte
 
 	for {
-		oldestOffset, oldestValue, ok := stream.segments.Min()
+		oldestOffset, oldestValue, ok := stream.segments.First()
 		if !ok {
 			break
 		}
@@ -283,12 +283,6 @@ func (rb *ReceiveBuffer) Size() int {
 	return rb.size
 }
 
-func (rb *ReceiveBuffer) Available() int {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	return rb.capacity - rb.size
-}
-
 func (rb *ReceiveBuffer) GetSndAck() *Ack {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -300,17 +294,6 @@ func (rb *ReceiveBuffer) GetSndAck() *Ack {
 	ack := rb.ackList[0]
 	rb.ackList = rb.ackList[1:]
 	return ack
-}
-
-func (rb *ReceiveBuffer) GetNextOffset(streamID uint32) uint64 {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-
-	stream := rb.streams[streamID]
-	if stream == nil {
-		return 0
-	}
-	return stream.nextInOrderOffsetToWaitFor
 }
 
 func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {

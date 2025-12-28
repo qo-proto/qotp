@@ -472,3 +472,22 @@ func (c *conn) msgType() cryptoMsgType {
 		return InitRcv
 	}
 }
+
+func (l *Listener) getOrCreateConn(
+	connId uint64,
+	rAddr netip.AddrPort,
+	pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey,
+	isSender, withCrypto bool,
+) (*conn, error) {
+
+	if conn, exists := l.connMap.Get(connId); exists {
+		return conn, nil
+	}
+
+	prvKeyEp, err := generateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+
+	return l.newConn(connId, rAddr, prvKeyEp, pubKeyIdRcv, pubKeyEpRcv, isSender, withCrypto)
+}

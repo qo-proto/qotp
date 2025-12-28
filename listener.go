@@ -193,16 +193,9 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		connMap:      NewLinkedMap[uint64, *conn](),
 	}
 
-	slog.Info(
-		"Listen",
-		slog.Any("listenAddr", lOpts.localConn.LocalAddrString()),
-		slog.String("pubKeyId", "0x"+hex.EncodeToString(l.prvKeyId.PublicKey().Bytes()[:3])+"…"))
+	slog.Info("Listen", slog.String("listenAddr", lOpts.localConn.LocalAddrString()))
 
 	return l, nil
-}
-
-func (l *Listener) PubKey() *ecdh.PublicKey {
-	return l.prvKeyId.PublicKey()
 }
 
 func (l *Listener) Close() error {

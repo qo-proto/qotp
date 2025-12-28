@@ -365,19 +365,3 @@ func TestSndRemoveStream(t *testing.T) {
 	sb.RemoveStream(1)
 	assert.Nil(t, sb.streams[1])
 }
-
-func TestSndHelpers(t *testing.T) {
-	sb := NewSendBuffer(1000)
-	sb.QueueData(1, []byte("test"))
-
-	assert.Equal(t, -1, sb.GetInflightSize(999)) // non-existent
-	assert.Equal(t, 0, sb.GetInflightSize(1))
-
-	sb.ReadyToSend(1, Data, nil, 1000)
-	assert.Equal(t, 1, sb.GetInflightSize(1))
-
-	assert.False(t, sb.IsCloseSent(1))
-	sb.Close(1)
-	sb.ReadyToSend(1, Data, nil, 1000) // triggers close send
-	assert.True(t, sb.IsCloseSent(1))
-}

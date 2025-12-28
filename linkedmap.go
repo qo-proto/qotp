@@ -165,12 +165,6 @@ func (m *LinkedMap[K, V]) First() (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
-// Min returns the smallest key and value in the map.
-// For ordered insertion (PutOrdered), this is the first element.
-func (m *LinkedMap[K, V]) Min() (K, V, bool) {
-	return m.First()
-}
-
 // Next finds the next key in insertion order after the given key.
 // This is O(1) if the key exists in the map!
 // Returns the next key, its value, and true if a next element exists.

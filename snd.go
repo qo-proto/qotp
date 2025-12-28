@@ -19,7 +19,7 @@ const (
 	AckStatusOk AckStatus = iota
 	AckNotFound
 	AckDup
-	
+
 	sndBufferCapacity = 16 * 1024 * 1024 // 16MB
 )
 
@@ -133,7 +133,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType cryptoMsgType, ack *A
 	if stream.pingRequest {
 		stream.pingRequest = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.dataInFlightMap.Put(key, &SendInfo{pingRequest: true,})
+		stream.dataInFlightMap.Put(key, &SendInfo{pingRequest: true})
 		return []byte{}, 0, false
 	}
 
@@ -370,58 +370,34 @@ func (sb *SendBuffer) Close(streamID uint32) {
 	}
 }
 
-type packetKey uint64
-
-func (p packetKey) offset() uint64 {
-	return uint64(p) >> 16
-}
-
-func (p packetKey) length() uint16 {
-	return uint16(p & 0xFFFF)
-}
-
-func createPacketKey(offset uint64, length uint16) packetKey {
-	return packetKey((offset << 16) | uint64(length))
-}
-
 func (sb *SendBuffer) RemoveStream(streamID uint32) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 	delete(sb.streams, streamID)
 }
 
-func (sb *SendBuffer) GetInflightSize(streamID uint32) int {
-    sb.mu.Lock()
-    defer sb.mu.Unlock()
-    stream := sb.streams[streamID]
-    if stream == nil {
-        return -1
-    }
-    return stream.dataInFlightMap.Size()
-}
-
-func (sb *SendBuffer) IsCloseSent(streamID uint32) bool {
-    sb.mu.Lock()
-    defer sb.mu.Unlock()
-    stream := sb.streams[streamID]
-    if stream == nil {
-        return false
-    }
-    return stream.closeSent
-}
-
 func (sb *SendBuffer) UpdatePacketSize(streamID uint32, offset uint64, length uint16, packetSize uint16, nowNano uint64) {
-    sb.mu.Lock()
-    defer sb.mu.Unlock()
-    
-    stream := sb.streams[streamID]
-    if stream == nil {
-        return
-    }
-    
-    key := createPacketKey(offset, length)
-    if info, ok := stream.dataInFlightMap.Get(key); ok {
-        info.packetSize = packetSize
-        info.sentTimeNano = nowNano
-    }
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return
+	}
+
+	key := createPacketKey(offset, length)
+	if info, ok := stream.dataInFlightMap.Get(key); ok {
+		info.packetSize = packetSize
+		info.sentTimeNano = nowNano
+	}
+}
+
+type packetKey uint64
+
+func (p packetKey) offset() uint64 {
+	return uint64(p) >> 16
+}
+
+func createPacketKey(offset uint64, length uint16) packetKey {
+	return packetKey((offset << 16) | uint64(length))
 }
