@@ -2,32 +2,45 @@ package qotp
 
 import (
 	"context"
+	"crypto/ecdh"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"time"
 )
 
-func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err error) {
+func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	data := make([]byte, l.mtu)
-	n, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(data, timeoutNano, nowNano)
+	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(data, timeoutNano, nowNano)
 
 	if err != nil {
 		var netErr net.Error
-		ok := errors.As(err, &netErr)
-
-		if ok && netErr.Timeout() {
-			return nil, nil // Timeout is normal, return no dataToSend/error
-		} else {
-			slog.Error("Listen/Error", slog.Any("error", err))
-			return nil, err
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, nil
 		}
+		slog.Error("Listen/Error", slog.Any("error", err))
+		return nil, err
 	}
 	if n == 0 {
 		return nil, nil
 	}
 
-	conn, payload, msgType, err := l.decode(data[:n], remoteAddr)
+	encData := data[:n]
+
+	// Parse header
+	if len(encData) < MinPacketSize {
+		return nil, fmt.Errorf("packet too small: %d bytes", len(encData))
+	}
+	header := encData[0]
+	if version := header & 0x1F; version != CryptoVersion {
+		return nil, errors.New("unsupported version")
+	}
+	msgType := cryptoMsgType(header >> 5)
+
+	// Decrypt and get/create connection
+	conn, payload, err := decodePacket(l, encData, rAddr, msgType)
 	if err != nil {
 		return nil, err
 	}
@@ -36,37 +49,145 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err er
 		conn.lastReadTimeNano = nowNano
 	}
 
+	// Decode payload
 	var p *payloadHeader
-	if len(payload) == 0 && msgType == InitSnd { //InitSnd is the only message without any payload
+	if len(payload) == 0 && msgType == InitSnd {
 		p = &payloadHeader{}
-		data = []byte{}
+		payload = []byte{}
 	} else {
-		p, data, err = DecodePayload(payload)
+		p, payload, err = decodePayload(payload)
 		if err != nil {
-			slog.Info("error in decoding payload from new connection", slog.Any("error", err))
+			slog.Info("error decoding payload", slog.Any("error", err))
 			return nil, err
 		}
 	}
 
-	s, err = conn.decode(p, data, nowNano)
+	s, err := conn.handlePayload(p, payload, nowNano)
 	if err != nil {
 		return nil, err
 	}
 
-	//Set state
+	// Update handshake state
 	if !conn.isHandshakeDoneOnRcv {
-		if conn.isSenderOnInit {
-			if msgType == InitRcv || msgType == InitCryptoRcv {
-				conn.isHandshakeDoneOnRcv = true
-			}
-		} else {
-			if msgType == Data {
-				conn.isHandshakeDoneOnRcv = true
-			}
+		switch {
+		case conn.isSenderOnInit && (msgType == InitRcv || msgType == InitCryptoRcv):
+			conn.isHandshakeDoneOnRcv = true
+		case !conn.isSenderOnInit && msgType == Data:
+			conn.isHandshakeDoneOnRcv = true
 		}
 	}
 
 	return s, nil
+}
+
+func (l *Listener) handleIncomingInit(encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (
+	*conn, []byte, error) {
+
+	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+
+	switch msgType {
+	case InitSnd:
+		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
+		}
+
+		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, false)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ECDH: %w", err)
+		}
+		conn.sharedSecret = sharedSecret
+
+		return conn, []byte{}, nil
+
+	case InitCryptoSnd:
+		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.mtu)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
+		}
+
+		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, true)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ECDH: %w", err)
+		}
+		conn.sharedSecret = sharedSecret
+
+		return conn, message.PayloadRaw, nil
+	}
+
+	return nil, nil, errors.New("invalid init message type")
+}
+
+func (l *Listener) getOrCreateConn(
+	connId uint64,
+	rAddr netip.AddrPort,
+	pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey,
+	isSender, withCrypto bool,
+) (*conn, error) {
+
+	if conn, exists := l.connMap.Get(connId); exists {
+		return conn, nil
+	}
+
+	prvKeyEp, err := generateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+
+	return l.newConn(connId, rAddr, prvKeyEp, pubKeyIdRcv, pubKeyEpRcv, isSender, withCrypto)
+}
+
+func (l *Listener) handleIncomingReply(encData []byte, msgType cryptoMsgType) (
+	*conn, []byte, error) {
+
+	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+	conn, exists := l.connMap.Get(connId)
+	if !exists {
+		return nil, nil, fmt.Errorf("connection not found: %d", connId)
+	}
+
+	switch msgType {
+	case InitRcv:
+		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(encData, conn.prvKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitRcv: %w", err)
+		}
+		conn.pubKeyIdRcv = pubKeyIdRcv
+		conn.pubKeyEpRcv = pubKeyEpRcv
+		conn.sharedSecret = sharedSecret
+		return conn, message.PayloadRaw, nil
+
+	case InitCryptoRcv:
+		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, conn.prvKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
+		}
+		conn.pubKeyEpRcv = pubKeyEpRcv
+		conn.sharedSecret = sharedSecret
+		return conn, message.PayloadRaw, nil
+
+	case Data:
+		message, err := decryptData(encData, conn.isSenderOnInit, conn.epochCryptoRcv, conn.sharedSecret)
+		if err != nil {
+			return nil, nil, err
+		}
+		if message.currentEpochCrypt > conn.epochCryptoRcv {
+			conn.epochCryptoRcv = message.currentEpochCrypt
+		}
+		return conn, message.PayloadRaw, nil
+	}
+
+	return nil, nil, errors.New("invalid reply message type")
 }
 
 // Flush sends pending data for all connections using round-robin
@@ -78,7 +199,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		return minPacing
 	}
 
-	closeConn := []*conn{}
+	closeConnId := []uint64{}
 	closeStream := map[*conn][]uint32{}
 	isDataSent := false
 
@@ -90,7 +211,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		dataSent, pacingNano, err := conn.sendNext(stream, nowNano)
 		if err != nil {
 			slog.Info("closing connection, err", slog.Any("err", err))
-			closeConn = append(closeConn, conn)
+			closeConnId = append(closeConnId, conn.connId)
 			break
 		}
 
@@ -112,7 +233,7 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
 			slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
 				slog.Uint64("last", conn.lastReadTimeNano))
-			closeConn = append(closeConn, conn)
+			closeConnId = append(closeConnId, conn.connId)
 			break
 		}
 
@@ -121,8 +242,8 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		}
 	}
 
-	for _, closeConn := range closeConn {
-		closeConn.cleanupConn()
+	for _, connId := range closeConnId {
+		l.cleanupConn(connId)
 	}
 
 	for conn, streamIDs := range closeStream {

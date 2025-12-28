@@ -3,6 +3,7 @@ package qotp
 import (
 	"crypto/ecdh"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 )
@@ -44,6 +45,7 @@ type conn struct {
 	mu sync.Mutex
 }
 
+// Stream returns or creates a stream.
 func (c *conn) Stream(streamID uint32) *Stream {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -51,20 +53,6 @@ func (c *conn) Stream(streamID uint32) *Stream {
 	return c.stream(streamID)
 }
 
-func (c *conn) HasActiveStreams() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for _, val := range c.streams.Iterator(nil) {
-		if val != nil && (!val.rcvClosed || !val.sndClosed) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// Stream returns or creates a stream.
 func (c *conn) stream(streamID uint32) *Stream {
 	if c.rcv.IsFinished(streamID) {
 		return nil // Stream is closed, decode() will handle TIME_WAIT ACKs
@@ -83,12 +71,26 @@ func (c *conn) stream(streamID uint32) *Stream {
 	return s
 }
 
+func (c *conn) HasActiveStreams() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, val := range c.streams.Iterator(nil) {
+		if val != nil && (!val.rcvClosed || !val.sndClosed) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (c *conn) close() {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-    for _, s := range c.streams.Iterator(nil) {
-        s.Close()
-    }
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, s := range c.streams.Iterator(nil) {
+		s.Close()
+	}
 }
 
 // We need to check if we remove the current state, if yes, then move the state to the previous stream
@@ -106,12 +108,98 @@ func (c *conn) cleanupStream(streamID uint32, nowNano uint64) {
 	c.rcv.RemoveStream(streamID)
 }
 
-func (c *conn) cleanupConn() {
-	if c.listener.currentConnID != nil && c.connId == *c.listener.currentConnID {
-		tmp, _, _ := c.listener.connMap.Next(c.connId)
-		c.listener.currentConnID = &tmp
+func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, error) {
+	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+
+	switch msgType {
+	case InitSnd, InitCryptoSnd:
+		return decodeInit(l, encData, rAddr, connId, msgType)
+	case InitRcv, InitCryptoRcv, Data:
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
+			return nil, nil, fmt.Errorf("connection not found: %d", connId)
+		}
+		payload, err := conn.decode(encData, msgType)
+		return conn, payload, err
 	}
-	c.listener.connMap.Remove(c.connId)
+	return nil, nil, fmt.Errorf("unknown message type: %v", msgType)
+}
+
+func decodeInit(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
+	switch msgType {
+	case InitSnd:
+		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
+		}
+
+		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, false)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ECDH: %w", err)
+		}
+		conn.sharedSecret = sharedSecret
+		return conn, []byte{}, nil
+
+	case InitCryptoSnd:
+		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.mtu)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
+		}
+
+		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, true)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		sharedSecret, err := conn.prvKeyEpSnd.ECDH(pubKeyEpSnd)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ECDH: %w", err)
+		}
+		conn.sharedSecret = sharedSecret
+		return conn, message.PayloadRaw, nil
+	}
+
+	return nil, nil, errors.New("invalid init message type")
+}
+
+func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
+	switch msgType {
+	case InitRcv:
+		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(encData, c.prvKeyEpSnd)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt InitRcv: %w", err)
+		}
+		c.pubKeyIdRcv = pubKeyIdRcv
+		c.pubKeyEpRcv = pubKeyEpRcv
+		c.sharedSecret = sharedSecret
+		return message.PayloadRaw, nil
+
+	case InitCryptoRcv:
+		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, c.prvKeyEpSnd)
+		if err != nil {
+			return nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
+		}
+		c.pubKeyEpRcv = pubKeyEpRcv
+		c.sharedSecret = sharedSecret
+		return message.PayloadRaw, nil
+
+	case Data:
+		message, err := decryptData(encData, c.isSenderOnInit, c.epochCryptoRcv, c.sharedSecret)
+		if err != nil {
+			return nil, err
+		}
+		if message.currentEpochCrypt > c.epochCryptoRcv {
+			c.epochCryptoRcv = message.currentEpochCrypt
+		}
+		return message.PayloadRaw, nil
+	}
+
+	return nil, fmt.Errorf("unexpected message type: %v", msgType)
 }
 
 func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) (encData []byte, err error) {
@@ -202,7 +290,7 @@ func (conn *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgTyp
 	return encData, nil
 }
 
-func (c *conn) decode(p *payloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
+func (c *conn) handlePayload(p *payloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -265,32 +353,28 @@ func (c *conn) decode(p *payloadHeader, userData []byte, nowNano uint64) (s *Str
 }
 
 func (c *conn) sendNext(s *Stream, nowNano uint64) (data int, pacingNano uint64, err error) {
-	// Respect pacing
-	if c.nextWriteTime > nowNano || c.dataInFlight >= int(c.cwnd) {
-		ack := c.rcv.GetSndAck()
-		if ack != nil {
-			ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
-			return c.writeAck(s, ack, false, nowNano)
-		}
-		if c.nextWriteTime > nowNano {
-			return 0, c.nextWriteTime - nowNano, nil 
-		}
-		return 0, MinDeadLine, nil
-	}
-
 	//update state for receiver
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
 		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
 	}
 
-	//Respect rwnd
-	if c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize) {
-		if ack != nil {
-			// Send ACK even if receiver indicated no more data, an ack does not add data
-			return c.writeAck(s, ack, false, nowNano)
+	// Blocked by pacing - only acks allowed
+	isBlockedByPacing := c.nextWriteTime > nowNano
+	// Blocked by cwnd - only acks allowed
+	isBlockedByCwnd := c.dataInFlight >= int(c.cwnd)
+	// Blocked by rwnd - only acks allowed
+	isBlockedByRwnd := c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize)
+
+	if isBlockedByPacing || isBlockedByCwnd || isBlockedByRwnd {
+		if ack == nil {
+			min := MinDeadLine
+			if isBlockedByPacing {
+				min = c.nextWriteTime - nowNano
+			}
+			return 0, min, nil
 		}
-		return 0, MinDeadLine, nil
+		return c.writeAck(s, ack, false, nowNano)
 	}
 
 	// Retransmission case
@@ -371,7 +455,6 @@ func (c *conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 	c.nextWriteTime = nowNano + pacingNano
 	return 0, pacingNano, nil
 }
-
 
 func (c *conn) msgType() cryptoMsgType {
 	if c.isHandshakeDoneOnRcv {

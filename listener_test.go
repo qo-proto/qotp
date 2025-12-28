@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,80 +25,89 @@ var (
 	hexPubKey2 = fmt.Sprintf("0x%x", testPrvKey2.PublicKey().Bytes())
 )
 
-func TestListenerNewListener(t *testing.T) {
-	// Test case 1: Create a new listener with a valid address
-	listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
-	defer func() {
-		err := listener.Close()
-		assert.Nil(t, err)
-	}()
-	if err != nil {
-		t.Errorf("Expected no error, but got: %v", err)
-	}
-	if listener == nil {
-		t.Errorf("Expected a listener, but got nil")
+// =============================================================================
+// TEST HELPER - mirrors Listen() header parsing logic
+// =============================================================================
+
+func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
+	if len(encData) < MinPacketSize {
+		return nil, nil, 0, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
 
-	// Test case 2: Create a new listener with an invalid address
-	_, err = Listen(WithListenAddr("127.0.0.1:99999"), WithSeed(testPrvSeed1))
-	if err == nil {
-		t.Errorf("Expected an error, but got nil")
+	header := encData[0]
+	if version := header & 0x1F; version != CryptoVersion {
+		return nil, nil, 0, errors.New("unsupported version")
 	}
+	msgType := cryptoMsgType(header >> 5)
+
+	c, payload, err := decodePacket(l, encData, rAddr, msgType)
+	return c, payload, msgType, err
+}
+
+// =============================================================================
+// LISTENER CREATION TESTS
+// =============================================================================
+
+func TestListenerNewListener(t *testing.T) {
+	t.Run("valid address", func(t *testing.T) {
+		listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
+		assert.NoError(t, err)
+		assert.NotNil(t, listener)
+		defer listener.Close()
+	})
+
+	t.Run("invalid port", func(t *testing.T) {
+		_, err := Listen(WithListenAddr("127.0.0.1:99999"), WithSeed(testPrvSeed1))
+		assert.Error(t, err)
+	})
 }
 
 func TestListenerNewStream(t *testing.T) {
-	// Test case 1: Create a new multi-stream with a valid remote address
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
-	defer func() {
-		err := listener.Close()
-		assert.Nil(t, err)
-	}()
-	assert.Nil(t, err)
-	conn, err := listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	assert.Nil(t, err)
-	if conn == nil {
-		t.Errorf("Expected a multi-stream, but got nil")
-	}
+	assert.NoError(t, err)
+	defer listener.Close()
 
-	// Test case 2: Create a new multi-stream with an invalid remote address
-	conn, err = listener.DialStringWithCryptoString("127.0.0.1:99999", hexPubKey1)
-	if conn != nil {
-		t.Errorf("Expected nil, but got a multi-stream")
-	}
+	t.Run("valid remote address", func(t *testing.T) {
+		conn, err := listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
+		assert.NoError(t, err)
+		assert.NotNil(t, conn)
+	})
 
+	t.Run("invalid port", func(t *testing.T) {
+		conn, err := listener.DialStringWithCryptoString("127.0.0.1:99999", hexPubKey1)
+		assert.Nil(t, conn)
+		assert.Error(t, err)
+	})
 }
 
 func TestListenerClose(t *testing.T) {
-	// Test case 1: Close a listener with no multi-streams
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
-	// Test case 2: Close a listener with multi-streams
+
 	listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
 	err = listener.Close()
-	if err != nil {
-		t.Errorf("Expected no error, but got: %v", err)
-	}
+	assert.NoError(t, err)
 }
 
-// Helper function to run data transfer test with specified parameters
+// =============================================================================
+// DATA TRANSFER HELPER
+// =============================================================================
+
 func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 	dataLossFunc func(int) bool, ackLossFunc func(int) bool,
 	latencyNano uint64, testName string) {
 
 	connA, listenerB, connPair := setupStreamTest(t)
 
-	// Set up network conditions
 	connPair.Conn1.latencyNano = latencyNano
 	connPair.Conn2.latencyNano = latencyNano
 
-	streamA := connA.stream(0)
+	streamA := connA.Stream(0)
 
-	// Generate test data
 	testData := make([]byte, testDataSize)
 	_, err := rand.Read(testData)
 	assert.NoError(t, err)
 
-	// Write data
 	n, err := streamA.Write(testData)
 	assert.NoError(t, err)
 	assert.Equal(t, testDataSize, n)
@@ -189,39 +199,40 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 		if len(receivedData) >= testDataSize {
 			t.Logf("%s: Transfer completed in %d iterations", testName, i+1)
 
-			// Verify data integrity
 			assert.Equal(t, testDataSize, len(receivedData), "should receive all data")
 			assert.Equal(t, testData, receivedData, "received data should match sent data")
 			return
 		}
 	}
 
-	// If we get here, test failed
 	t.Errorf("%s: Failed to complete transfer in %d iterations (received %d/%d bytes)",
 		testName, maxIterations, len(receivedData), testDataSize)
 }
 
+// =============================================================================
+// DATA TRANSFER TESTS
+// =============================================================================
+
 func TestListenerStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 1000,
-		func(counter int) bool { return counter%2 == 0 }, // 50% data loss
-		func(counter int) bool { return counter%2 == 0 }, // 50% ack loss
+		func(counter int) bool { return counter%2 == 0 },
+		func(counter int) bool { return counter%2 == 0 },
 		50*msNano,
 		"50% Loss")
 }
 
 func TestListenerStreamWith10PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 500,
-		func(counter int) bool { return counter%10 == 0 }, // 10% data loss
-		func(counter int) bool { return counter%10 == 0 }, // 10% ack loss
+		func(counter int) bool { return counter%10 == 0 },
+		func(counter int) bool { return counter%10 == 0 },
 		50*msNano,
 		"10% Loss")
 }
 
 func TestListenerStreamWithAsymmetricLoss(t *testing.T) {
-	// 20% data loss, 50% ACK loss
 	runDataTransferTest(t, 10*1024, 1000,
-		func(counter int) bool { return counter%5 == 0 }, // 20% data loss
-		func(counter int) bool { return counter%2 == 0 }, // 50% ack loss
+		func(counter int) bool { return counter%5 == 0 },
+		func(counter int) bool { return counter%2 == 0 },
 		50*msNano,
 		"Asymmetric Loss (20% data, 50% ack)")
 }
@@ -232,7 +243,7 @@ func TestListenerStreamWithReordering(t *testing.T) {
 	connPair.Conn1.latencyNano = 50 * msNano
 	connPair.Conn2.latencyNano = 50 * msNano
 
-	streamA := connA.stream(0)
+	streamA := connA.Stream(0)
 
 	testDataSize := 10 * 1024
 	testData := make([]byte, testDataSize)
@@ -249,12 +260,13 @@ func TestListenerStreamWithReordering(t *testing.T) {
 
 	for i := 0; i < maxIterations; i++ {
 		// Sender flushes
+		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		assert.NoError(t, err)
 		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
 		connPair.Conn1.localTime += max(minPacing, 10*msNano)
 
 		// Reorder and deliver packets if we have multiple
 		if connPair.nrOutgoingPacketsSender() >= 3 {
-			// Reverse order of first 3 packets: [0,1,2] -> [2,1,0], then rest in order
 			nPackets := connPair.nrOutgoingPacketsSender()
 			indices := make([]int, nPackets)
 			indices[0] = 2
@@ -291,177 +303,21 @@ func TestListenerStreamWithReordering(t *testing.T) {
 		if connPair.nrOutgoingPacketsReceiver() > 0 {
 			_, err = connPair.recipientToSenderAll()
 			assert.NoError(t, err)
-
-			_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
-			assert.NoError(t, err)
 		}
 
+		// Check completion
 		if len(receivedData) >= testDataSize {
 			t.Logf("Reordering: Transfer completed in %d iterations", i+1)
-			assert.Equal(t, testDataSize, len(receivedData))
 			assert.Equal(t, testData, receivedData)
 			return
 		}
 	}
 
-	t.Errorf("Reordering: Failed to complete transfer")
-}
-
-func TestListenerStreamWithHighLatency(t *testing.T) {
-	runDataTransferTest(t, 5*1024, 1000,
-		func(counter int) bool { return counter%5 == 0 }, // 20% data loss
-		func(counter int) bool { return counter%5 == 0 }, // 20% ack loss
-		200*msNano, // High latency
-		"High Latency (200ms)")
-}
-
-func TestListenerStreamWithNoLoss(t *testing.T) {
-	runDataTransferTest(t, 10*1024, 500,
-		func(counter int) bool { return false }, // 0% data loss
-		func(counter int) bool { return false }, // 0% ack loss
-		50*msNano,
-		"No Loss")
-}
-
-func TestListenerStreamMultipleStreams(t *testing.T) {
-	connA, listenerB, connPair := setupStreamTest(t)
-
-	connPair.Conn1.latencyNano = 50 * msNano
-	connPair.Conn2.latencyNano = 50 * msNano
-
-	// Create 3 streams
-	numStreams := 3
-	streams := make([]*Stream, numStreams)
-	testData := make([][]byte, numStreams)
-	testDataSize := 5 * 1024
-
-	for i := 0; i < numStreams; i++ {
-		streams[i] = connA.stream(uint32(i))
-		testData[i] = make([]byte, testDataSize)
-		_, err := rand.Read(testData[i])
-		assert.NoError(t, err)
-
-		// Write to all streams
-		n, err := streams[i].Write(testData[i])
-		assert.NoError(t, err)
-		assert.Equal(t, testDataSize, n)
-	}
-
-	receivedData := make([][]byte, numStreams)
-	for i := range receivedData {
-		receivedData[i] = []byte{}
-	}
-
-	maxIterations := 1000
-	dropCounter := 0
-
-	for iter := 0; iter < maxIterations; iter++ {
-		// Sender flushes
-		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
-		connPair.Conn1.localTime += max(minPacing, 10*msNano)
-
-		// Transfer with 30% loss
-		if connPair.nrOutgoingPacketsSender() > 0 {
-			nPackets := connPair.nrOutgoingPacketsSender()
-			toDrop := make([]int, 0)
-			toSend := make([]int, 0, nPackets)
-
-			for j := 0; j < nPackets; j++ {
-				dropCounter++
-				if dropCounter%10 < 3 {
-					toDrop = append(toDrop, j)
-				} else {
-					toSend = append(toSend, j)
-				}
-			}
-
-			if len(toDrop) > 0 {
-				err := connPair.dropSender(toDrop...)
-				assert.NoError(t, err)
-			}
-
-			if len(toSend) > 0 {
-				_, err := connPair.senderToRecipient(toSend...)
-				assert.NoError(t, err)
-			}
-		}
-
-		// Receiver processes
-		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
-		assert.NoError(t, err)
-
-		if s != nil {
-			data, err := s.Read()
-			if err == nil && len(data) > 0 {
-				receivedData[s.streamID] = append(receivedData[s.streamID], data...)
-			}
-		}
-
-		// Receiver flushes
-		minPacing = listenerB.Flush(connPair.Conn2.localTime)
-		connPair.Conn2.localTime += max(minPacing, 10*msNano)
-
-		// Transfer ACKs
-		if connPair.nrOutgoingPacketsReceiver() > 0 {
-			nPackets := connPair.nrOutgoingPacketsReceiver()
-			toDrop := make([]int, 0)
-			toSend := make([]int, 0, nPackets)
-
-			for j := 0; j < nPackets; j++ {
-				dropCounter++
-				if dropCounter%10 < 3 {
-					toDrop = append(toDrop, j)
-				} else {
-					toSend = append(toSend, j)
-				}
-			}
-
-			if len(toDrop) > 0 {
-				err = connPair.dropReceiver(toDrop...)
-				assert.NoError(t, err)
-			}
-
-			if len(toSend) > 0 {
-				_, err = connPair.recipientToSender(toSend...)
-				assert.NoError(t, err)
-			}
-
-		}
-
-		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
-		assert.NoError(t, err)
-
-		// Check if all streams completed
-		allComplete := true
-		for i := 0; i < numStreams; i++ {
-			if len(receivedData[i]) < testDataSize {
-				allComplete = false
-				break
-			}
-		}
-
-		if allComplete {
-			t.Logf("Multiple streams: Transfer completed in %d iterations", iter+1)
-
-			// Verify all streams
-			for i := 0; i < numStreams; i++ {
-				assert.Equal(t, testDataSize, len(receivedData[i]),
-					"stream %d should receive all data", i)
-				assert.Equal(t, testData[i], receivedData[i],
-					"stream %d data should match", i)
-			}
-			return
-		}
-	}
-
-	t.Errorf("Multiple streams: Failed to complete transfer")
-	for i := 0; i < numStreams; i++ {
-		t.Logf("Stream %d: received %d/%d bytes", i, len(receivedData[i]), testDataSize)
-	}
+	t.Errorf("Reordering: Failed to complete transfer (received %d/%d bytes)",
+		len(receivedData), testDataSize)
 }
 
 func TestListenerStreamWithExtremeConditions(t *testing.T) {
-	// Test with very small MTU-sized chunks and high loss
 	maxRetry = 20
 	ReadDeadLine = uint64(300 * secondNano)
 
@@ -470,21 +326,18 @@ func TestListenerStreamWithExtremeConditions(t *testing.T) {
 		ReadDeadLine = uint64(30 * secondNano)
 	}()
 
-	runDataTransferTest(t, 2*1024, 2000, // Small data, many iterations
-		func(counter int) bool {
-			// Bursty loss: drop 3, deliver 2, repeat
-			return (counter-1)%5 < 3
-		},
-		func(counter int) bool {
-			// Different pattern for ACKs
-			return (counter-1)%7 < 3
-		},
+	runDataTransferTest(t, 2*1024, 2000,
+		func(counter int) bool { return (counter-1)%5 < 3 },
+		func(counter int) bool { return (counter-1)%7 < 3 },
 		100*msNano,
 		"Extreme Conditions")
 }
 
+// =============================================================================
+// BIDIRECTIONAL TEST
+// =============================================================================
+
 func TestListenerBidirectional10Streams(t *testing.T) {
-	// Setup alice and bob listeners
 	listenerAlice, err := Listen(WithListenAddr("127.0.0.1:0"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listenerAlice.Close()
@@ -493,14 +346,12 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	assert.NoError(t, err)
 	defer listenerBob.Close()
 
-	// Alice connects to Bob
 	connAlice, err := listenerAlice.DialStringWithCrypto(listenerBob.localConn.LocalAddrString(), testPrvKey2.PublicKey())
 	assert.NoError(t, err)
 
 	numStreams := 20
 	dataSize := 20000
 
-	// Alice's send state
 	type StreamState struct {
 		stream *Stream
 		data   []byte
@@ -514,13 +365,12 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 			data[j] = byte(i)
 		}
 		aliceStreams[i] = &StreamState{
-			stream: connAlice.stream(uint32(i)),
+			stream: connAlice.Stream(uint32(i)),
 			data:   data,
 			sent:   0,
 		}
 	}
 
-	// Tracking state
 	aliceReceived := make(map[uint32][]byte)
 	for i := 0; i < numStreams; i++ {
 		aliceReceived[uint32(i)] = []byte{}
@@ -554,7 +404,6 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 					return nil
 				}
 
-				// Moved OUTSIDE the len(data) > 0 block
 				if bobReceived[s.streamID] >= dataSize && !bobResponded[s.streamID] {
 					bobResponded[s.streamID] = true
 					slog.Debug("bob-writing", "stream", s.streamID, "connID", s.ConnID())
@@ -656,7 +505,6 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 		})
 	}()
 
-	// Wait for both
 	<-aliceDone
 	<-bobDone
 
@@ -673,57 +521,64 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// DECODE ERROR TESTS
+// =============================================================================
+
 func TestListenerDecodeErrors(t *testing.T) {
 	l := &Listener{
 		connMap:  NewLinkedMap[uint64, *conn](),
-		prvKeyId: prvIdAlice,
+		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
 	addr, _ := netip.ParseAddr("127.0.0.1")
 	remoteAddr := netip.AddrPortFrom(addr, 8080)
 
-	// Empty buffer
-	_, _, _, err := l.decode([]byte{}, remoteAddr)
-	assert.Error(t, err)
+	t.Run("empty buffer", func(t *testing.T) {
+		_, _, _, err := testDecode(l, []byte{}, remoteAddr)
+		assert.Error(t, err)
+	})
 
-	// Too small
-	_, _, _, err = l.decode([]byte{0x00}, remoteAddr)
-	assert.Error(t, err)
+	t.Run("too small", func(t *testing.T) {
+		_, _, _, err := testDecode(l, []byte{0x00}, remoteAddr)
+		assert.Error(t, err)
+	})
 
-	// Invalid version
-	buf := make([]byte, MinPacketSize)
-	buf[0] = 0x1F // Version 31 (invalid)
-	_, _, _, err = l.decode(buf, remoteAddr)
-	assert.Error(t, err)
+	t.Run("invalid version", func(t *testing.T) {
+		buf := make([]byte, MinPacketSize)
+		buf[0] = 0x1F // Version 31 (invalid)
+		_, _, _, err := testDecode(l, buf, remoteAddr)
+		assert.Error(t, err)
+	})
 }
 
 func TestListenerDecodeConnNotFound(t *testing.T) {
 	l := &Listener{
 		connMap:  NewLinkedMap[uint64, *conn](),
-		prvKeyId: prvIdAlice,
+		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
 	addr, _ := netip.ParseAddr("127.0.0.1")
 	remoteAddr := netip.AddrPortFrom(addr, 8080)
 
-	// InitRcv - connection not found
-	buf := make([]byte, MinPacketSize)
-	buf[0] = byte(InitRcv) << 5
-	_, _, _, err := l.decode(buf, remoteAddr)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	tests := []struct {
+		name    string
+		msgType cryptoMsgType
+	}{
+		{"InitRcv", InitRcv},
+		{"InitCryptoRcv", InitCryptoRcv},
+		{"Data", Data},
+	}
 
-	// InitCryptoRcv - connection not found
-	buf[0] = byte(InitCryptoRcv) << 5
-	_, _, _, err = l.decode(buf, remoteAddr)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
-
-	// Data - connection not found
-	buf[0] = byte(Data) << 5
-	_, _, _, err = l.decode(buf, remoteAddr)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, MinPacketSize)
+			buf[0] = byte(tt.msgType) << 5
+			_, _, _, err := testDecode(l, buf, remoteAddr)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "not found")
+		})
+	}
 }

@@ -317,7 +317,7 @@ func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	rb.finishedStreams[streamID] = true // need to pass this in
+	rb.finishedStreams[streamID] = true
 	delete(rb.streams, streamID)
 }
 

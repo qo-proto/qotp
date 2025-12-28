@@ -138,7 +138,7 @@ func EncodePayload(p *payloadHeader, userData []byte) (encoded []byte, offset in
 	return encoded, offset
 }
 
-func DecodePayload(data []byte) (payload *payloadHeader, userData []byte, err error) {
+func decodePayload(data []byte) (payload *payloadHeader, userData []byte, err error) {
 	dataLen := len(data)
 	if dataLen < MinProtoSize {
 		return nil, nil, errors.New("payload size below minimum")

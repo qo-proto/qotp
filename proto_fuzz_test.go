@@ -71,14 +71,14 @@ func FuzzPayload(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		decoded, payloadData, err := DecodePayload(data)
+		decoded, payloadData, err := decodePayload(data)
 		if err != nil {
 			t.Skip()
 		}
 
 		// Re-encode and decode
 		reEncoded, _ := EncodePayload(decoded, payloadData)
-		reDecoded, reDecodedData, err := DecodePayload(reEncoded)
+		reDecoded, reDecodedData, err := decodePayload(reEncoded)
 		if err != nil {
 			t.Fatal("Failed to decode our own encoded data:", err)
 		}

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -285,140 +284,13 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
-	conn *conn, userData []byte, msgType cryptoMsgType, err error) {
-	// Read the header byte and connId
-	if len(encData) < MinPacketSize {
-		return nil, nil, 0, fmt.Errorf("header needs to be at least %v bytes", MinPacketSize)
+func (l *Listener) cleanupConn(connId uint64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.currentConnID != nil && connId == *l.currentConnID {
+		tmp, _, _ := l.connMap.Next(connId)
+		l.currentConnID = &tmp
 	}
-
-	header := encData[0]
-	version := header & 0x1F // Extract bits 0-4 (mask 0001 1111)
-	if version != CryptoVersion {
-		return nil, nil, 0, errors.New("unsupported version")
-	}
-	msgType = cryptoMsgType(header >> 5)
-
-	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
-
-	switch msgType {
-	case InitSnd:
-		// Decode S0 message
-		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to decode InitHandshakeS0: %w", err)
-		}
-		conn, exists := l.connMap.Get(connId)
-		//we might have received this a multiple times due to retransmission in the first packet
-		//however the other side send us this, so we are expected to drop the old keys
-		var prvKeyEpRcv *ecdh.PrivateKey
-		if !exists {
-			prvKeyEpRcv, err = generateKey()
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
-			}
-			conn, err = l.newConn(connId, rAddr, prvKeyEpRcv, pubKeyIdSnd, pubKeyEpSnd, false, false)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
-			}
-			l.connMap.Put(connId, conn)
-		} else {
-			prvKeyEpRcv = conn.prvKeyEpSnd
-		}
-
-		sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
-		}
-		conn.sharedSecret = sharedSecret
-		return conn, []byte{}, InitSnd, nil
-	case InitRcv:
-		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn, exists := l.connMap.Get(connId)
-		if !exists {
-			return nil, nil, 0, errors.New("connection not found for InitRcv")
-		}
-
-		// Decode R0 message
-		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(
-			encData,
-			conn.prvKeyEpSnd)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to decode InitRcv: %w", err)
-		}
-
-		conn.pubKeyIdRcv = pubKeyIdRcv
-		conn.pubKeyEpRcv = pubKeyEpRcv
-		conn.sharedSecret = sharedSecret
-
-		return conn, message.PayloadRaw, InitRcv, nil
-	case InitCryptoSnd:
-		// Decode crypto S0 message
-		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(
-			encData, l.prvKeyId, l.mtu)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to decode InitWithCryptoS0: %w", err)
-		}
-		//we might have received this a multiple times due to retransmission in the first packet
-		//however the other side send us this, so we are expected to drop the old keys
-		conn, exists := l.connMap.Get(connId)
-
-		var prvKeyEpRcv *ecdh.PrivateKey
-		if !exists {
-			prvKeyEpRcv, err = generateKey()
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
-			}
-			conn, err = l.newConn(connId, rAddr, prvKeyEpRcv, pubKeyIdSnd, pubKeyEpSnd, false, true)
-			if err != nil {
-				return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
-			}
-			l.connMap.Put(connId, conn)
-		} else {
-			prvKeyEpRcv = conn.prvKeyEpSnd
-		}
-
-		sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
-
-		conn.sharedSecret = sharedSecret
-		return conn, message.PayloadRaw, InitCryptoSnd, nil
-	case InitCryptoRcv:
-		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn, exists := l.connMap.Get(connId)
-		if !exists {
-			return nil, nil, 0, errors.New("connection not found for InitWithCryptoR0")
-		}
-
-		// Decode crypto R0 message
-		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, conn.prvKeyEpSnd)
-		if err != nil {
-			return nil, nil, 0, fmt.Errorf("failed to decode InitWithCryptoR0: %w", err)
-		}
-
-		conn.pubKeyEpRcv = pubKeyEpRcv
-		conn.sharedSecret = sharedSecret
-
-		return conn, message.PayloadRaw, InitCryptoRcv, nil
-	case Data:
-		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
-		conn, exists := l.connMap.Get(connId)
-		if !exists {
-			return nil, nil, 0, errors.New("connection not found for DataMessage")
-		}
-
-		// Decode Data message
-		message, err := decryptData(encData, conn.isSenderOnInit, conn.epochCryptoRcv, conn.sharedSecret)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-
-		//we decoded conn.epochCrypto + 1, that means we can safely move forward with the epoch
-		if message.currentEpochCrypt > conn.epochCryptoRcv {
-			conn.epochCryptoRcv = message.currentEpochCrypt
-		}
-
-		return conn, message.PayloadRaw, Data, nil
-	default:
-		return nil, nil, 0, fmt.Errorf("unknown message type: %v", msgType)
-	}
+	l.connMap.Remove(connId)
 }

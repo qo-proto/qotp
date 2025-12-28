@@ -13,7 +13,7 @@ func encodePayload(payload *payloadHeader, data []byte) []byte {
 }
 
 func mustDecodePayload(t *testing.T, encoded []byte) (*payloadHeader, []byte) {
-	decoded, data, err := DecodePayload(encoded)
+	decoded, data, err := decodePayload(encoded)
 	require.NoError(t, err)
 	return decoded, data
 }
@@ -192,21 +192,21 @@ func TestProtoOffsetSizes(t *testing.T) {
 func TestProtoDecodeErrors(t *testing.T) {
 	// Below minimum size
 	for _, size := range []int{0, 1, 7} {
-		_, _, err := DecodePayload(make([]byte, size))
+		_, _, err := decodePayload(make([]byte, size))
 		assert.Error(t, err)
 	}
 
 	// Invalid version
 	data := make([]byte, 8)
 	data[0] = 0x1F // version bits = 31
-	_, _, err := DecodePayload(data)
+	_, _, err := decodePayload(data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 
 	// Insufficient data for ACK
 	data = make([]byte, 10)
 	data[0] = 0x00 // Type 00 (ACK) needs >= 11 bytes
-	_, _, err = DecodePayload(data)
+	_, _, err = decodePayload(data)
 	assert.Error(t, err)
 }
 
