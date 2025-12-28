@@ -1,11 +1,8 @@
 package qotp
 
 import (
-	"bytes"
-	"fmt"
 	"log/slog"
 	"os"
-	"runtime"
 	"strings"
 
 	"github.com/MatusOllah/slogcolor"
@@ -50,14 +47,4 @@ func setupLogger(level slog.Level) {
 	colorEnv := strings.ToLower(os.Getenv("NO_COLOR"))
 	color.NoColor = colorEnv != ""
 	slog.SetDefault(logger)
-}
-
-func gId() slog.Attr {
-	buf := make([]byte, 64)
-	n := runtime.Stack(buf, false)
-	buf = buf[:n]
-	idField := bytes.Fields(buf)[1]
-	var id int64
-	fmt.Sscanf(string(idField), "%d", &id)
-	return slog.String("gid", fmt.Sprintf("0x%02x", id))
 }

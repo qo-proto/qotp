@@ -3,7 +3,9 @@ package qotp
 import (
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"strings"
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -500,7 +502,8 @@ func openNoVerify(sharedSecret []byte, nonce []byte, encoded []byte, snSer []byt
 }
 
 func decodeHexPubKey(pubKeyHex string) (pubKey *ecdh.PublicKey, err error) {
-	b, err := decodeHex(pubKeyHex)
+	pubKeyHex = strings.TrimPrefix(pubKeyHex, "0x")
+	b, err := hex.DecodeString(pubKeyHex)
 	if err != nil {
 		return nil, err
 	}

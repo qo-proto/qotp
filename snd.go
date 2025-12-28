@@ -23,6 +23,7 @@ const (
 
 type SendInfo struct {
 	data         []byte
+	packetSize   uint16
 	sentTimeNano uint64
 	sentNr       int
 	pingRequest  bool
@@ -112,7 +113,7 @@ func (sb *SendBuffer) QueuePing(streamId uint32) {
 }
 
 // ReadyToSend gets data from dataToSend and creates an entry in dataInFlightMap
-func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *Ack, mtu int, nowNano uint64) (
+func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *Ack, mtu int) (
 	packetData []byte, offset uint64, isClose bool) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -130,7 +131,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 	if stream.pingRequest {
 		stream.pingRequest = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.dataInFlightMap.Put(key, &SendInfo{data: []byte{}, sentNr: 1, sentTimeNano: nowNano, pingRequest: true, closeRequest: false})
+		stream.dataInFlightMap.Put(key, &SendInfo{data: []byte{}, sentNr: 1, pingRequest: true, closeRequest: false})
 		return []byte{}, 0, false
 	}
 
@@ -150,7 +151,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		}
 
 		stream.closeSent = true
-		stream.dataInFlightMap.Put(closeKey, &SendInfo{data: []byte{}, sentNr: 1, sentTimeNano: nowNano, pingRequest: false, closeRequest: true})
+		stream.dataInFlightMap.Put(closeKey, &SendInfo{data: []byte{}, sentNr: 1, pingRequest: false, closeRequest: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
@@ -183,7 +184,7 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType CryptoMsgType, ack *A
 		}
 	}
 
-	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, sentNr: 1, sentTimeNano: nowNano, pingRequest: false, closeRequest: isClose})
+	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, sentNr: 1, pingRequest: false, closeRequest: isClose})
 
 	// Remove sent data from queue
 	stream.queuedData = stream.queuedData[length:]
@@ -273,15 +274,13 @@ func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expe
 }
 
 // AcknowledgeRange handles acknowledgment of dataToSend
-func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano uint64) {
+func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano uint64, packetSize uint16) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	//slog.Debug("ACK received", "stream", ack.streamID, "offset", ack.offset, "status", status)
-
 	stream := sb.streams[ack.streamID]
 	if stream == nil {
-		return AckNotFound, 0
+		return AckNotFound, 0, 0
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
@@ -289,13 +288,13 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	// Simply remove from map - no trimming needed!
 	sendInfo, ok := stream.dataInFlightMap.Remove(key)
 	if !ok {
-		return AckDup, 0
+		return AckDup, 0, 0
 	}
 
 	// Update global size tracking
 	sb.size -= len(sendInfo.data)
 
-	return AckStatusOk, sendInfo.sentTimeNano
+	return AckStatusOk, sendInfo.sentTimeNano, sendInfo.packetSize
 }
 
 func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
@@ -407,4 +406,20 @@ func (sb *SendBuffer) IsCloseSent(streamID uint32) bool {
         return false
     }
     return stream.closeSent
+}
+
+func (sb *SendBuffer) UpdatePacketSize(streamID uint32, offset uint64, length uint16, packetSize uint16, nowNano uint64) {
+    sb.mu.Lock()
+    defer sb.mu.Unlock()
+    
+    stream := sb.streams[streamID]
+    if stream == nil {
+        return
+    }
+    
+    key := createPacketKey(offset, length)
+    if info, ok := stream.dataInFlightMap.Get(key); ok {
+        info.packetSize = packetSize
+        info.sentTimeNano = nowNano
+    }
 }

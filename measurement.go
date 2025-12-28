@@ -7,6 +7,11 @@ import (
 	"math"
 )
 
+const (
+	defaultMTU     = 1400
+	minCwndPackets = 10
+)
+
 var (
 	defaultRTO = uint64(200 * msNano)
 	minRTO     = uint64(100 * msNano)
@@ -71,11 +76,11 @@ func NewMeasurements() Measurements {
 		pacingGainPct:  startupGain,
 		rttMinNano:     math.MaxUint64,
 		rttMinTimeNano: math.MaxUint64,
-		cwnd:           10 * 1400,
+		cwnd:           minCwndPackets * defaultMTU,
 	}
 }
 
-func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano uint64) {
+func (c *Conn) updateMeasurements(rttMeasurementNano uint64, packetSize uint16, nowNano uint64) {
 	// Validation
 	if rttMeasurementNano == 0 {
 		slog.Warn("cannot update measurements, rtt is 0")
@@ -119,7 +124,7 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano
 	// Update BBR bandwidth estimation
 	bwCurrent := uint64(0)
 	if c.rttMinNano > 0 {
-		bwCurrent = (uint64(rawLen) * 1_000_000_000) / c.rttMinNano
+		bwCurrent = (uint64(packetSize) * 1_000_000_000) / c.rttMinNano
 	}
 
 	if bwCurrent > c.bwMax {
@@ -141,7 +146,7 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano
 			c.pacingGainPct = normalGain
 		}
 
-		c.cwnd += uint64(rawLen) * c.pacingGainPct / 100
+		c.cwnd += uint64(packetSize) * c.pacingGainPct / 100
 	} else {
 		// Normal state logic
 		rttRatioPct := (c.srtt * 100) / c.rttMinNano
@@ -158,7 +163,7 @@ func (c *Conn) updateMeasurements(rttMeasurementNano uint64, rawLen int, nowNano
 		}
 
 		bdp := (c.bwMax * c.rttMinNano) / 1_000_000_000
-		c.cwnd = max(bdp*2, 10*1400)
+		c.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
 	}
 }
 
@@ -185,10 +190,10 @@ func (c *Conn) onDuplicateAck() {
 	if c.isStartup {
 		c.isStartup = false
 	}
-	
+
 	// Reduce cwnd immediately
-    c.cwnd = c.cwnd * dupAckBwReduction / 100
-    c.cwnd = max(c.cwnd, 10*1400)
+	c.cwnd = c.cwnd * dupAckBwReduction / 100
+	c.cwnd = max(c.cwnd, minCwndPackets*defaultMTU)
 }
 
 func (c *Conn) onPacketLoss() {
@@ -196,10 +201,10 @@ func (c *Conn) onPacketLoss() {
 	c.pacingGainPct = normalGain
 	c.isStartup = false
 	c.packetLossNr++
-	
+
 	// Reduce cwnd immediately
-    c.cwnd = c.cwnd * lossBwReduction / 100
-    c.cwnd = max(c.cwnd, 10*1400)
+	c.cwnd = c.cwnd * lossBwReduction / 100
+	c.cwnd = max(c.cwnd, minCwndPackets*defaultMTU)
 }
 
 func (c *Conn) calcPacing(packetSize uint64) uint64 {

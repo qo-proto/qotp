@@ -437,7 +437,7 @@ func TestMeasurementsIntegration(t *testing.T) {
 
 	// Startup phase - increasing bandwidth
 	for i := 0; i < 5; i++ {
-		conn.updateMeasurements(50_000_000, 1000*(i+1), uint64(1_000_000_000*(i+1)))
+		conn.updateMeasurements(50_000_000, uint16(1000*(i+1)), uint64(1_000_000_000*(i+1)))
 	}
 	assert.True(t, conn.isStartup, "Should still be in startup")
 

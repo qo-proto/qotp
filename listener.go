@@ -1,19 +1,19 @@
 package qotp
 
 import (
-	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 
 	"net"
 	"net/netip"
 	"sync"
-	"time"
 )
 
 type Listener struct {
@@ -95,14 +95,15 @@ func WithSeedStrHex(seedStrHex string) ListenFunc {
 			return errors.New("seed already set")
 		}
 
-		seed, err := decodeHex(seedStrHex)
-		if len(seed) != 32 {
-			return errors.New("seed must be exactly 32 bytes")
-		}
+		seedStrHex = strings.TrimPrefix(seedStrHex, "0x")
+		seed, err := hex.DecodeString(seedStrHex)
 		if err != nil {
 			return err
 		}
-		copy(o.seed[:], seed)
+		if len(seed) != 32 {
+			return errors.New("seed must be exactly 32 bytes")
+		}
+		o.seed = (*[32]byte)(seed) // allocate and assign
 		return nil
 	}
 }
@@ -146,7 +147,7 @@ func fillListenOpts(options ...ListenFunc) (*ListenOption, error) {
 	}
 
 	if lOpts.mtu == 0 {
-		lOpts.mtu = 1400 //default MTU
+		lOpts.mtu = defaultMTU //default MTU
 	}
 	if lOpts.seed != nil {
 		prvKeyId, err := ecdh.X25519().NewPrivateKey(lOpts.seed[:])
@@ -191,7 +192,6 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		mtu:          lOpts.mtu,
 		keyLogWriter: lOpts.keyLogWriter,
 		connMap:      NewLinkedMap[uint64, *Conn](),
-		mu:           sync.Mutex{},
 	}
 
 	slog.Info(
@@ -212,8 +212,8 @@ func (l *Listener) Close() error {
 
 	l.closed = true
 
-	for _, conn := range l.connMap.items {
-		conn.value.Close()
+	for _, conn := range l.connMap.Iterator(nil) {
+		conn.Close()
 	}
 
 	err := l.localConn.TimeoutReadNow()
@@ -226,144 +226,12 @@ func (l *Listener) HasActiveStreams() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, conn := range l.connMap.items {
-		if conn.value.HasActiveStreams() || conn.value.rcv.HasPendingAcks() {
+	for _, conn := range l.connMap.Iterator(nil) {
+		if conn.HasActiveStreams() || conn.rcv.HasPendingAcks() {
 			return true
 		}
 	}
 	return false
-}
-
-func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (s *Stream, err error) {
-	data := make([]byte, l.mtu)
-	n, remoteAddr, err := l.localConn.ReadFromUDPAddrPort(data, timeoutNano, nowNano)
-
-	if err != nil {
-		var netErr net.Error
-		ok := errors.As(err, &netErr)
-
-		if ok && netErr.Timeout() {
-			return nil, nil // Timeout is normal, return no dataToSend/error
-		} else {
-			slog.Error("Listen/Error", slog.Any("error", err))
-			return nil, err
-		}
-	}
-	if n == 0 {
-		return nil, nil
-	}
-
-	conn, payload, msgType, err := l.decode(data[:n], remoteAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	if nowNano > conn.lastReadTimeNano {
-		conn.lastReadTimeNano = nowNano
-	}
-
-	var p *PayloadHeader
-	if len(payload) == 0 && msgType == InitSnd { //InitSnd is the only message without any payload
-		p = &PayloadHeader{}
-		data = []byte{}
-	} else {
-		p, data, err = DecodePayload(payload)
-		if err != nil {
-			slog.Info("error in decoding payload from new connection", slog.Any("error", err))
-			return nil, err
-		}
-	}
-
-	s, err = conn.decode(p, data, nowNano)
-	if err != nil {
-		return nil, err
-	}
-
-	//Set state
-	if !conn.isHandshakeDoneOnRcv {
-		if conn.isSenderOnInit {
-			if msgType == InitRcv || msgType == InitCryptoRcv {
-				conn.isHandshakeDoneOnRcv = true
-			}
-		} else {
-			if msgType == Data {
-				conn.isHandshakeDoneOnRcv = true
-			}
-		}
-	}
-
-	return s, nil
-}
-
-// Flush sends pending data for all connections using round-robin
-func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
-
-	minPacing = MinDeadLine
-	if l.connMap.Size() == 0 {
-		//if we do not have at least one connection, exit
-		return minPacing
-	}
-
-	closeConn := []*Conn{}
-	closeStream := map[*Conn][]uint32{}
-	isDataSent := false
-
-	iter := NestedIterator(l.connMap, func(conn *Conn) *LinkedMap[uint32, *Stream] {
-		return conn.streams
-	}, l.currentConnID, l.currentStreamID)
-
-	for conn, stream := range iter {
-		dataSent, pacingNano, err := conn.Flush(stream, nowNano)
-		//slog.Debug("flush result", "stream", stream.streamID, "dataSent", dataSent, "rcvClosed", stream.rcvClosed, "sndClosed", stream.sndClosed, "pendingAcks", conn.rcv.HasPendingAcks())
-		if err != nil {
-			slog.Info("closing connection, err", slog.Any("err", err))
-			closeConn = append(closeConn, conn)
-			break
-		}
-
-		if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
-			closeStream[conn] = append(closeStream[conn], stream.streamID)
-			continue
-		}
-
-		if dataSent > 0 {
-			// data sent, returning early
-			minPacing = 0
-			l.currentConnID = &conn.connId
-			l.currentStreamID = &stream.streamID
-			isDataSent = true
-			break
-		}
-
-		//no data sent, check if we reached the timeout for the activity
-		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-			slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
-				slog.Uint64("last", conn.lastReadTimeNano))
-			closeConn = append(closeConn, conn)
-			break
-		}
-
-		if pacingNano < minPacing {
-			minPacing = pacingNano
-		}
-	}
-
-	for _, closeConn := range closeConn {
-		closeConn.cleanupConn()
-	}
-
-	for conn, streamIDs := range closeStream {
-		for _, streamID := range streamIDs {
-			conn.cleanupStream(streamID, nowNano)
-		}
-	}
-
-	// Only reset if we completed full iteration without sending
-	if !isDataSent {
-		l.currentConnID = nil
-		l.currentStreamID = nil
-	}
-	return minPacing
 }
 
 func (l *Listener) newConn(
@@ -371,7 +239,7 @@ func (l *Listener) newConn(
 	remoteAddr netip.AddrPort,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	pubKeyIdRcv *ecdh.PublicKey,
-	pubKeyEdRcv *ecdh.PublicKey,
+	pubKeyEpRcv *ecdh.PublicKey,
 	isSender bool,
 	withCrypto bool) (*Conn, error) {
 
@@ -389,8 +257,7 @@ func (l *Listener) newConn(
 		remoteAddr:         remoteAddr,
 		pubKeyIdRcv:        pubKeyIdRcv,
 		prvKeyEpSnd:        prvKeyEpSnd,
-		pubKeyEpRcv:        pubKeyEdRcv,
-		mu:                 sync.Mutex{},
+		pubKeyEpRcv:        pubKeyEpRcv,
 		listener:           l,
 		isSenderOnInit:     isSender,
 		isWithCryptoOnInit: withCrypto,
@@ -418,90 +285,140 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, s *Stream) error) error {
-	waitNextNano := MinDeadLine
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
+func (l *Listener) decode(encData []byte, rAddr netip.AddrPort) (
+	conn *Conn, userData []byte, msgType CryptoMsgType, err error) {
+	// Read the header byte and connId
+	if len(encData) < MinPacketSize {
+		return nil, nil, 0, fmt.Errorf("header needs to be at least %v bytes", MinPacketSize)
+	}
 
-		s, err := l.Listen(waitNextNano, uint64(time.Now().UnixNano()))
+	header := encData[0]
+	version := header & 0x1F // Extract bits 0-4 (mask 0001 1111)
+	if version != CryptoVersion {
+		return nil, nil, 0, errors.New("unsupported version")
+	}
+	msgType = CryptoMsgType(header >> 5)
+
+	connId := Uint64(encData[HeaderSize : ConnIdSize+HeaderSize])
+
+	switch msgType {
+	case InitSnd:
+		// Decode S0 message
+		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
 		if err != nil {
-			return err
+			return nil, nil, 0, fmt.Errorf("failed to decode InitHandshakeS0: %w", err)
 		}
-		// callback in any case, s may be null, but this gives the user
-		// the control to cancel the Loop every MinDeadLine
-		err = callback(ctx, s)
+		conn, exists := l.connMap.Get(connId)
+		//we might have received this a multiple times due to retransmission in the first packet
+		//however the other side send us this, so we are expected to drop the old keys
+		var prvKeyEpRcv *ecdh.PrivateKey
+		if !exists {
+			prvKeyEpRcv, err = generateKey()
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
+			}
+			conn, err = l.newConn(connId, rAddr, prvKeyEpRcv, pubKeyIdSnd, pubKeyEpSnd, false, false)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
+			}
+			l.connMap.Put(connId, conn)
+		} else {
+			prvKeyEpRcv = conn.prvKeyEpSnd
+		}
+
+		sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
 		if err != nil {
-			return err
+			return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
 		}
-		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
-		//if waitNextNano is zero, we still have data to flush, do not exit yet
-		//TODO
+		conn.sharedSecret = sharedSecret
+		return conn, []byte{}, InitSnd, nil
+	case InitRcv:
+		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
+			return nil, nil, 0, errors.New("connection not found for InitRcv")
+		}
+
+		// Decode R0 message
+		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(
+			encData,
+			conn.prvKeyEpSnd)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("failed to decode InitRcv: %w", err)
+		}
+
+		conn.pubKeyIdRcv = pubKeyIdRcv
+		conn.pubKeyEpRcv = pubKeyEpRcv
+		conn.sharedSecret = sharedSecret
+
+		return conn, message.PayloadRaw, InitRcv, nil
+	case InitCryptoSnd:
+		// Decode crypto S0 message
+		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(
+			encData, l.prvKeyId, l.mtu)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("failed to decode InitWithCryptoS0: %w", err)
+		}
+		//we might have received this a multiple times due to retransmission in the first packet
+		//however the other side send us this, so we are expected to drop the old keys
+		conn, exists := l.connMap.Get(connId)
+
+		var prvKeyEpRcv *ecdh.PrivateKey
+		if !exists {
+			prvKeyEpRcv, err = generateKey()
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to generate keys: %w", err)
+			}
+			conn, err = l.newConn(connId, rAddr, prvKeyEpRcv, pubKeyIdSnd, pubKeyEpSnd, false, true)
+			if err != nil {
+				return nil, nil, 0, fmt.Errorf("failed to create connection: %w", err)
+			}
+			l.connMap.Put(connId, conn)
+		} else {
+			prvKeyEpRcv = conn.prvKeyEpSnd
+		}
+
+		sharedSecret, err := prvKeyEpRcv.ECDH(pubKeyEpSnd)
+
+		conn.sharedSecret = sharedSecret
+		return conn, message.PayloadRaw, InitCryptoSnd, nil
+	case InitCryptoRcv:
+		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
+			return nil, nil, 0, errors.New("connection not found for InitWithCryptoR0")
+		}
+
+		// Decode crypto R0 message
+		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, conn.prvKeyEpSnd)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("failed to decode InitWithCryptoR0: %w", err)
+		}
+
+		conn.pubKeyEpRcv = pubKeyEpRcv
+		conn.sharedSecret = sharedSecret
+
+		return conn, message.PayloadRaw, InitCryptoRcv, nil
+	case Data:
+		connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+		conn, exists := l.connMap.Get(connId)
+		if !exists {
+			return nil, nil, 0, errors.New("connection not found for DataMessage")
+		}
+
+		// Decode Data message
+		message, err := decryptData(encData, conn.isSenderOnInit, conn.epochCryptoRcv, conn.sharedSecret)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+
+		//we decoded conn.epochCrypto + 1, that means we can safely move forward with the epoch
+		if message.currentEpochCrypt > conn.epochCryptoRcv {
+			conn.epochCryptoRcv = message.currentEpochCrypt
+		}
+
+		return conn, message.PayloadRaw, Data, nil
+	default:
+		return nil, nil, 0, fmt.Errorf("unknown message type: %v", msgType)
 	}
-}
-
-func (l *Listener) debug() slog.Attr {
-	if l.localConn == nil {
-		return slog.String("net", "n/a")
-	}
-	return slog.String("net", l.localConn.LocalAddrString())
-}
-
-func (l *Listener) ForceClose(c *Conn) {
-	c.cleanupConn()
-}
-
-func (l *Listener) DialString(remoteAddrString string) (*Conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-
-	return l.Dial(remoteAddr)
-}
-
-func (l *Listener) DialStringWithCryptoString(remoteAddrString string, pubKeyIdRcvHex string) (*Conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-
-	pubKeyIdRcv, err := decodeHexPubKey(pubKeyIdRcvHex)
-	if err != nil {
-		return nil, err
-	}
-
-	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
-}
-
-func (l *Listener) DialStringWithCrypto(remoteAddrString string, pubKeyIdRcv *ecdh.PublicKey) (*Conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-
-	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
-}
-
-func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.PublicKey) (*Conn, error) {
-	prvKeyEp, err := generateKey()
-	if err != nil {
-		return nil, err
-	}
-
-	connId := Uint64(prvKeyEp.PublicKey().Bytes())
-	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, true)
-}
-
-func (l *Listener) Dial(remoteAddr netip.AddrPort) (*Conn, error) {
-	prvKeyEp, err := generateKey()
-	if err != nil {
-		return nil, err
-	}
-
-	connId := Uint64(prvKeyEp.PublicKey().Bytes())
-	return l.newConn(connId, remoteAddr, prvKeyEp, nil, nil, true, false)
 }

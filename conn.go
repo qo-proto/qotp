@@ -2,45 +2,43 @@ package qotp
 
 import (
 	"crypto/ecdh"
+	"errors"
 	"net/netip"
 	"sync"
 )
 
 type Conn struct {
-	// Connection identification
+	// Identity
 	connId     uint64
 	remoteAddr netip.AddrPort
+	listener   *Listener
 
-	// Core components
-	listener *Listener
-	streams  *LinkedMap[uint32, *Stream]
-
-	// Cryptographic keys
-	prvKeyEpSnd *ecdh.PrivateKey
-	pubKeyEpRcv *ecdh.PublicKey
-	pubKeyIdRcv *ecdh.PublicKey
-
-	// Shared secrets
+	// Crypto keys
+	prvKeyEpSnd  *ecdh.PrivateKey
+	pubKeyEpRcv  *ecdh.PublicKey
+	pubKeyIdRcv  *ecdh.PublicKey
 	sharedSecret []byte
 
-	// Buffers and flow control
-	snd          *SendBuffer
-	rcv          *ReceiveBuffer
-	dataInFlight int
-	rcvWndSize   uint64
+	// Crypto state
+	snCrypto       uint64 //this is 48bit
+	epochCryptoSnd uint64 //this is 47bit
+	epochCryptoRcv uint64 //this is 47bit
 
-	// Connection state
+	// Handshake state
 	isSenderOnInit       bool
 	isWithCryptoOnInit   bool
 	isHandshakeDoneOnRcv bool
 	isInitSentOnSnd      bool
 
+	// Flow control
+	streams       *LinkedMap[uint32, *Stream]
+	snd           *SendBuffer
+	rcv           *ReceiveBuffer
+	dataInFlight  int
+	rcvWndSize    uint64
 	nextWriteTime uint64
 
-	// Crypto and performance
-	snCrypto       uint64 //this is 48bit
-	epochCryptoSnd uint64 //this is 47bit
-	epochCryptoRcv uint64 //this is 47bit
+	// Metrics
 	Measurements
 
 	mu sync.Mutex
@@ -87,7 +85,6 @@ func (c *Conn) streamLocked(streamID uint32) *Stream {
 	s := &Stream{
 		streamID: streamID,
 		conn:     c,
-		mu:       sync.Mutex{},
 	}
 	c.streams.Put(streamID, s)
 	return s
@@ -100,12 +97,100 @@ func (c *Conn) Stream(streamID uint32) *Stream {
 	return c.streamLocked(streamID)
 }
 
+func (conn *Conn) encode(p *PayloadHeader, userData []byte, msgType CryptoMsgType) (encData []byte, err error) {
+	// Create payload early for cases that need it
+	var packetData []byte
+
+	// Handle message encoding based on connection state
+	switch msgType {
+	case InitSnd:
+		_, encData = encryptInitSnd(
+			conn.listener.prvKeyId.PublicKey(),
+			conn.prvKeyEpSnd.PublicKey(),
+			conn.listener.mtu,
+		)
+		conn.isInitSentOnSnd = true
+	case InitCryptoSnd:
+		packetData, _ = EncodePayload(p, userData)
+		_, encData, err = encryptInitCryptoSnd(
+			conn.pubKeyIdRcv,
+			conn.listener.prvKeyId.PublicKey(),
+			conn.prvKeyEpSnd,
+			conn.snCrypto,
+			conn.listener.mtu,
+			packetData,
+		)
+		if err != nil {
+			return nil, err
+		}
+		conn.isInitSentOnSnd = true
+	case InitCryptoRcv:
+		packetData, _ = EncodePayload(p, userData)
+		encData, err = encryptInitCryptoRcv(
+			conn.connId,
+			conn.pubKeyEpRcv,
+			conn.prvKeyEpSnd,
+			conn.snCrypto,
+			packetData,
+		)
+		if err != nil {
+			return nil, err
+		}
+		conn.isInitSentOnSnd = true
+	case InitRcv:
+		packetData, _ = EncodePayload(p, userData)
+		encData, err = encryptInitRcv(
+			conn.connId,
+			conn.listener.prvKeyId.PublicKey(),
+			conn.pubKeyEpRcv,
+			conn.prvKeyEpSnd,
+			conn.snCrypto,
+			packetData,
+		)
+		if err != nil {
+			return nil, err
+		}
+		conn.isInitSentOnSnd = true
+	case Data:
+		packetData, _ = EncodePayload(p, userData)
+		encData, err = encryptData(
+			conn.connId,
+			conn.isSenderOnInit,
+			conn.sharedSecret,
+			conn.snCrypto,
+			conn.epochCryptoSnd,
+			packetData,
+		)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		return nil, errors.New("unknown message type")
+	}
+
+	//update state ofter encode of packet
+	conn.snCrypto++
+	//rollover
+	if conn.snCrypto > (1<<48)-1 {
+		if conn.epochCryptoSnd+1 > (1<<47)-1 {
+			//47, as the last bit is used for sender / receiver differentiation
+			//quic has key rotation (via bitflip), qotp does not.
+			return nil, errors.New("exhausted 2^95 sn number, cannot continue, you just " +
+				"sent ~5 billion ZettaBytes.\nNow you need to reconnect manually. This " +
+				"is roughly 28 million times all the data humanity has ever created.")
+		}
+		conn.epochCryptoSnd++
+		conn.snCrypto = 0
+	}
+	return encData, nil
+}
+
 func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Stream, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if p.Ack != nil {
-		ackStatus, sentTimeNano := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
+		ackStatus, sentTimeNano, packetSize := c.snd.AcknowledgeRange(p.Ack) //remove data from rbSnd if we got the ack
 		c.rcvWndSize = p.Ack.rcvWnd
 
 		switch ackStatus {
@@ -113,7 +198,7 @@ func (c *Conn) decode(p *PayloadHeader, userData []byte, nowNano uint64) (s *Str
 			c.dataInFlight -= int(p.Ack.len)
 			if nowNano > sentTimeNano {
 				rttNano := nowNano - sentTimeNano
-				c.updateMeasurements(rttNano, int(p.Ack.len)+42, nowNano) // TODO: 42 is approx overhead
+				c.updateMeasurements(rttNano, packetSize, nowNano) // TODO: 42 is approx overhead
 			}
 
 			ackStream := c.streamLocked(p.Ack.streamID)
@@ -217,8 +302,6 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 	ack := c.rcv.GetSndAck()
 	if ack != nil {
 		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
-	} else {
-		//slog.Debug(" Flush/NoAck", gId(), s.debug(), c.debug())
 	}
 
 	//Respect rwnd
@@ -244,7 +327,7 @@ func (c *Conn) Flush(s *Stream, nowNano uint64) (data int, pacingNano uint64, er
 
 	//next check if we can send packets, during handshake we can only send 1 packet
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
-		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu, nowNano)
+		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu)
 		if splitData != nil {
 			return c.sendPacket(s, ack, splitData, offset, isClose, msgType, nowNano, true)
 		} else if ack != nil || !c.isInitSentOnSnd {
@@ -271,6 +354,8 @@ func (c *Conn) sendPacket(s *Stream, ack *Ack, splitData []byte, offset uint64, 
 	if err != nil {
 		return 0, 0, err
 	}
+	
+ 	c.snd.UpdatePacketSize(s.streamID, offset, uint16(len(splitData)), uint16(len(encData)), nowNano)
 
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
 	if err != nil {
@@ -292,8 +377,6 @@ func (c *Conn) writeAck(s *Stream, ack *Ack, isClose bool, nowNano uint64) (data
 		Ack:      ack,
 		StreamID: s.streamID,
 	}
-
-	//slog.Debug("ACK sent", "stream", ack.streamID, "offset", ack.offset)
 
 	encData, err := c.encode(p, nil, c.msgType())
 	if err != nil {

@@ -30,7 +30,7 @@ type ReceiveBuffer struct {
 	capacity        int // Max buffer size
 	size            int // Current size
 	ackList         []*Ack
-	mu              *sync.Mutex
+	mu              sync.Mutex
 }
 
 func NewRcvBuffer() *RcvBuffer {
@@ -45,10 +45,10 @@ func NewReceiveBuffer(capacity int) *ReceiveBuffer {
 		finishedStreams: make(map[uint32]bool),
 		capacity:        capacity,
 		ackList:         []*Ack{},
-		mu:              &sync.Mutex{},
 	}
 }
 
+// getOrCreateStream returns or creates a stream buffer. Caller must hold rb.mu.
 func (rb *ReceiveBuffer) getOrCreateStream(streamID uint32) *RcvBuffer {
 	stream := rb.streams[streamID]
 	if stream == nil {
@@ -87,7 +87,6 @@ func (rb *ReceiveBuffer) QueueAckForClosedStream(streamID uint32, offset uint64,
 
 func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) RcvInsertStatus {
 	dataLen := len(userData)
-	//slog.Debug("ACK queued", "stream", streamID, "offset", offset, "len", dataLen)
 
 	rb.mu.Lock()
 	defer rb.mu.Unlock()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -670,4 +671,59 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 		assert.Equal(t, dataSize, bobReceived[uint32(i)],
 			"Bob should receive all data on stream %d", i)
 	}
+}
+
+func TestListenerDecodeErrors(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *Conn](),
+		prvKeyId: prvIdAlice,
+		mtu:      defaultMTU,
+	}
+
+	addr, _ := netip.ParseAddr("127.0.0.1")
+	remoteAddr := netip.AddrPortFrom(addr, 8080)
+
+	// Empty buffer
+	_, _, _, err := l.decode([]byte{}, remoteAddr)
+	assert.Error(t, err)
+
+	// Too small
+	_, _, _, err = l.decode([]byte{0x00}, remoteAddr)
+	assert.Error(t, err)
+
+	// Invalid version
+	buf := make([]byte, MinPacketSize)
+	buf[0] = 0x1F // Version 31 (invalid)
+	_, _, _, err = l.decode(buf, remoteAddr)
+	assert.Error(t, err)
+}
+
+func TestListenerDecodeConnNotFound(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *Conn](),
+		prvKeyId: prvIdAlice,
+		mtu:      defaultMTU,
+	}
+
+	addr, _ := netip.ParseAddr("127.0.0.1")
+	remoteAddr := netip.AddrPortFrom(addr, 8080)
+
+	// InitRcv - connection not found
+	buf := make([]byte, MinPacketSize)
+	buf[0] = byte(InitRcv) << 5
+	_, _, _, err := l.decode(buf, remoteAddr)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// InitCryptoRcv - connection not found
+	buf[0] = byte(InitCryptoRcv) << 5
+	_, _, _, err = l.decode(buf, remoteAddr)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// Data - connection not found
+	buf[0] = byte(Data) << 5
+	_, _, _, err = l.decode(buf, remoteAddr)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
 }
