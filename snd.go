@@ -5,6 +5,23 @@ import (
 	"sync"
 )
 
+// =============================================================================
+// Send buffer - Manages outgoing data with retransmission support
+//
+// Per-stream buffer tracks:
+//   - queuedData: data waiting to be sent (not yet transmitted)
+//   - dataInFlightMap: sent but not yet acknowledged (keyed by offset+length)
+//
+// Packet tracking uses packetKey (offset << 16 | length) for O(1) ACK lookup.
+// Retransmission triggered when RTO expires on oldest in-flight packet.
+// =============================================================================
+
+const sndBufferCapacity = 16 * 1024 * 1024 // 16MB
+
+// =============================================================================
+// Status types
+// =============================================================================
+
 type InsertStatus int
 
 const (
@@ -19,139 +36,168 @@ const (
 	AckStatusOk AckStatus = iota
 	AckNotFound
 	AckDup
-
-	sndBufferCapacity = 16 * 1024 * 1024 // 16MB
 )
 
-type SendInfo struct {
-	data         []byte
-	packetSize   uint16
-	sentTimeNano uint64
-	sentNr       uint
-	pingRequest  bool
-	closeRequest bool
+// =============================================================================
+// Packet tracking
+// =============================================================================
+
+// packetKey encodes offset (48-bit) and length (16-bit) for O(1) map lookup.
+type packetKey uint64
+
+func createPacketKey(offset uint64, length uint16) packetKey {
+	return packetKey((offset << 16) | uint64(length))
 }
 
-// StreamBuffer represents a single stream's userData and metadata
-type StreamBuffer struct {
-	dataInFlightMap *LinkedMap[packetKey, *SendInfo]
-	queuedData      []byte
-	bytesSentOffset uint64
-	pingRequest     bool
-	closeAtOffset   *uint64
-	closeSent       bool
+func (p packetKey) offset() uint64 {
+	return uint64(p) >> 16
 }
+
+// sendPacket tracks an in-flight packet awaiting acknowledgment.
+type sendPacket struct {
+	data         []byte
+	packetSize   uint16 // Encrypted packet size (for RTT measurement)
+	sentTimeNano uint64
+	sentCount    uint   // Number of transmission attempts
+	isPing       bool
+	isClose      bool
+}
+
+// =============================================================================
+// Per-stream send buffer
+// =============================================================================
+
+type streamSendBuffer struct {
+	inFlight        *LinkedMap[packetKey, *sendPacket]
+	queuedData      []byte
+	bytesSentOffset uint64  // Next offset to send
+	pingRequested   bool    // Pending ping request
+	closeAtOffset   *uint64 // Stream closes at this offset
+	closeSent       bool    // FIN packet has been sent
+}
+
+func newStreamSendBuffer() *streamSendBuffer {
+	return &streamSendBuffer{inFlight: NewLinkedMap[packetKey, *sendPacket]()}
+}
+
+// =============================================================================
+// Connection-level send buffer (manages all streams)
+// =============================================================================
 
 type SendBuffer struct {
-	streams  map[uint32]*StreamBuffer // Changed to LinkedHashMap
-	capacity int                      //len(dataToSend) of all streams cannot become larger than capacity
-	size     int                      //len(dataToSend) of all streams
+	streams  map[uint32]*streamSendBuffer
+	capacity int
+	size     int // Total queued bytes across all streams
 	mu       sync.Mutex
 }
 
 func NewSendBuffer(capacity int) *SendBuffer {
 	return &SendBuffer{
-		streams:  make(map[uint32]*StreamBuffer),
+		streams:  make(map[uint32]*streamSendBuffer),
 		capacity: capacity,
 	}
 }
 
-func (sb *SendBuffer) getOrCreateStream(streamID uint32) *StreamBuffer {
-	// INTERNAL: caller must hold sb.mu
-	stream := sb.streams[streamID]
-	if stream == nil {
-		stream = &StreamBuffer{dataInFlightMap: NewLinkedMap[packetKey, *SendInfo]()}
-		sb.streams[streamID] = stream
+func (sb *SendBuffer) getOrCreateStream(streamID uint32) *streamSendBuffer {
+	// Caller must hold sb.mu
+	if stream := sb.streams[streamID]; stream != nil {
+		return stream
 	}
+	stream := newStreamSendBuffer()
+	sb.streams[streamID] = stream
 	return stream
 }
 
-// QueueData stores the userData in the dataMap, does not send yet
-func (sb *SendBuffer) QueueData(streamId uint32, userData []byte) (n int, status InsertStatus) {
-	if len(userData) <= 0 {
+// =============================================================================
+// Queue data for sending
+// =============================================================================
+
+// QueueData adds data to the stream's send queue.
+// Returns bytes queued and status (may be partial if buffer full).
+func (sb *SendBuffer) QueueData(streamID uint32, userData []byte) (n int, status InsertStatus) {
+	if len(userData) == 0 {
 		return 0, InsertStatusNoData
 	}
 
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	// Calculate how much userData we can insert
-	remainingCapacitySnd := sb.capacity - sb.size
-	if remainingCapacitySnd == 0 {
+	remaining := sb.capacity - sb.size
+	if remaining == 0 {
 		return 0, InsertStatusSndFull
 	}
 
-	// We fill up the chunk up to the capacity of snd
-	// chunk is then what we will queue, and we report
-	// how much bytes we queued
 	chunk := userData
-	if len(userData) > remainingCapacitySnd {
-		chunk = userData[:remainingCapacitySnd]
+	status = InsertStatusOk
+	if len(userData) > remaining {
+		chunk = userData[:remaining]
 		status = InsertStatusSndFull
-	} else {
-		status = InsertStatusOk
 	}
-	n = len(chunk)
 
-	stream := sb.getOrCreateStream(streamId)
+	stream := sb.getOrCreateStream(streamID)
 	stream.queuedData = append(stream.queuedData, chunk...)
-	sb.size += n
+	sb.size += len(chunk)
 
-	return n, status
+	return len(chunk), status
 }
 
-func (sb *SendBuffer) QueuePing(streamId uint32) {
+func (sb *SendBuffer) QueuePing(streamID uint32) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-
-	stream := sb.getOrCreateStream(streamId)
-	stream.pingRequest = true
+	sb.getOrCreateStream(streamID).pingRequested = true
 }
 
-// ReadyToSend gets data from dataToSend and creates an entry in dataInFlightMap
-func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType cryptoMsgType, ack *Ack, mtu int) (
-	packetData []byte, offset uint64, isClose bool) {
+// =============================================================================
+// Send - Get next packet to transmit
+// =============================================================================
+
+// readyToSend returns the next packet to send for the stream.
+// Returns nil if nothing to send. Moves data from queue to in-flight.
+func (sb *SendBuffer) readyToSend(streamID uint32, msgType cryptoMsgType, ack *Ack, mtu int) (
+	data []byte, offset uint64, isClose bool) {
+
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-
-	if len(sb.streams) == 0 {
-		return nil, 0, false
-	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
 		return nil, 0, false
 	}
 
-	// CASE 1: Ping request
-	if stream.pingRequest {
-		stream.pingRequest = false
+	// Priority 1: Ping request
+	if stream.pingRequested {
+		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.dataInFlightMap.Put(key, &SendInfo{pingRequest: true})
+		stream.inFlight.Put(key, &sendPacket{isPing: true})
 		return []byte{}, 0, false
 	}
 
-	// CASE 2: No queued data
-	if len(stream.queuedData) == 0 {
-		if stream.closeAtOffset == nil || stream.bytesSentOffset < *stream.closeAtOffset {
-			return nil, 0, false
-		}
+	// Priority 2: Queued data
+	if len(stream.queuedData) > 0 {
+		return sb.sendQueuedData(stream, msgType, ack, mtu)
+	}
 
-		if stream.closeSent {
-			return nil, 0, false
-		}
+	// Priority 3: Standalone FIN (no more data, but need to send close)
+	if stream.closeAtOffset != nil &&
+		stream.bytesSentOffset >= *stream.closeAtOffset &&
+		!stream.closeSent {
 
 		closeKey := createPacketKey(stream.bytesSentOffset, 0)
-		if stream.dataInFlightMap.Contains(closeKey) {
+		if stream.inFlight.Contains(closeKey) {
 			return nil, 0, false
 		}
 
 		stream.closeSent = true
-		stream.dataInFlightMap.Put(closeKey, &SendInfo{closeRequest: true})
+		stream.inFlight.Put(closeKey, &sendPacket{isClose: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
-	// CASE 3: Has queued data
+	return nil, 0, false
+}
+
+func (sb *SendBuffer) sendQueuedData(stream *streamSendBuffer, msgType cryptoMsgType, ack *Ack, mtu int) (
+	data []byte, offset uint64, isClose bool) {
+
 	maxData := 0
 	if msgType != InitSnd {
 		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
@@ -161,115 +207,117 @@ func (sb *SendBuffer) ReadyToSend(streamID uint32, msgType cryptoMsgType, ack *A
 		maxData = mtu - overhead
 	}
 
-	// Determine how much to send
 	length := min(uint64(maxData), uint64(len(stream.queuedData)))
-
-	// Extract data from queue
-	packetData = stream.queuedData[:length]
-
-	// Create key and SendInfo with actual data
+	data = stream.queuedData[:length]
 	key := createPacketKey(stream.bytesSentOffset, uint16(length))
 
-	// Check if this packet reaches the close offset
-	isClose = false
+	// Check if this packet includes FIN
 	if stream.closeAtOffset != nil {
-		packetEndOffset := stream.bytesSentOffset + length
-		if packetEndOffset >= *stream.closeAtOffset {
+		packetEnd := stream.bytesSentOffset + length
+		if packetEnd >= *stream.closeAtOffset {
 			isClose = true
 			stream.closeSent = true
 		}
 	}
 
-	stream.dataInFlightMap.Put(key, &SendInfo{data: packetData, closeRequest: isClose})
-
-	// Remove sent data from queue
+	stream.inFlight.Put(key, &sendPacket{data: data, isClose: isClose})
 	stream.queuedData = stream.queuedData[length:]
-
-	// Update sent offset
 	stream.bytesSentOffset += length
 
-	return packetData, key.offset(), isClose
+	return data, key.offset(), isClose
 }
 
-// ReadyToRetransmit finds expired dataInFlightMap that need to be resent
-func (sb *SendBuffer) ReadyToRetransmit(streamID uint32, ack *Ack, mtu int, expectedRtoNano uint64, msgType cryptoMsgType, nowNano uint64) (
-	data []byte, offset uint64, isClose bool, err error) {
+// =============================================================================
+// Retransmit - Resend expired packets
+// =============================================================================
+
+// readyToRetransmit returns expired in-flight data for retransmission.
+// May split packets if MTU decreased. Increments retry counter.
+func (sb *SendBuffer) readyToRetransmit(
+	streamID uint32, ack *Ack, mtu int,
+	baseRTO uint64, msgType cryptoMsgType, nowNano uint64,
+) (data []byte, offset uint64, isClose bool, err error) {
+
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
-
-	if len(sb.streams) == 0 {
-		return nil, 0, false, nil
-	}
 
 	stream := sb.streams[streamID]
 	if stream == nil {
 		return nil, 0, false, nil
 	}
 
-	// Check oldest packet first
-	packetKey, rtoData, ok := stream.dataInFlightMap.First()
+	key, pkt, ok := stream.inFlight.First()
 	if !ok {
 		return nil, 0, false, nil
 	}
 
-	expectedRtoBackoffNano, err := backoff(expectedRtoNano, rtoData.sentNr)
+	rtoWithBackoff, err := backoff(baseRTO, pkt.sentCount)
 	if err != nil {
 		return nil, 0, false, err
 	}
 
-	// Check if RTO expired
-	if nowNano-rtoData.sentTimeNano <= expectedRtoBackoffNano {
+	// Not expired yet
+	if nowNano-pkt.sentTimeNano <= rtoWithBackoff {
 		return nil, 0, false, nil
 	}
 
-	// Ping - just remove, no retransmit
-	if rtoData.pingRequest {
-		stream.dataInFlightMap.Remove(packetKey)
+	// Ping packets: just remove, don't retransmit
+	if pkt.isPing {
+		stream.inFlight.Remove(key)
 		return nil, 0, false, nil
 	}
 
-	// Get data directly from SendInfo
-	data = rtoData.data
-	length := len(data)
-
-	// Calculate available space
+	// Calculate max data for current MTU
 	maxData := 0
 	if msgType != InitSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, packetKey.offset())
+		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset())
 		if overhead > mtu {
 			return nil, 0, false, errors.New("overhead larger than MTU")
 		}
 		maxData = mtu - overhead
 	}
 
-	if length <= maxData {
-		// Update SendInfo in place
-		rtoData.sentTimeNano = nowNano
-		rtoData.sentNr++
-
-		return data, packetKey.offset(), rtoData.closeRequest, nil
-
+	// Fits in current MTU - just retransmit
+	if len(pkt.data) <= maxData {
+		pkt.sentTimeNano = nowNano
+		pkt.sentCount++
+		return pkt.data, key.offset(), pkt.isClose, nil
 	}
 
-	// Split packet
-	leftData := data[:maxData]
-	rightData := data[maxData:]
-
-	// Create new packet for left part
-	leftKey := createPacketKey(packetKey.offset(), uint16(maxData))
-	stream.dataInFlightMap.Put(leftKey, &SendInfo{data: leftData, sentTimeNano: nowNano, sentNr: rtoData.sentNr + 1})
-
-	// Update right part (remaining data)
-	remainingOffset := packetKey.offset() + uint64(maxData)
-	rightKey := createPacketKey(remainingOffset, uint16(len(rightData)))
-	rtoData.data = rightData // Update data in existing SendInfo
-	stream.dataInFlightMap.Replace(packetKey, rightKey, rtoData)
-
-	return leftData, packetKey.offset(), false, nil
-
+	// Need to split packet (MTU decreased)
+	return sb.splitAndRetransmit(stream, key, pkt, maxData, nowNano)
 }
 
-// AcknowledgeRange handles acknowledgment of dataToSend
+func (sb *SendBuffer) splitAndRetransmit(
+	stream *streamSendBuffer, key packetKey, pkt *sendPacket,
+	maxData int, nowNano uint64,
+) ([]byte, uint64, bool, error) {
+
+	leftData := pkt.data[:maxData]
+	rightData := pkt.data[maxData:]
+
+	// Left part: new entry
+	leftKey := createPacketKey(key.offset(), uint16(maxData))
+	stream.inFlight.Put(leftKey, &sendPacket{
+		data:         leftData,
+		sentTimeNano: nowNano,
+		sentCount:    pkt.sentCount + 1,
+	})
+
+	// Right part: replace original
+	rightKey := createPacketKey(key.offset()+uint64(maxData), uint16(len(rightData)))
+	pkt.data = rightData
+	stream.inFlight.Replace(key, rightKey, pkt)
+
+	return leftData, key.offset(), false, nil
+}
+
+// =============================================================================
+// Acknowledgment
+// =============================================================================
+
+// AcknowledgeRange processes an ACK for a sent packet.
+// Returns timing info for RTT measurement.
 func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano uint64, packetSize uint16) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -280,77 +328,35 @@ func (sb *SendBuffer) AcknowledgeRange(ack *Ack) (status AckStatus, sentTimeNano
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
-
-	// Simply remove from map - no trimming needed!
-	sendInfo, ok := stream.dataInFlightMap.Remove(key)
+	pkt, ok := stream.inFlight.Remove(key)
 	if !ok {
 		return AckDup, 0, 0
 	}
 
-	// Update global size tracking
-	sb.size -= len(sendInfo.data)
-
-	return AckStatusOk, sendInfo.sentTimeNano, sendInfo.packetSize
+	sb.size -= len(pkt.data)
+	return AckStatusOk, pkt.sentTimeNano, pkt.packetSize
 }
 
-func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
+// UpdatePacketSize records encrypted size after packet is built (for RTT measurement).
+func (sb *SendBuffer) UpdatePacketSize(streamID uint32, offset uint64, length, packetSize uint16, nowNano uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		return false
+		return
 	}
 
-	closeOffset := stream.closeAtOffset
-	if closeOffset == nil {
-		return false
+	key := createPacketKey(offset, length)
+	if pkt, ok := stream.inFlight.Get(key); ok {
+		pkt.packetSize = packetSize
+		pkt.sentTimeNano = nowNano
 	}
-
-	var ackedOffset uint64
-	firstKey, _, ok := stream.dataInFlightMap.First()
-	if ok {
-		ackedOffset = firstKey.offset()
-	} else {
-		// No inflight data means everything sent has been acked
-		ackedOffset = stream.bytesSentOffset
-	}
-
-	// !ok -> standalone fin needs also to be acked
-	return !ok && ackedOffset >= *closeOffset
 }
 
-func (sb *SendBuffer) GetOffsetAcked(streamID uint32) (offset uint64) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	stream := sb.streams[streamID]
-	if stream == nil {
-		return 0
-	}
-
-	// If there's inflight data, the acked offset is where inflight begins
-	firstKey, _, ok := stream.dataInFlightMap.First()
-	if ok {
-		ackedOffset := firstKey.offset()
-		return ackedOffset
-	}
-
-	// No inflight data means everything sent has been acked
-	return stream.bytesSentOffset // Changed from bytesSentUserOffset
-}
-
-func (sb *SendBuffer) GetOffsetClosedAt(streamID uint32) (offset *uint64) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	stream := sb.streams[streamID]
-	if stream == nil {
-		return nil
-	}
-
-	return stream.closeAtOffset
-}
+// =============================================================================
+// Stream lifecycle
+// =============================================================================
 
 func (sb *SendBuffer) Close(streamID uint32) {
 	sb.mu.Lock()
@@ -358,7 +364,6 @@ func (sb *SendBuffer) Close(streamID uint32) {
 
 	stream := sb.getOrCreateStream(streamID)
 	if stream.closeAtOffset == nil {
-		// Calculate total offset: sent + queued
 		offset := stream.bytesSentOffset + uint64(len(stream.queuedData))
 		stream.closeAtOffset = &offset
 	}
@@ -370,28 +375,42 @@ func (sb *SendBuffer) RemoveStream(streamID uint32) {
 	delete(sb.streams, streamID)
 }
 
-func (sb *SendBuffer) UpdatePacketSize(streamID uint32, offset uint64, length uint16, packetSize uint16, nowNano uint64) {
+func (sb *SendBuffer) CheckStreamFullyAcked(streamID uint32) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil || stream.closeAtOffset == nil {
+		return false
+	}
+
+	// Must have no in-flight data AND sent up to close offset
+	_, _, hasInFlight := stream.inFlight.First()
+	return !hasInFlight && stream.bytesSentOffset >= *stream.closeAtOffset
+}
+
+func (sb *SendBuffer) GetOffsetAcked(streamID uint32) uint64 {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		return
+		return 0
 	}
 
-	key := createPacketKey(offset, length)
-	if info, ok := stream.dataInFlightMap.Get(key); ok {
-		info.packetSize = packetSize
-		info.sentTimeNano = nowNano
+	// Acked offset is where in-flight begins (everything before is acked)
+	if firstKey, _, ok := stream.inFlight.First(); ok {
+		return firstKey.offset()
 	}
+	return stream.bytesSentOffset
 }
 
-type packetKey uint64
+func (sb *SendBuffer) GetOffsetClosedAt(streamID uint32) *uint64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
 
-func (p packetKey) offset() uint64 {
-	return uint64(p) >> 16
-}
-
-func createPacketKey(offset uint64, length uint16) packetKey {
-	return packetKey((offset << 16) | uint64(length))
+	if stream := sb.streams[streamID]; stream != nil {
+		return stream.closeAtOffset
+	}
+	return nil
 }

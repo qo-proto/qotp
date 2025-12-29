@@ -381,7 +381,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Try retransmission first (oldest unacked packet)
 	msgType := c.msgType()
-	splitData, offset, isClose, err := c.snd.ReadyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
+	splitData, offset, isClose, err := c.snd.readyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -392,7 +392,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
-		splitData, offset, isClose := c.snd.ReadyToSend(s.streamID, msgType, ack, c.listener.mtu)
+		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, true)
 		}
