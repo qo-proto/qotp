@@ -307,18 +307,6 @@ func TestRcvClose(t *testing.T) {
 	assert.Equal(t, uint16(4), ack.len)
 }
 
-func TestRcvEmptyInsertAndAck(t *testing.T) {
-	rb := NewReceiveBuffer(1000)
-
-	status := rb.EmptyInsert(1, 0)
-	assert.Equal(t, RcvInsertOk, status)
-
-	ack := rb.GetSndAck()
-	assert.NotNil(t, ack)
-	assert.Equal(t, uint64(0), ack.offset)
-	assert.Equal(t, uint16(0), ack.len)
-}
-
 func TestRcvCloseBasics(t *testing.T) {
 	rb := NewReceiveBuffer(1000)
 

@@ -2,7 +2,6 @@ package qotp
 
 import (
 	"errors"
-	"log/slog"
 	"net/netip"
 	"os"
 	"sync"
@@ -12,7 +11,6 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	setupLogger(slog.LevelDebug)
 	os.Exit(m.Run())
 }
 
@@ -504,7 +502,7 @@ func TestNetWriteAndReadUDPWithDrop(t *testing.T) {
 	// Drop packet 1, deliver packet 0
 	err = connPair.dropSender(1)
 	assert.NoError(t, err)
-	
+
 	_, err = connPair.senderToRecipient(0)
 	assert.NoError(t, err)
 
@@ -569,11 +567,11 @@ func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
 		for _, pkt := range packets {
 			connPair2.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
 		}
-		
+
 		n, err := connPair2.senderToRecipient()
 		assert.NoError(t, err)
 		assert.Greater(t, n, 0)
-		
+
 		// Should receive all 4 packets
 		buffer := make([]byte, 100)
 		for i := 0; i < 4; i++ {
@@ -589,22 +587,22 @@ func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
 		for _, pkt := range packets {
 			connPair3.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
 		}
-		
+
 		n, err := connPair3.senderToRecipient(0, 2, 1, 3)
 		assert.NoError(t, err)
 		assert.Greater(t, n, 0)
-		
+
 		buffer := make([]byte, 100)
-		
+
 		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[0], buffer[:n])
-		
+
 		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[2], buffer[:n])
-		
+
 		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[1], buffer[:n])
-		
+
 		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[3], buffer[:n])
 	})
@@ -615,22 +613,22 @@ func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
 		for _, pkt := range packets {
 			connPair4.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
 		}
-		
+
 		n, err := connPair4.senderToRecipient(0, 1, 1, 2)
 		assert.NoError(t, err)
 		assert.Greater(t, n, 0)
-		
+
 		buffer := make([]byte, 100)
-		
+
 		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[0], buffer[:n])
-		
+
 		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[1], buffer[:n])
-		
+
 		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[1], buffer[:n]) // Duplicate
-		
+
 		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[2], buffer[:n])
 	})
@@ -641,25 +639,25 @@ func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
 		for _, pkt := range packets {
 			connPair5.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
 		}
-		
+
 		// Drop packets 0 and 2, which leaves packets 1 and 3 at indices 0 and 1
 		err := connPair5.dropSender(0, 2)
 		assert.NoError(t, err)
-		
+
 		// Now deliver remaining packets (which are at indices 0 and 1 after the drop)
 		n, err := connPair5.senderToRecipient(0, 1)
 		assert.NoError(t, err)
 		assert.Greater(t, n, 0)
-		
+
 		buffer := make([]byte, 100)
-		
+
 		// Should receive what was originally packets 1 and 3
 		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[1], buffer[:n])
-		
+
 		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, packets[3], buffer[:n])
-		
+
 		// No more packets
 		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.Equal(t, 0, n)

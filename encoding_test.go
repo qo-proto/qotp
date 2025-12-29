@@ -25,26 +25,6 @@ func TestEncodingUint16(t *testing.T) {
 	assert.Equal(t, uint16(0x1234), Uint16(buf))
 }
 
-func TestEncodingUint24(t *testing.T) {
-	buf := make([]byte, 3)
-
-	// Zero
-	n := PutUint24(buf, 0)
-	assert.Equal(t, 3, n)
-	assert.Equal(t, uint64(0), Uint24(buf))
-
-	// Max 24-bit value
-	PutUint24(buf, 0xFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFF), Uint24(buf))
-
-	// Specific value - verify little-endian
-	PutUint24(buf, 0x123456)
-	assert.Equal(t, byte(0x56), buf[0])
-	assert.Equal(t, byte(0x34), buf[1])
-	assert.Equal(t, byte(0x12), buf[2])
-	assert.Equal(t, uint64(0x123456), Uint24(buf))
-}
-
 func TestEncodingUint32(t *testing.T) {
 	buf := make([]byte, 4)
 

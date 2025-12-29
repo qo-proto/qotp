@@ -80,10 +80,8 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 // Flush sends pending data for all connections using round-robin
 func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
-
 	minPacing = MinDeadLine
 	if l.connMap.Size() == 0 {
-		//if we do not have at least one connection, exit
 		return minPacing
 	}
 
@@ -91,43 +89,42 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 	closeStream := map[*conn][]uint32{}
 	isDataSent := false
 
-	iter := NestedIterator(l.connMap, func(conn *conn) *LinkedMap[uint32, *Stream] {
-		return conn.streams
-	}, l.currentConnID, l.currentStreamID)
+	startStreamID := l.currentStreamID
+connLoop:
+	for _, conn := range l.connMap.Iterator(l.currentConnID) {
+		for _, stream := range conn.streams.Iterator(startStreamID) {
+			dataSent, pacingNano, err := conn.sendNext(stream, nowNano)
+			if err != nil {
+				slog.Info("closing connection, err", slog.Any("err", err))
+				closeConnId = append(closeConnId, conn.connId)
+				break connLoop
+			}
 
-	for conn, stream := range iter {
-		dataSent, pacingNano, err := conn.sendNext(stream, nowNano)
-		if err != nil {
-			slog.Info("closing connection, err", slog.Any("err", err))
-			closeConnId = append(closeConnId, conn.connId)
-			break
-		}
+			if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
+				closeStream[conn] = append(closeStream[conn], stream.streamID)
+				continue
+			}
 
-		if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
-			closeStream[conn] = append(closeStream[conn], stream.streamID)
-			continue
-		}
+			if dataSent > 0 {
+				minPacing = 0
+				l.currentConnID = &conn.connId
+				l.currentStreamID = &stream.streamID
+				isDataSent = true
+				break connLoop
+			}
 
-		if dataSent > 0 {
-			// data sent, returning early
-			minPacing = 0
-			l.currentConnID = &conn.connId
-			l.currentStreamID = &stream.streamID
-			isDataSent = true
-			break
-		}
+			if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
+				slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
+					slog.Uint64("last", conn.lastReadTimeNano))
+				closeConnId = append(closeConnId, conn.connId)
+				break connLoop
+			}
 
-		//no data sent, check if we reached the timeout for the activity
-		if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-			slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
-				slog.Uint64("last", conn.lastReadTimeNano))
-			closeConnId = append(closeConnId, conn.connId)
-			break
+			if pacingNano < minPacing {
+				minPacing = pacingNano
+			}
 		}
-
-		if pacingNano < minPacing {
-			minPacing = pacingNano
-		}
+		startStreamID = nil
 	}
 
 	for _, connId := range closeConnId {
@@ -140,7 +137,6 @@ func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
 		}
 	}
 
-	// Only reset if we completed full iteration without sending
 	if !isDataSent {
 		l.currentConnID = nil
 		l.currentStreamID = nil

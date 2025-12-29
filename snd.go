@@ -49,12 +49,6 @@ type SendBuffer struct {
 	mu       sync.Mutex
 }
 
-func NewStreamBuffer() *StreamBuffer {
-	return &StreamBuffer{
-		dataInFlightMap: NewLinkedMap[packetKey, *SendInfo](),
-	}
-}
-
 func NewSendBuffer(capacity int) *SendBuffer {
 	return &SendBuffer{
 		streams:  make(map[uint32]*StreamBuffer),
@@ -66,7 +60,7 @@ func (sb *SendBuffer) getOrCreateStream(streamID uint32) *StreamBuffer {
 	// INTERNAL: caller must hold sb.mu
 	stream := sb.streams[streamID]
 	if stream == nil {
-		stream = NewStreamBuffer()
+		stream = &StreamBuffer{dataInFlightMap: NewLinkedMap[packetKey, *SendInfo]()}
 		sb.streams[streamID] = stream
 	}
 	return stream

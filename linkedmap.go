@@ -272,22 +272,3 @@ func (m *LinkedMap[K, V]) Iterator(startKey *K) iter.Seq2[K, V] {
 		}
 	}
 }
-
-func NestedIterator[K1, K2 cmp.Ordered, V1, V2 any](
-	outerMap *LinkedMap[K1, V1],
-	getInnerMap func(V1) *LinkedMap[K2, V2],
-	startKey1 *K1,
-	startKey2 *K2,
-) iter.Seq2[V1, V2] {
-	return func(yield func(V1, V2) bool) {
-		for _, outerVal := range outerMap.Iterator(startKey1) {
-			innerMap := getInnerMap(outerVal)
-			for _, innerVal := range innerMap.Iterator(startKey2) {
-				if !yield(outerVal, innerVal) {
-					return
-				}
-			}
-			startKey2 = nil
-		}
-	}
-}

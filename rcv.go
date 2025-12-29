@@ -56,17 +56,6 @@ func (rb *ReceiveBuffer) getOrCreateStream(streamID uint32) *RcvBuffer {
 	return s
 }
 
-func (rb *ReceiveBuffer) queueAck(streamID uint32, offset uint64, length uint16) {
-	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: length})
-}
-
-func (rb *ReceiveBuffer) EmptyInsert(streamID uint32, offset uint64) RcvInsertStatus {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	rb.queueAck(streamID, offset, 0)
-	return RcvInsertOk
-}
-
 func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -74,10 +63,10 @@ func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
 	return s != nil && s.closeAtOffset != nil && s.nextInOrder >= *s.closeAtOffset
 }
 
-func (rb *ReceiveBuffer) QueueAckForClosedStream(streamID uint32, offset uint64, length uint16) {
+func (rb *ReceiveBuffer) QueueAck(streamID uint32, offset uint64, length uint16) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	rb.queueAck(streamID, offset, length)
+	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: length})
 }
 
 func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) RcvInsertStatus {
@@ -90,7 +79,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 
 	// Data after close - ACK but drop
 	if stream.closeAtOffset != nil && offset >= *stream.closeAtOffset {
-		rb.queueAck(streamID, offset, uint16(dataLen))
+		rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 		return RcvInsertDuplicate
 	}
 
@@ -99,7 +88,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	}
 
 	// Always ACK (may be retransmit due to lost ACK)
-	rb.queueAck(streamID, offset, uint16(dataLen))
+	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 
 	// Already delivered
 	if offset+uint64(dataLen) <= stream.nextInOrder {
