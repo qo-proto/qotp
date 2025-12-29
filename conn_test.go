@@ -138,7 +138,7 @@ func TestConnEncodeClosedStates(t *testing.T) {
 
 	// Connection closed - encode still works
 	c = createTestConn(true, false, true)
-	c.close()
+	c.closeAllStreams()
 
 	p = &payloadHeader{}
 	output, err = c.encode(p, []byte("test data"), c.msgType())
@@ -217,7 +217,7 @@ func TestConnEncodeDecodeRoundtripEmpty(t *testing.T) {
 	if msgType == InitCryptoRcv {
 		p, u, err := decodeProto(payload)
 		assert.NoError(t, err)
-		s, err := connBob.handlePayload(p, u, 0)
+		s, err := connBob.processIncomingPayload(p, u, 0)
 		assert.NoError(t, err)
 		assert.NotNil(t, s)
 	}
@@ -247,7 +247,7 @@ func TestConnEncodeDecodeRoundtripData(t *testing.T) {
 
 	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
-	s, err := connBob.handlePayload(p, u, 0)
+	s, err := connBob.processIncomingPayload(p, u, 0)
 	assert.NoError(t, err)
 	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -300,7 +300,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
-	s, err := c.handlePayload(p, u, 0)
+	s, err := c.processIncomingPayload(p, u, 0)
 	assert.NoError(t, err)
 	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -333,7 +333,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	p, u, err = decodeProto(payload)
 	assert.NoError(t, err)
-	s, err = c.handlePayload(p, u, 0)
+	s, err = c.processIncomingPayload(p, u, 0)
 	assert.NoError(t, err)
 	rb = s.conn.rcv.RemoveOldestInOrder(s.streamID)
 	assert.Equal(t, dataMsg, rb)

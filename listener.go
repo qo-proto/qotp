@@ -14,17 +14,27 @@ import (
 	"sync"
 )
 
+// =============================================================================
+// Listener - Manages UDP socket and connections
+// =============================================================================
+
 type Listener struct {
-	localConn       NetworkConn
-	prvKeyId        *ecdh.PrivateKey
-	connMap         *LinkedMap[uint64, *conn]
+	localConn    NetworkConn
+	prvKeyId     *ecdh.PrivateKey
+	connMap      *LinkedMap[uint64, *conn]
+	keyLogWriter io.Writer
+	mtu          int
+
+	// Round-robin state for Flush()
 	currentConnID   *uint64
 	currentStreamID *uint32
-	closed          bool
-	keyLogWriter    io.Writer
-	mtu             int
-	mu              sync.Mutex
+
+	mu sync.Mutex
 }
+
+// =============================================================================
+// Functional options for Listen()
+// =============================================================================
 
 type ListenOption struct {
 	prvKeyId     *ecdh.PrivateKey
@@ -51,6 +61,19 @@ func WithNetworkConn(c NetworkConn) ListenFunc {
 func WithPrvKeyId(k *ecdh.PrivateKey) ListenFunc {
 	return func(o *ListenOption) error { o.prvKeyId = k; return nil }
 }
+
+func WithListenAddr(addr string) ListenFunc {
+	return func(o *ListenOption) error {
+		a, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			return err
+		}
+		o.listenAddr = a
+		return nil
+	}
+}
+
+// Seed options - derive identity key from various inputs
 
 func WithSeed(seed [32]byte) ListenFunc {
 	return func(o *ListenOption) error {
@@ -82,16 +105,9 @@ func WithSeedString(s string) ListenFunc {
 	}
 }
 
-func WithListenAddr(addr string) ListenFunc {
-	return func(o *ListenOption) error {
-		a, err := net.ResolveUDPAddr("udp", addr)
-		if err != nil {
-			return err
-		}
-		o.listenAddr = a
-		return nil
-	}
-}
+// =============================================================================
+// Constructor
+// =============================================================================
 
 func Listen(options ...ListenFunc) (*Listener, error) {
 	o := &ListenOption{mtu: defaultMTU}
@@ -101,6 +117,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		}
 	}
 
+	// Generate random identity key if not provided
 	if o.prvKeyId == nil {
 		k, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
@@ -109,6 +126,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		o.prvKeyId = k
 	}
 
+	// Create UDP socket if not provided
 	if o.localConn == nil {
 		conn, err := net.ListenUDP("udp", o.listenAddr)
 		if err != nil {
@@ -131,13 +149,16 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	return l, nil
 }
 
+// =============================================================================
+// Public methods
+// =============================================================================
+
 func (l *Listener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.closed = true
 	for _, conn := range l.connMap.Iterator(nil) {
-		conn.close()
+		conn.closeAllStreams()
 	}
 	if err := l.localConn.TimeoutReadNow(); err != nil {
 		return err
@@ -156,6 +177,10 @@ func (l *Listener) HasActiveStreams() bool {
 	}
 	return false
 }
+
+// =============================================================================
+// Connection management (internal)
+// =============================================================================
 
 func (l *Listener) newConn(
 	connId uint64,
@@ -187,6 +212,7 @@ func (l *Listener) newConn(
 		rcvWndSize:         rcvBufferCapacity,
 	}
 
+	// Log keys for Wireshark debugging if enabled
 	if l.keyLogWriter != nil {
 		if ss, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv); err == nil {
 			if ssId, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv); err == nil {
@@ -203,6 +229,7 @@ func (l *Listener) cleanupConn(connId uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// Advance round-robin pointer if we're removing current connection
 	if l.currentConnID != nil && connId == *l.currentConnID {
 		tmp, _, _ := l.connMap.Next(connId)
 		l.currentConnID = &tmp

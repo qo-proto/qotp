@@ -11,43 +11,56 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
+// =============================================================================
+// Types and constants
+// =============================================================================
+
 type cryptoMsgType int8
 
 const (
-	InitSnd cryptoMsgType = iota
-	InitRcv
-	InitCryptoSnd
-	InitCryptoRcv
-	Data
+	InitSnd       cryptoMsgType = iota // Unencrypted handshake initiation
+	InitRcv                            // Encrypted handshake response (PFS)
+	InitCryptoSnd                      // Encrypted 0-RTT initiation (no PFS for first msg)
+	InitCryptoRcv                      // Encrypted 0-RTT response (PFS)
+	Data                               // Regular encrypted data
 )
 
 const (
 	CryptoVersion = 0
-	MacSize       = 16
-	SnSize        = 6
+	MacSize       = 16 // Poly1305 tag size
+	SnSize        = 6  // 48-bit sequence number
 
-	PubKeySize         = 32
-	HeaderSize         = 1
+	PubKeySize         = 32 // X25519 public key
+	HeaderSize         = 1  // Message type + version
 	ConnIdSize         = 8
-	MsgInitFillLenSize = 2
+	MsgInitFillLenSize = 2 // Padding length field for InitCryptoSnd
 
-	MinInitRcvSizeHdr       = HeaderSize + ConnIdSize + (2 * PubKeySize)
-	MinInitCryptoSndSizeHdr = HeaderSize + (2 * PubKeySize)
-	MinInitCryptoRcvSizeHdr = HeaderSize + ConnIdSize + PubKeySize
-	MinDataSizeHdr          = HeaderSize + ConnIdSize
-	FooterDataSize          = SnSize + MacSize
+	// Minimum header sizes (before encrypted payload)
+	MinInitRcvSizeHdr       = HeaderSize + ConnIdSize + (2 * PubKeySize) // 73 bytes
+	MinInitCryptoSndSizeHdr = HeaderSize + (2 * PubKeySize)              // 65 bytes
+	MinInitCryptoRcvSizeHdr = HeaderSize + ConnIdSize + PubKeySize       // 41 bytes
+	MinDataSizeHdr          = HeaderSize + ConnIdSize                    // 9 bytes
 
-	MinPacketSize = MinDataSizeHdr + FooterDataSize + MinProtoSize
+	// Footer: encrypted sequence number + MAC
+	FooterDataSize = SnSize + MacSize // 22 bytes
+
+	MinPacketSize = MinDataSizeHdr + FooterDataSize + MinProtoSize // 39 bytes
 )
 
+// Message represents a decrypted QOTP message.
 type Message struct {
 	SnConn            uint64
 	currentEpochCrypt uint64
 	PayloadRaw        []byte
 }
 
-// ======================== Encrypt ========================
+// =============================================================================
+// Encryption
+// =============================================================================
 
+// encryptInitSnd creates an unencrypted InitSnd packet.
+// Padded to MTU to prevent amplification attacks.
+// Returns connId derived from first 8 bytes of pubKeyEpSnd.
 func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, mtu int) (connId uint64, encData []byte, err error) {
 	if pubKeyIdSnd == nil || pubKeyEpSnd == nil {
 		return 0, nil, errors.New("handshake keys cannot be nil")
@@ -59,6 +72,9 @@ func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, mtu int) (connId u
 	return Uint64(encData[HeaderSize:]), encData, nil
 }
 
+// encryptInitCryptoSnd creates an encrypted 0-RTT initiation packet.
+// Encrypted with ECDH(prvKeyEpSnd, pubKeyIdRcv) - no perfect forward secrecy.
+// Padded to MTU to prevent amplification attacks.
 func encryptInitCryptoSnd(
 	pubKeyIdRcv, pubKeyIdSnd *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
@@ -75,6 +91,7 @@ func encryptInitCryptoSnd(
 	copy(header[HeaderSize:], prvKeyEpSnd.PublicKey().Bytes())
 	copy(header[HeaderSize+PubKeySize:], pubKeyIdSnd.Bytes())
 
+	// Pad to MTU: [fillLen (2 bytes)][filler (fillLen bytes)][packetData]
 	fillLen := mtu - (MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize + len(packetData))
 	if fillLen < 0 {
 		return 0, nil, errors.New("packet data too large for MTU")
@@ -91,6 +108,9 @@ func encryptInitCryptoSnd(
 	return Uint64(header[HeaderSize:]), encData, err
 }
 
+// encryptPacket encrypts InitRcv, InitCryptoRcv, or Data messages.
+// InitRcv/InitCryptoRcv: uses ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
+// Data: uses pre-established sharedSecret.
 func encryptPacket(
 	msgType cryptoMsgType,
 	connId uint64,
@@ -143,38 +163,50 @@ func encryptPacket(
 		header[0] = (uint8(Data) << 5) | CryptoVersion
 		PutUint64(header[HeaderSize:], connId)
 		secret = sharedSecret
-		// Data uses epochCrypto, init messages use 0
+		// Data messages use epochCrypto; init messages always use epoch 0
 		return chainedEncrypt(snCrypto, epochCrypto, isSender, secret, header, packetData)
 
 	default:
 		return nil, errors.New("unsupported message type")
 	}
 
+	// Init messages always use epoch 0 and isSender=false for nonce direction
 	return chainedEncrypt(snCrypto, 0, false, secret, header, packetData)
 }
 
+// chainedEncrypt implements double encryption:
+// 1. Encrypt payload with ChaCha20-Poly1305 using deterministic nonce
+// 2. Encrypt sequence number with XChaCha20-Poly1305 using random nonce (from step 1)
+//
+// Nonce structure (12 bytes): [epoch (6 bytes)][snCrypto (6 bytes)]
+// Bit 0 of epoch: 1=sender, 0=receiver (prevents nonce collision)
 func chainedEncrypt(snCrypt, epochConn uint64, isSender bool, sharedSecret, header, packetData []byte) ([]byte, error) {
+	// Build deterministic nonce
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
 	PutUint48(nonceDet, epochConn)
 	PutUint48(nonceDet[6:], snCrypt)
 
+	// Set direction bit to prevent nonce collision between peers
 	if isSender {
 		nonceDet[0] |= 0x80
 	} else {
 		nonceDet[0] &^= 0x80
 	}
 
+	// First layer: encrypt payload
 	aead, err := chacha20poly1305.New(sharedSecret)
 	if err != nil {
 		return nil, err
 	}
 	sealed := aead.Seal(nil, nonceDet, packetData, header)
 
+	// Second layer: encrypt sequence number using first 24 bytes of ciphertext as nonce
 	aeadSn, err := chacha20poly1305.NewX(sharedSecret)
 	if err != nil {
 		return nil, err
 	}
 
+	// Output: [header][encryptedSn (6 bytes)][sealed payload + MAC]
 	encData := make([]byte, len(header)+SnSize+len(sealed))
 	copy(encData, header)
 
@@ -185,8 +217,12 @@ func chainedEncrypt(snCrypt, epochConn uint64, isSender bool, sharedSecret, head
 	return encData, nil
 }
 
-// ======================== Decrypt ========================
+// =============================================================================
+// Decryption
+// =============================================================================
 
+// decryptInitSnd extracts public keys from an unencrypted InitSnd packet.
+// Validates packet size against MTU to prevent amplification attacks.
 func decryptInitSnd(encData []byte, mtu int) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, err error) {
 	if len(encData) < mtu {
 		return nil, nil, errors.New("size is below minimum init")
@@ -202,6 +238,8 @@ func decryptInitSnd(encData []byte, mtu int) (pubKeyIdSnd, pubKeyEpSnd *ecdh.Pub
 	return pubKeyIdSnd, pubKeyEpSnd, nil
 }
 
+// decryptInitRcv decrypts an InitRcv handshake response.
+// Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv).
 func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, m *Message, err error) {
 	if len(encData) < MinInitRcvSizeHdr+FooterDataSize {
@@ -231,6 +269,8 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
+// decryptInitCryptoSnd decrypts a 0-RTT initiation packet.
+// Uses receiver's identity key for decryption (no PFS for this message).
 func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int) (
 	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, m *Message, err error) {
 	if len(encData) < mtu {
@@ -257,12 +297,15 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int)
 		return nil, nil, nil, err
 	}
 
+	// Remove padding: [fillLen (2 bytes)][filler][actualData]
 	fillerLen := Uint16(packetData)
 	actualData := packetData[2+int(fillerLen):]
 
 	return pubKeyIdSnd, pubKeyEpSnd, &Message{PayloadRaw: actualData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
+// decryptInitCryptoRcv decrypts a 0-RTT response packet.
+// Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
 func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, m *Message, err error) {
 	if len(encData) < MinInitCryptoRcvSizeHdr+FooterDataSize {
@@ -288,6 +331,7 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	return sharedSecret, pubKeyEpRcv, &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
+// decryptData decrypts a regular Data packet using the established shared secret.
 func decryptData(encData []byte, isSender bool, epochCrypt uint64, sharedSecret []byte) (*Message, error) {
 	if len(encData) < MinDataSizeHdr+FooterDataSize {
 		return nil, errors.New("size is below minimum")
@@ -302,15 +346,19 @@ func decryptData(encData []byte, isSender bool, epochCrypt uint64, sharedSecret 
 	return &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: currentEpoch}, nil
 }
 
+// chainedDecrypt reverses the double encryption from chainedEncrypt.
+// Tries current epoch ±1 to handle packets arriving during epoch rollover.
 func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encData []byte) (
 	snConn, currentEpochCrypt uint64, packetData []byte, err error) {
 
+	// Extract encrypted sequence number and ciphertext
 	encSn := encData[:SnSize]
 	encData = encData[SnSize:]
 	nonceRand := encData[:24]
 
+	// Decrypt sequence number (no MAC verification - MAC is on payload)
 	snConnBytes := make([]byte, SnSize)
-	snConnBytes, err = openNoVerify(sharedSecret, nonceRand, encSn, snConnBytes)
+	snConnBytes, err = decryptSnWithoutMAC(sharedSecret, nonceRand, encSn, snConnBytes)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -324,7 +372,7 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
 	PutUint48(nonceDet[6:], snConn)
 
-	// Try current epoch, then adjacent epochs
+	// Try current epoch, then ±1 to handle reordering near epoch boundaries
 	epochs := []uint64{epochCrypt}
 	if epochCrypt > 0 {
 		epochs = append(epochs, epochCrypt-1)
@@ -333,6 +381,7 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 
 	for _, epoch := range epochs {
 		PutUint48(nonceDet, epoch)
+		// Receiver uses opposite direction bit from sender
 		if isSender {
 			nonceDet[0] &^= 0x80
 		} else {
@@ -347,12 +396,18 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 	return 0, 0, nil, err
 }
 
-func openNoVerify(sharedSecret, nonce, encoded, snSer []byte) ([]byte, error) {
+// =============================================================================
+// Helpers
+// =============================================================================
+
+// decryptSnWithoutMAC decrypts the sequence number without MAC verification.
+// The MAC is verified on the payload in chainedDecrypt.
+func decryptSnWithoutMAC(sharedSecret, nonce, encoded, snSer []byte) ([]byte, error) {
 	s, err := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
 	if err != nil {
 		return nil, err
 	}
-	s.SetCounter(1)
+	s.SetCounter(1) // Skip first block (used for Poly1305 key in AEAD)
 	s.XORKeyStream(snSer, encoded)
 	return snSer, nil
 }
@@ -369,14 +424,14 @@ func generateKey() (*ecdh.PrivateKey, error) {
 	return ecdh.X25519().GenerateKey(rand.Reader)
 }
 
+// calcCryptoOverheadWithData returns the crypto layer overhead for a given message type.
+// Returns -1 for InitSnd (no payload allowed).
 func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *Ack, offset uint64) int {
 	hasAck := ack != nil
 	needsExtension := (hasAck && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF
 	overhead := calcProtoOverhead(hasAck, needsExtension, false)
 
 	switch msgType {
-	case InitSnd:
-		return -1
 	case InitRcv:
 		return overhead + MinInitRcvSizeHdr + FooterDataSize
 	case InitCryptoSnd:
@@ -385,6 +440,7 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *Ack, offset uint64) 
 		return overhead + MinInitCryptoRcvSizeHdr + FooterDataSize
 	case Data:
 		return overhead + MinDataSizeHdr + FooterDataSize
+	default: // InitSnd cannot carry payload
+		return -1
 	}
-	return overhead
 }

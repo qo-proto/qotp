@@ -5,38 +5,49 @@ import (
 	"sync"
 )
 
+// =============================================================================
+// Receive buffer - Handles incoming data with reordering and deduplication
+//
+// Per-stream RcvBuffer stores out-of-order segments in a sorted map.
+// RemoveOldestInOrder returns contiguous data starting from next expected offset.
+// Overlapping segments are validated for data integrity (must match).
+// =============================================================================
+
+const rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
+
 type RcvInsertStatus int
 
 const (
 	RcvInsertOk RcvInsertStatus = iota
 	RcvInsertDuplicate
 	RcvInsertBufferFull
-
-	rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
 )
 
-type RcvValue struct {
-	data            []byte
-	receiveTimeNano uint64
-}
+// =============================================================================
+// Per-stream receive buffer
+// =============================================================================
 
 type RcvBuffer struct {
-	segments       *LinkedMap[uint64, RcvValue]
-	nextInOrder    uint64  // Next expected offset
-	closeAtOffset  *uint64
+	segments      *LinkedMap[uint64, []byte] // offset -> segment data
+	nextInOrder   uint64                         // Next expected offset for in-order delivery
+	closeAtOffset *uint64                        // Stream closes at this offset (FIN received)
 }
+
+func newRcvBuffer() *RcvBuffer {
+	return &RcvBuffer{segments: NewLinkedMap[uint64, []byte]()}
+}
+
+// =============================================================================
+// Connection-level receive buffer (manages all streams)
+// =============================================================================
 
 type ReceiveBuffer struct {
 	streams         map[uint32]*RcvBuffer
-	finishedStreams map[uint32]bool
+	finishedStreams map[uint32]bool // Streams that have been fully closed and cleaned up
 	capacity        int
 	size            int
 	ackList         []*Ack
 	mu              sync.Mutex
-}
-
-func NewRcvBuffer() *RcvBuffer {
-	return &RcvBuffer{segments: NewLinkedMap[uint64, RcvValue]()}
 }
 
 func NewReceiveBuffer(capacity int) *ReceiveBuffer {
@@ -51,23 +62,18 @@ func (rb *ReceiveBuffer) getOrCreateStream(streamID uint32) *RcvBuffer {
 	if s := rb.streams[streamID]; s != nil {
 		return s
 	}
-	s := NewRcvBuffer()
+	s := newRcvBuffer()
 	rb.streams[streamID] = s
 	return s
 }
 
-func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	s := rb.streams[streamID]
-	return s != nil && s.closeAtOffset != nil && s.nextInOrder >= *s.closeAtOffset
-}
-
-func (rb *ReceiveBuffer) QueueAck(streamID uint32, offset uint64, length uint16) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: length})
-}
+// =============================================================================
+// Insert - Add received segment to buffer
+//
+// Handles: duplicates, out-of-order, overlapping segments, capacity limits.
+// Always ACKs received data (sender may be retransmitting due to lost ACK).
+// Overlapping data must match exactly or panics (data integrity violation).
+// =============================================================================
 
 func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) RcvInsertStatus {
 	dataLen := len(userData)
@@ -77,7 +83,7 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 
 	stream := rb.getOrCreateStream(streamID)
 
-	// Data after close - ACK but drop
+	// Data after close offset - ACK but drop
 	if stream.closeAtOffset != nil && offset >= *stream.closeAtOffset {
 		rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 		return RcvInsertDuplicate
@@ -90,42 +96,50 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 	// Always ACK (may be retransmit due to lost ACK)
 	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: uint16(dataLen)})
 
-	// Already delivered
+	// Already delivered to application
 	if offset+uint64(dataLen) <= stream.nextInOrder {
 		return RcvInsertDuplicate
 	}
 
 	// Exact offset match - keep larger segment
 	if existing, exists := stream.segments.Get(offset); exists {
-		if dataLen <= len(existing.data) {
+		if dataLen <= len(existing) {
 			return RcvInsertDuplicate
 		}
 		stream.segments.Remove(offset)
-		rb.size -= len(existing.data)
-		stream.segments.PutOrdered(offset, RcvValue{data: userData, receiveTimeNano: nowNano})
+		rb.size -= len(existing)
+		stream.segments.PutOrdered(offset, userData)
 		rb.size += dataLen
 		return RcvInsertOk
 	}
+
+	// Insert first so Prev/Next are O(1)
+	stream.segments.PutOrdered(offset, userData)
+	rb.size += dataLen
 
 	finalOffset, finalData := offset, userData
 
 	// Handle previous segment overlap
 	if prevOff, prev, exists := stream.segments.Prev(offset); exists {
-		prevEnd := prevOff + uint64(len(prev.data))
+		prevEnd := prevOff + uint64(len(prev))
 		if prevEnd > offset {
 			overlapLen := prevEnd - offset
 			if overlapLen >= uint64(dataLen) {
+				// Completely covered by previous - remove ourselves
+				stream.segments.Remove(offset)
+				rb.size -= dataLen
 				return RcvInsertDuplicate
 			}
-			assertOverlap(prev.data[offset-prevOff:], userData[:overlapLen])
+			// Trim front: remove, adjust, re-insert
+			assertOverlap(prev[offset-prevOff:], userData[:overlapLen])
+			stream.segments.Remove(offset)
+			rb.size -= dataLen
 			finalOffset = prevEnd
 			finalData = userData[overlapLen:]
+			stream.segments.PutOrdered(finalOffset, finalData)
+			rb.size += len(finalData)
 		}
 	}
-
-	// Insert segment
-	stream.segments.PutOrdered(finalOffset, RcvValue{data: finalData, receiveTimeNano: nowNano})
-	rb.size += len(finalData)
 
 	// Handle next segment overlap
 	if nextOff, next, exists := stream.segments.Next(finalOffset); exists {
@@ -134,21 +148,21 @@ func (rb *ReceiveBuffer) Insert(streamID uint32, offset uint64, nowNano uint64, 
 			stream.segments.Remove(finalOffset)
 			rb.size -= len(finalData)
 
-			nextEnd := nextOff + uint64(len(next.data))
+			nextEnd := nextOff + uint64(len(next))
 			overlapStart := nextOff - finalOffset
 
 			if ourEnd >= nextEnd {
-				// We completely cover next segment
+				// We completely cover next - remove it
 				stream.segments.Remove(nextOff)
-				rb.size -= len(next.data)
-				assertOverlap(next.data, finalData[overlapStart:overlapStart+uint64(len(next.data))])
+				rb.size -= len(next)
+				assertOverlap(next, finalData[overlapStart:overlapStart+uint64(len(next))])
 			} else {
 				// Partial overlap - shorten our data
-				assertOverlap(next.data[:ourEnd-nextOff], finalData[overlapStart:])
+				assertOverlap(next[:ourEnd-nextOff], finalData[overlapStart:])
 				finalData = finalData[:overlapStart]
 			}
 
-			stream.segments.PutOrdered(finalOffset, RcvValue{data: finalData, receiveTimeNano: nowNano})
+			stream.segments.PutOrdered(finalOffset, finalData)
 			rb.size += len(finalData)
 		}
 	}
@@ -162,25 +176,12 @@ func assertOverlap(existing, incoming []byte) {
 	}
 }
 
-func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	s := rb.getOrCreateStream(streamID)
-	if s.closeAtOffset == nil {
-		s.closeAtOffset = &closeOffset
-	}
-}
-
-func (rb *ReceiveBuffer) GetOffsetClosedAt(streamID uint32) *uint64 {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if s := rb.streams[streamID]; s != nil {
-		return s.closeAtOffset
-	}
-	return nil
-}
+// =============================================================================
+// Read - Deliver in-order data to application
+// =============================================================================
 
 // RemoveOldestInOrder returns all contiguous in-order data for the stream.
+// Returns nil if no in-order data available.
 func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) []byte {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -197,28 +198,40 @@ func (rb *ReceiveBuffer) RemoveOldestInOrder(streamID uint32) []byte {
 			break
 		}
 		stream.segments.Remove(off)
-		rb.size -= len(val.data)
-		result = append(result, val.data...)
-		stream.nextInOrder = off + uint64(len(val.data))
+		rb.size -= len(val)
+		result = append(result, val...)
+		stream.nextInOrder = off + uint64(len(val))
 	}
 	return result
 }
 
-func (rb *ReceiveBuffer) Size() int {
+// =============================================================================
+// Stream lifecycle
+// =============================================================================
+
+func (rb *ReceiveBuffer) Close(streamID uint32, closeOffset uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	return rb.size
+	s := rb.getOrCreateStream(streamID)
+	if s.closeAtOffset == nil {
+		s.closeAtOffset = &closeOffset
+	}
 }
 
-func (rb *ReceiveBuffer) GetSndAck() *Ack {
+func (rb *ReceiveBuffer) IsReadyToClose(streamID uint32) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	if len(rb.ackList) == 0 {
-		return nil
+	s := rb.streams[streamID]
+	return s != nil && s.closeAtOffset != nil && s.nextInOrder >= *s.closeAtOffset
+}
+
+func (rb *ReceiveBuffer) GetOffsetClosedAt(streamID uint32) *uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if s := rb.streams[streamID]; s != nil {
+		return s.closeAtOffset
 	}
-	ack := rb.ackList[0]
-	rb.ackList = rb.ackList[1:]
-	return ack
+	return nil
 }
 
 func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
@@ -231,8 +244,28 @@ func (rb *ReceiveBuffer) RemoveStream(streamID uint32) {
 func (rb *ReceiveBuffer) IsFinished(streamID uint32) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	_, ok := rb.finishedStreams[streamID]
-	return ok
+	return rb.finishedStreams[streamID]
+}
+
+// =============================================================================
+// ACK management
+// =============================================================================
+
+func (rb *ReceiveBuffer) QueueAck(streamID uint32, offset uint64, length uint16) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.ackList = append(rb.ackList, &Ack{streamID: streamID, offset: offset, len: length})
+}
+
+func (rb *ReceiveBuffer) GetSndAck() *Ack {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if len(rb.ackList) == 0 {
+		return nil
+	}
+	ack := rb.ackList[0]
+	rb.ackList = rb.ackList[1:]
+	return ack
 }
 
 func (rb *ReceiveBuffer) HasPendingAcks() bool {
@@ -250,4 +283,14 @@ func (rb *ReceiveBuffer) HasPendingAckForStream(streamID uint32) bool {
 		}
 	}
 	return false
+}
+
+// =============================================================================
+// Misc
+// =============================================================================
+
+func (rb *ReceiveBuffer) Size() int {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.size
 }

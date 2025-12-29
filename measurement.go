@@ -6,72 +6,87 @@ import (
 	"math"
 )
 
+// =============================================================================
+// Constants
+// =============================================================================
+
 const (
 	defaultMTU     = 1400
 	minCwndPackets = 10
-	
-	secondNano        = 1_000_000_000
-	msNano            = 1_000_000
+
+	secondNano = 1_000_000_000
+	msNano     = 1_000_000
 )
 
+// =============================================================================
+// Tunable parameters (var to allow test overrides)
+// =============================================================================
+
 var (
+	// RTO bounds
 	defaultRTO = uint64(200 * msNano)
 	minRTO     = uint64(100 * msNano)
 	maxRTO     = uint64(2000 * msNano)
 
-	rttExpiry       = uint64(10 * secondNano)
-	probeMultiplier = uint64(8)
+	// Retransmission backoff
+	maxRetry      = uint(5)
+	rtoBackoffPct = uint64(200) // 2x per retry
 
-	startupGain = uint64(277)
-	normalGain  = uint64(100)
-	drainGain   = uint64(75)
-	probeGain   = uint64(125)
+	// BBR timing
+	rttExpiry       = uint64(10 * secondNano) // Min RTT sample expiry
+	probeMultiplier = uint64(8)               // Probe every 8x RTT_min
 
-	bwDecThreshold = uint64(3)
+	// BBR pacing gains (percentage, 100 = 1.0x)
+	startupGain = uint64(277) // 2.77x aggressive growth
+	normalGain  = uint64(100) // 1.0x steady state
+	drainGain   = uint64(75)  // 0.75x reduce queue
+	probeGain   = uint64(125) // 1.25x probe bandwidth
 
-	dupAckBwReduction = uint64(98)
+	// BBR state transitions
+	bwDecThreshold = uint64(3) // Exit startup after 3 non-increasing samples
+
+	// Congestion response
+	dupAckBwReduction = uint64(98) // 2% reduction on dup ACK
 	dupAckGain        = uint64(90)
+	lossBwReduction   = uint64(95) // 5% reduction on loss
 
-	lossBwReduction = uint64(95)
+	// RTT inflation thresholds (percentage of min RTT)
+	rttInflationHigh     = uint64(150) // > 1.5x triggers drain
+	rttInflationModerate = uint64(125) // > 1.25x triggers mild backoff
 
+	// Pacing fallbacks
 	fallbackInterval = uint64(10 * msNano)
 	rttDivisor       = uint64(10)
 
-	rttInflationHigh     = uint64(150)
-	rttInflationModerate = uint64(125)
-
+	// Timeouts
 	MinDeadLine  = uint64(100 * msNano)
-	ReadDeadLine = uint64(30 * secondNano) // 30 seconds
-
-	//backoff
-	maxRetry      = uint(5)
-	rtoBackoffPct = uint64(200)
+	ReadDeadLine = uint64(30 * secondNano)
 )
 
-// Combined measurement state - both RTT and BBR in one struct
+// =============================================================================
+// Measurements - RTT estimation and BBR congestion control
+// =============================================================================
+
 type Measurements struct {
-	// RTT fields
+	// RTT estimation (RFC 6298)
 	srtt   uint64 // Smoothed RTT
 	rttvar uint64 // RTT variation
 
-	// BBR fields
-	isStartup         bool   // true = startup, false = normal
-	rttMinNano        uint64 // Keep lowest RTT samples
-	rttMinTimeNano    uint64 // When we observed the lowest RTT sample
-	bwMax             uint64 // Bytes per second
-	bwDec             uint64
+	// BBR state
+	isStartup         bool
+	rttMinNano        uint64 // Minimum RTT sample (expires after rttExpiry)
+	rttMinTimeNano    uint64 // When min RTT was observed
+	bwMax             uint64 // Maximum bandwidth estimate (bytes/sec)
+	bwDec             uint64 // Consecutive samples without bandwidth increase
 	lastProbeTimeNano uint64 // When we last probed for more bandwidth
-	pacingGainPct     uint64 // Current pacing gain (100 = 1.0x, 277 = 2.77x)
-	lastReadTimeNano  uint64 // Time of last activity
+	pacingGainPct     uint64 // Current pacing multiplier
+	cwnd              uint64 // Congestion window (bytes)
 
-	//Perf numbers
+	// Stats
 	packetLossNr int
 	packetDupNr  int
-
-	cwnd uint64
 }
 
-// NewMeasurements creates a new instance with default values
 func NewMeasurements() Measurements {
 	return Measurements{
 		isStartup:      true,
@@ -82,95 +97,115 @@ func NewMeasurements() Measurements {
 	}
 }
 
-func (m *Measurements) updateMeasurements(rttMeasurementNano uint64, packetSize uint16, nowNano uint64) {
-	// Validation
-	if rttMeasurementNano == 0 {
-		slog.Warn("cannot update measurements, rtt is 0")
+// =============================================================================
+// RTT and bandwidth updates
+// =============================================================================
+
+func (m *Measurements) updateMeasurements(rttNano uint64, packetSize uint16, nowNano uint64) {
+	if rttNano == 0 || nowNano == 0 {
+		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
 	}
-	if rttMeasurementNano > ReadDeadLine {
-		slog.Warn("suspiciously high RTT measurement", "rtt_seconds", rttMeasurementNano/secondNano)
-		return
-	}
-	if nowNano == 0 {
-		slog.Warn("invalid timestamp")
+	if rttNano > ReadDeadLine {
+		slog.Warn("suspiciously high RTT", "rtt_seconds", rttNano/secondNano)
 		return
 	}
 
-	// Update RTT (smoothed RTT and variation)
+	m.updateRTT(rttNano)
+	m.updateMinRTT(rttNano, nowNano)
+	m.updateBandwidth(packetSize)
+	m.updateBBRState(packetSize, nowNano)
+}
+
+// updateRTT implements RFC 6298 smoothed RTT calculation
+func (m *Measurements) updateRTT(rttNano uint64) {
 	if m.srtt == 0 {
-		// First measurement
-		m.srtt = rttMeasurementNano
-		m.rttvar = rttMeasurementNano / 2
-	} else {
-		// Calculate absolute difference for RTT variation
-		var delta uint64
-		if rttMeasurementNano > m.srtt {
-			delta = rttMeasurementNano - m.srtt
-		} else {
-			delta = m.srtt - rttMeasurementNano
-		}
-
-		// Integer-based updates using exact fractions
-		m.rttvar = (m.rttvar*3)/4 + (delta*1)/4
-		m.srtt = (m.srtt*7)/8 + (rttMeasurementNano*1)/8
+		m.srtt = rttNano
+		m.rttvar = rttNano / 2
+		return
 	}
 
-	// Update BBR minimum RTT tracking
-	if (nowNano > m.rttMinTimeNano && nowNano-m.rttMinTimeNano >= rttExpiry) ||
-		rttMeasurementNano < m.rttMinNano {
-		m.rttMinNano = rttMeasurementNano
+	// delta = |SRTT - R|
+	var delta uint64
+	if rttNano > m.srtt {
+		delta = rttNano - m.srtt
+	} else {
+		delta = m.srtt - rttNano
+	}
+
+	// RTTVAR = 3/4 * RTTVAR + 1/4 * delta
+	// SRTT = 7/8 * SRTT + 1/8 * R
+	m.rttvar = (m.rttvar*3 + delta) / 4
+	m.srtt = (m.srtt*7 + rttNano) / 8
+}
+
+func (m *Measurements) updateMinRTT(rttNano, nowNano uint64) {
+	expired := nowNano > m.rttMinTimeNano && nowNano-m.rttMinTimeNano >= rttExpiry
+	if expired || rttNano < m.rttMinNano {
+		m.rttMinNano = rttNano
 		m.rttMinTimeNano = nowNano
 	}
+}
 
-	// Update BBR bandwidth estimation
-	bwCurrent := uint64(0)
-	if m.rttMinNano > 0 {
-		bwCurrent = (uint64(packetSize) * 1_000_000_000) / m.rttMinNano
+func (m *Measurements) updateBandwidth(packetSize uint16) {
+	if m.rttMinNano == 0 {
+		return
 	}
 
+	bwCurrent := (uint64(packetSize) * secondNano) / m.rttMinNano
 	if bwCurrent > m.bwMax {
 		m.bwMax = bwCurrent
 		m.bwDec = 0
 	} else {
 		m.bwDec++
 	}
+}
 
-	// Initialize probe time on first measurement
+func (m *Measurements) updateBBRState(packetSize uint16, nowNano uint64) {
 	if m.lastProbeTimeNano == 0 {
 		m.lastProbeTimeNano = nowNano
 	}
 
-	// BBR state-specific behavior
 	if m.isStartup {
-		if m.bwDec >= bwDecThreshold {
-			m.isStartup = false
-			m.pacingGainPct = normalGain
-		}
-
-		m.cwnd += uint64(packetSize) * m.pacingGainPct / 100
+		m.updateStartup(packetSize)
 	} else {
-		// Normal state logic
-		rttRatioPct := (m.srtt * 100) / m.rttMinNano
-
-		if rttRatioPct > rttInflationHigh {
-			m.pacingGainPct = drainGain
-		} else if rttRatioPct > rttInflationModerate {
-			m.pacingGainPct = dupAckGain
-		} else if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
-			m.pacingGainPct = probeGain
-			m.lastProbeTimeNano = nowNano
-		} else {
-			m.pacingGainPct = normalGain
-		}
-
-		bdp := (m.bwMax * m.rttMinNano) / 1_000_000_000
-		m.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
+		m.updateNormal(nowNano)
 	}
 }
 
-func (c *Measurements) rtoNano() uint64 {
-	rto := c.srtt + 4*c.rttvar
+func (m *Measurements) updateStartup(packetSize uint16) {
+	if m.bwDec >= bwDecThreshold {
+		m.isStartup = false
+		m.pacingGainPct = normalGain
+	}
+	m.cwnd += uint64(packetSize) * m.pacingGainPct / 100
+}
+
+func (m *Measurements) updateNormal(nowNano uint64) {
+	rttRatioPct := (m.srtt * 100) / m.rttMinNano
+
+	switch {
+	case rttRatioPct > rttInflationHigh:
+		m.pacingGainPct = drainGain
+	case rttRatioPct > rttInflationModerate:
+		m.pacingGainPct = dupAckGain
+	case nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier:
+		m.pacingGainPct = probeGain
+		m.lastProbeTimeNano = nowNano
+	default:
+		m.pacingGainPct = normalGain
+	}
+
+	bdp := (m.bwMax * m.rttMinNano) / secondNano
+	m.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
+}
+
+// =============================================================================
+// RTO calculation
+// =============================================================================
+
+func (m *Measurements) rtoNano() uint64 {
+	rto := m.srtt + 4*m.rttvar
 
 	switch {
 	case rto == 0:
@@ -184,22 +219,40 @@ func (c *Measurements) rtoNano() uint64 {
 	}
 }
 
+func backoff(rtoNano uint64, attempt uint) (uint64, error) {
+	if attempt >= maxRetry {
+		return 0, fmt.Errorf("max retry attempts: %v exceeded limit %v", attempt, maxRetry)
+	}
+	for i := uint(0); i < attempt; i++ {
+		rtoNano = (rtoNano * rtoBackoffPct) / 100
+	}
+	return rtoNano, nil
+}
+
+// =============================================================================
+// Congestion events
+// =============================================================================
+
 func (m *Measurements) reduceCwnd(reduction, gain uint64) {
-    m.bwMax = m.bwMax * reduction / 100
-    m.pacingGainPct = gain
-    m.isStartup = false
-    m.cwnd = max(m.cwnd * reduction / 100, minCwndPackets*defaultMTU)
+	m.bwMax = m.bwMax * reduction / 100
+	m.pacingGainPct = gain
+	m.isStartup = false
+	m.cwnd = max(m.cwnd*reduction/100, minCwndPackets*defaultMTU)
 }
 
 func (m *Measurements) onDuplicateAck() {
-    m.reduceCwnd(dupAckBwReduction, dupAckGain)
-    m.packetDupNr++
+	m.reduceCwnd(dupAckBwReduction, dupAckGain)
+	m.packetDupNr++
 }
 
 func (m *Measurements) onPacketLoss() {
-    m.reduceCwnd(lossBwReduction, normalGain)
-    m.packetLossNr++
+	m.reduceCwnd(lossBwReduction, normalGain)
+	m.packetLossNr++
 }
+
+// =============================================================================
+// Pacing
+// =============================================================================
 
 func (m *Measurements) calcPacing(packetSize uint64) uint64 {
 	if m.bwMax == 0 {
@@ -209,20 +262,10 @@ func (m *Measurements) calcPacing(packetSize uint64) uint64 {
 		return fallbackInterval
 	}
 
-	adjustedBandwidth := (m.bwMax * m.pacingGainPct) / 100
-	if adjustedBandwidth == 0 {
+	adjustedBw := (m.bwMax * m.pacingGainPct) / 100
+	if adjustedBw == 0 {
 		return fallbackInterval
 	}
 
-	return (packetSize * 1_000_000_000) / adjustedBandwidth
-}
-
-func backoff(rtoNano uint64, rtoNr uint) (uint64, error) {
-	if rtoNr >= maxRetry {
-		return 0, fmt.Errorf("max retry attempts: %v exceeded limit %v", rtoNr, maxRetry)
-	}
-	for i := uint(0); i < rtoNr; i++ {
-		rtoNano = (rtoNano * rtoBackoffPct) / 100
-	}
-	return rtoNano, nil
+	return (packetSize * secondNano) / adjustedBw
 }

@@ -34,7 +34,7 @@ func TestStreamBasicSendReceive(t *testing.T) {
 
 	// Send data from A to B
 	a := []byte("hallo")
-	streamA := connA.stream(0)
+	streamA := connA.getOrCreateStream(0)
 	_, err := streamA.Write(a)
 	assert.Nil(t, err)
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
@@ -64,14 +64,14 @@ func TestStreamMultipleStreamsWithTimeout(t *testing.T) {
 
 	// Send data from A to B
 	a1 := []byte("hallo1")
-	streamA1 := connA.stream(0)
+	streamA1 := connA.getOrCreateStream(0)
 	_, err := streamA1.Write(a1)
 	assert.Nil(t, err)
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
 	assert.Equal(t, uint64(0), minPacing) // Data was sent
 
 	a2 := []byte("hallo22")
-	streamA2 := connA.stream(1)
+	streamA2 := connA.getOrCreateStream(1)
 	_, err = streamA2.Write(a2)
 	assert.Nil(t, err)
 	//this should not work, as we can only send 1 packet at the start, that we did with "hallo1"
@@ -128,7 +128,7 @@ func TestStreamRetransmissionBackoff(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
 	a1 := []byte("hallo1")
-	streamA1 := connA.stream(0)
+	streamA1 := connA.getOrCreateStream(0)
 	_, err := streamA1.Write(a1)
 	assert.Nil(t, err)
 	minPacing := connA.listener.Flush(0)
@@ -174,7 +174,7 @@ func TestStreamMaxRetransmissions(t *testing.T) {
 	connA, _, connPair := setupStreamTest(t)
 
 	a1 := []byte("hallo1")
-	streamA1 := connA.stream(0)
+	streamA1 := connA.getOrCreateStream(0)
 	_, err := streamA1.Write(a1)
 	assert.Nil(t, err)
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
@@ -219,11 +219,11 @@ func TestStreamMaxRetransmissions(t *testing.T) {
 func TestStreamCloseInitiatedBySender(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
-	streamA := connA.stream(0)
+	streamA := connA.getOrCreateStream(0)
 	a1 := []byte("hallo1")
 	_, err := streamA.Write(a1)
 	assert.Nil(t, err)
-	connA.close()
+	connA.closeAllStreams()
 	assert.True(t, streamA.IsCloseRequested())
 
 	minPacing := connA.listener.Flush(connPair.Conn1.partner.localTime)
@@ -281,7 +281,7 @@ func TestStreamCloseInitiatedBySender(t *testing.T) {
 func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
-	streamA := connA.stream(0)
+	streamA := connA.getOrCreateStream(0)
 	a1 := []byte("hallo1")
 	_, err := streamA.Write(a1)
 	assert.Nil(t, err)
@@ -303,7 +303,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Bob initiates close (closes his send side)
-	streamB.conn.close()
+	streamB.conn.closeAllStreams()
 	assert.True(t, streamB.IsCloseRequested())
 
 	// Verify data received correctly
@@ -337,7 +337,7 @@ func TestStreamCloseInitiatedByReceiver(t *testing.T) {
 
 func TestStreamFlowControl(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
-	streamA := connA.stream(0)
+	streamA := connA.getOrCreateStream(0)
 
 	// 1. Fill sender's buffer (16MB)
 	data := make([]byte, rcvBufferCapacity+1)
@@ -399,7 +399,7 @@ func TestStreamFlowControl(t *testing.T) {
 func TestStreamDuplicatePacketHandling(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
-	streamA := connA.stream(0)
+	streamA := connA.getOrCreateStream(0)
 	data := []byte("test data")
 	_, err := streamA.Write(data)
 	assert.NoError(t, err)

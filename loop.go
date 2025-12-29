@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+// =============================================================================
+// Event loop - Read/Write coordination
+//
+// Listen() receives and processes one packet
+// Flush() sends pending data using round-robin across connections/streams
+// Loop() combines both in a blocking event loop
+// =============================================================================
+
+// Listen reads one packet, decrypts it, and processes the payload.
+// Returns the stream that received data, or nil on timeout/no-data.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	data := make([]byte, l.mtu)
 	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(data, timeoutNano, nowNano)
@@ -27,7 +37,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 	encData := data[:n]
 
-	// Parse header
+	// Parse and validate header
 	if len(encData) < MinPacketSize {
 		return nil, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
@@ -47,9 +57,10 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		conn.lastReadTimeNano = nowNano
 	}
 
-	// Decode payload
+	// Decode transport layer payload
 	var p *payloadHeader
 	if len(payload) == 0 && msgType == InitSnd {
+		// InitSnd has no payload - create empty header
 		p = &payloadHeader{}
 		payload = []byte{}
 	} else {
@@ -60,12 +71,14 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		}
 	}
 
-	s, err := conn.handlePayload(p, payload, nowNano)
+	s, err := conn.processIncomingPayload(p, payload, nowNano)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update handshake state
+	// Handshake completes when:
+	// - Sender receives InitRcv/InitCryptoRcv
+	// - Receiver receives first Data message
 	if !conn.isHandshakeDoneOnRcv {
 		switch {
 		case conn.isSenderOnInit && (msgType == InitRcv || msgType == InitCryptoRcv):
@@ -78,46 +91,61 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	return s, nil
 }
 
-// Flush sends pending data for all connections using round-robin
-func (l *Listener) Flush(nowNano uint64) (minPacing uint64) {
-	minPacing = MinDeadLine
+// Flush sends pending data for all connections using round-robin.
+// Returns minimum pacing interval until next send opportunity.
+func (l *Listener) Flush(nowNano uint64) uint64 {
+	minPacing := MinDeadLine
 	if l.connMap.Size() == 0 {
 		return minPacing
 	}
 
-	closeConnId := []uint64{}
-	closeStream := map[*conn][]uint32{}
-	isDataSent := false
+	var closeConnIds []uint64
+	closeStreams := map[*conn][]uint32{}
+
+	//needs to be defer, otherwise we lock ourselfs out.
+	defer func() {
+		for _, connId := range closeConnIds {
+			l.cleanupConn(connId)
+		}
+		for conn, streamIDs := range closeStreams {
+			for _, streamID := range streamIDs {
+				conn.cleanupStream(streamID)
+			}
+		}
+	}()
 
 	startStreamID := l.currentStreamID
-connLoop:
+
 	for _, conn := range l.connMap.Iterator(l.currentConnID) {
 		for _, stream := range conn.streams.Iterator(startStreamID) {
-			dataSent, pacingNano, err := conn.sendNext(stream, nowNano)
+			dataSent, pacingNano, err := conn.flushStream(stream, nowNano)
 			if err != nil {
-				slog.Info("closing connection, err", slog.Any("err", err))
-				closeConnId = append(closeConnId, conn.connId)
-				break connLoop
+				slog.Info("closing connection", slog.Any("err", err))
+				closeConnIds = append(closeConnIds, conn.connId)
+				l.currentConnID = nil
+				l.currentStreamID = nil
+				return minPacing
 			}
 
 			if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
-				closeStream[conn] = append(closeStream[conn], stream.streamID)
+				closeStreams[conn] = append(closeStreams[conn], stream.streamID)
 				continue
 			}
 
 			if dataSent > 0 {
-				minPacing = 0
 				l.currentConnID = &conn.connId
 				l.currentStreamID = &stream.streamID
-				isDataSent = true
-				break connLoop
+				return 0
 			}
 
 			if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
-				slog.Info("close connection, timeout", slog.Uint64("now", nowNano),
+				slog.Info("close connection, timeout",
+					slog.Uint64("now", nowNano),
 					slog.Uint64("last", conn.lastReadTimeNano))
-				closeConnId = append(closeConnId, conn.connId)
-				break connLoop
+				closeConnIds = append(closeConnIds, conn.connId)
+				l.currentConnID = nil
+				l.currentStreamID = nil
+				return minPacing
 			}
 
 			if pacingNano < minPacing {
@@ -127,25 +155,16 @@ connLoop:
 		startStreamID = nil
 	}
 
-	for _, connId := range closeConnId {
-		l.cleanupConn(connId)
-	}
-
-	for conn, streamIDs := range closeStream {
-		for _, streamID := range streamIDs {
-			conn.cleanupStream(streamID, nowNano)
-		}
-	}
-
-	if !isDataSent {
-		l.currentConnID = nil
-		l.currentStreamID = nil
-	}
+	l.currentConnID = nil
+	l.currentStreamID = nil
 	return minPacing
 }
 
+// Loop runs the event loop until context is cancelled or error occurs.
+// Callback is invoked after each Listen(), even if stream is nil (allows periodic work).
 func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, s *Stream) error) error {
 	waitNextNano := MinDeadLine
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -157,14 +176,11 @@ func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, 
 		if err != nil {
 			return err
 		}
-		// callback in any case, s may be null, but this gives the user
-		// the control to cancel the Loop every MinDeadLine
-		err = callback(ctx, s)
-		if err != nil {
+
+		if err := callback(ctx, s); err != nil {
 			return err
 		}
+
 		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
-		//if waitNextNano is zero, we still have data to flush, do not exit yet
-		//TODO
 	}
 }

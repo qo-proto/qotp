@@ -5,12 +5,33 @@ import (
 	"math/bits"
 )
 
+// =============================================================================
+// Transport layer protocol encoding/decoding
+//
+// Payload format (after crypto layer decryption):
+//   Byte 0:     Header (version + type + offset size flag)
+//   [ACK]:      Optional ACK section (streamID, offset, len, rcvWnd)
+//   [Data]:     Optional data section (streamID, offset, userData)
+//
+// Type encoding (bits 5-6):
+//   00 = DATA with ACK
+//   01 = DATA without ACK
+//   10 = CLOSE with ACK
+//   11 = CLOSE without ACK
+//
+// Offset sizes: 24-bit (≤16MB) or 48-bit (>16MB), signaled by bit 7
+// =============================================================================
+
 const (
 	ProtoVersion     = 0
 	TypeFlag         = 5
 	Offset24or48Flag = 7
 	MinProtoSize     = 8
 )
+
+// =============================================================================
+// Types
+// =============================================================================
 
 type payloadHeader struct {
 	IsClose      bool
@@ -26,25 +47,26 @@ type Ack struct {
 	rcvWnd   uint64
 }
 
-/*
-encoded | capacity
---------|----------
-0       | 0B
-1       | 128B
-2       | 256B
-3       | 288B
-4       | 320B
-5       | 352B
-6       | 384B
-10      | 512B
-18      | 1KB
-50      | 16KB
-100     | 1MB
-150     | 96MB
-200     | 7GB
-250     | 512GB
-255     | ~896GB+ (max)
-*/
+// =============================================================================
+// Receive window encoding
+//
+// Logarithmic encoding: 8 substeps per power of 2
+// Maps 0-255 to 0B-~896GB range
+//
+//	encoded | capacity
+//	--------|----------
+//	0       | 0B
+//	1       | 128B
+//	2       | 256B
+//	10      | 512B
+//	18      | 1KB
+//	50      | 16KB
+//	100     | 1MB
+//	150     | 96MB
+//	200     | 7GB
+//	255     | ~896GB
+//
+// =============================================================================
 
 func encodeRcvWindow(actualBytes uint64) uint8 {
 	if actualBytes == 0 {
@@ -55,7 +77,7 @@ func encodeRcvWindow(actualBytes uint64) uint8 {
 	}
 
 	highBit := bits.Len64(actualBytes) - 1
-	lowerBits := (actualBytes >> (highBit - 3)) & 0x7 // 8 substeps
+	lowerBits := (actualBytes >> (highBit - 3)) & 0x7
 
 	encoded := (highBit-8)*8 + int(lowerBits) + 2
 	if encoded > 255 {
@@ -82,40 +104,26 @@ func decodeRcvWindow(encoded uint8) uint64 {
 	return base + uint64(subStep)*increment
 }
 
-func encodeProto(p *payloadHeader, userData []byte) (encoded []byte, offset int) {
-	isAck := p.Ack != nil
-	isEmptyDataHeader := !p.IsClose && isAck && userData == nil
+// =============================================================================
+// Encode
+// =============================================================================
 
-	// Build header byte
-	header := uint8(ProtoVersion)
-	switch {
-	case p.IsClose && isAck:
-		header |= 0b10 << TypeFlag
-	case p.IsClose:
-		header |= 0b11 << TypeFlag
-	case isAck:
-		header |= 0b00 << TypeFlag
-	default:
-		header |= 0b01 << TypeFlag
-	}
+func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
+	hasAck := p.Ack != nil
+	// ACK-only packet: has ACK, no close, nil userData (not empty slice)
+	isAckOnly := hasAck && !p.IsClose && userData == nil
 
-	// Determine if 48-bit offset needed
-	isExtend := p.StreamOffset > 0xffffff || (isAck && p.Ack.offset > 0xffffff)
-	if isExtend {
-		header |= 1 << Offset24or48Flag
-	}
+	header := buildHeader(p.IsClose, hasAck, p.StreamOffset, p.Ack)
+	isExtend := (header & (1 << Offset24or48Flag)) != 0
 
-	// Allocate buffer
-	overhead := calcProtoOverhead(isAck, isExtend, isEmptyDataHeader)
-	userDataLen := len(userData)
-	encoded = make([]byte, overhead+userDataLen)
+	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
+	encoded := make([]byte, overhead+len(userData))
+	offset := 0
 
-	// Write header
 	encoded[offset] = header
 	offset++
 
-	// Write ACK section if present
-	if isAck {
+	if hasAck {
 		offset += PutUint32(encoded[offset:], p.Ack.streamID)
 		offset += putOffsetVarint(encoded[offset:], p.Ack.offset, isExtend)
 		offset += PutUint16(encoded[offset:], p.Ack.len)
@@ -123,57 +131,74 @@ func encodeProto(p *payloadHeader, userData []byte) (encoded []byte, offset int)
 		offset++
 	}
 
-	if isEmptyDataHeader {
+	if isAckOnly {
 		return encoded, offset
 	}
 
-	// Write Data
 	offset += PutUint32(encoded[offset:], p.StreamID)
 	offset += putOffsetVarint(encoded[offset:], p.StreamOffset, isExtend)
-
-	if userDataLen > 0 {
-		offset += copy(encoded[offset:], userData)
-	}
+	offset += copy(encoded[offset:], userData)
 
 	return encoded, offset
 }
 
-func decodeProto(data []byte) (payload *payloadHeader, userData []byte, err error) {
-	dataLen := len(data)
-	if dataLen < MinProtoSize {
+func buildHeader(isClose, hasAck bool, streamOffset uint64, ack *Ack) uint8 {
+	header := uint8(ProtoVersion)
+
+	// Type flags (bits 5-6)
+	switch {
+	case isClose && hasAck:
+		header |= 0b10 << TypeFlag
+	case isClose:
+		header |= 0b11 << TypeFlag
+	case hasAck:
+		header |= 0b00 << TypeFlag
+	default:
+		header |= 0b01 << TypeFlag
+	}
+
+	// Offset size flag (bit 7)
+	needsExtend := streamOffset > 0xFFFFFF || (hasAck && ack.offset > 0xFFFFFF)
+	if needsExtend {
+		header |= 1 << Offset24or48Flag
+	}
+
+	return header
+}
+
+// =============================================================================
+// Decode
+// =============================================================================
+
+func decodeProto(data []byte) (*payloadHeader, []byte, error) {
+	if len(data) < MinProtoSize {
 		return nil, nil, errors.New("payload size below minimum")
 	}
 
-	payload = &payloadHeader{}
-
-	// Decode header byte
 	header := data[0]
 	version := header & 0b11111
-	typeFlag := (header >> TypeFlag) & 0b11
-	isExtend := (header & (1 << Offset24or48Flag)) != 0
-
-	// Validate version
 	if version != ProtoVersion {
 		return nil, nil, errors.New("unsupported protocol version")
 	}
 
-	// Decode type flags
-	isAck := typeFlag == 0b00 || typeFlag == 0b10
-	payload.IsClose = typeFlag == 0b10 || typeFlag == 0b11
-	isEmptyDataHeader := isAck && dataLen < 18
+	typeFlag := (header >> TypeFlag) & 0b11
+	isExtend := (header & (1 << Offset24or48Flag)) != 0
+	hasAck := typeFlag == 0b00 || typeFlag == 0b10
+	isClose := typeFlag == 0b10 || typeFlag == 0b11
+	isAckOnly := hasAck && len(data) < 18
 
-	offset := 1
-
-	// Check overhead
-	overhead := calcProtoOverhead(isAck, isExtend, isEmptyDataHeader)
-	if dataLen < overhead {
+	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
+	if len(data) < overhead {
 		return nil, nil, errors.New("payload size below minimum")
 	}
 
-	// Decode ACK if present
-	if isAck {
-		payload.Ack = &Ack{}
-		payload.Ack.streamID = Uint32(data[offset:])
+	payload := &payloadHeader{IsClose: isClose}
+	offset := 1
+
+	if hasAck {
+		payload.Ack = &Ack{
+			streamID: Uint32(data[offset:]),
+		}
 		offset += 4
 		payload.Ack.offset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
@@ -183,39 +208,41 @@ func decodeProto(data []byte) (payload *payloadHeader, userData []byte, err erro
 		offset++
 	}
 
-	// Decode Data
-	if !isEmptyDataHeader {
+	var userData []byte
+	if !isAckOnly {
 		payload.StreamID = Uint32(data[offset:])
 		offset += 4
 		payload.StreamOffset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
 
-		if dataLen > offset {
+		if len(data) > offset {
 			userData = data[offset:]
 		} else {
-			userData = make([]byte, 0) //ping
+			userData = []byte{} // PING packet
 		}
-	} else {
-		userData = nil
 	}
 
 	return payload, userData, nil
 }
 
-func calcProtoOverhead(isAck bool, isExtend bool, isEmptyDataHeader bool) int {
-	overhead := 1 // 1 byte header, always
+// =============================================================================
+// Overhead calculation
+// =============================================================================
 
-	extBytes := 3 // 24-bit base
+func calcProtoOverhead(hasAck, isExtend, isAckOnly bool) int {
+	overhead := 1 // header byte
+
+	offsetBytes := 3 // 24-bit
 	if isExtend {
-		extBytes = 6 // 48-bit
+		offsetBytes = 6 // 48-bit
 	}
 
-	if !isEmptyDataHeader {
-		overhead += 4 + extBytes // streamID + offset
+	if !isAckOnly {
+		overhead += 4 + offsetBytes // streamID + offset
 	}
 
-	if isAck {
-		overhead += 4 + extBytes + 2 + 1 // streamID + offset + len + rcvWnd
+	if hasAck {
+		overhead += 4 + offsetBytes + 2 + 1 // streamID + offset + len + rcvWnd
 	}
 
 	return overhead

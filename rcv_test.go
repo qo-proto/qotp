@@ -149,7 +149,7 @@ func TestRcvPreviousOverlapComplete(t *testing.T) {
 	stream := rb.streams[1]
 	rcvValue, exists := stream.segments.Get(100)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGH"), rcvValue.data)
+	assert.Equal(t, []byte("ABCDEFGH"), rcvValue)
 }
 
 func TestRcvNextOverlapMismatchPanic(t *testing.T) {
@@ -178,11 +178,11 @@ func TestRcvNextOverlapPartial(t *testing.T) {
 	// Should have shortened incoming segment
 	rcvValue, exists := stream.segments.Get(100)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDE"), rcvValue.data)
+	assert.Equal(t, []byte("ABCDE"), rcvValue)
 
 	rcvValue, exists = stream.segments.Get(105)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("EFGH"), rcvValue.data)
+	assert.Equal(t, []byte("EFGH"), rcvValue)
 }
 
 func TestRcvNextOverlapComplete(t *testing.T) {
@@ -198,7 +198,7 @@ func TestRcvNextOverlapComplete(t *testing.T) {
 
 	rcvValue, exists := stream.segments.Get(100)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEEFGH"), rcvValue.data)
+	assert.Equal(t, []byte("ABCDEEFGH"), rcvValue)
 
 	// Next segment should be removed (completely overlapped)
 	_, exists = stream.segments.Get(105)
@@ -223,12 +223,12 @@ func TestRcvBothOverlaps(t *testing.T) {
 	// Previous segment unchanged
 	rcvValue, exists := stream.segments.Get(90)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("12345"), rcvValue.data)
+	assert.Equal(t, []byte("12345"), rcvValue)
 
 	// Adjusted incoming segment
 	rcvValue, exists = stream.segments.Get(95)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGHIJWXYZUV"), rcvValue.data)
+	assert.Equal(t, []byte("ABCDEFGHIJWXYZUV"), rcvValue)
 
 	// Next segment removed (completely overlapped)
 	_, exists = stream.segments.Get(105)
@@ -249,7 +249,7 @@ func TestRcvExactSameOffsetReplace(t *testing.T) {
 	stream := rb.streams[1]
 	rcvValue, exists := stream.segments.Get(100)
 	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGH"), rcvValue.data)
+	assert.Equal(t, []byte("ABCDEFGH"), rcvValue)
 }
 
 func TestRcvSizeAccounting(t *testing.T) {

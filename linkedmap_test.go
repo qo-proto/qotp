@@ -929,23 +929,27 @@ func TestLinkedMapPutOrderedPrev(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 10, k)
 
-	// Prev from non-existing key (finds previous)
-	k, _, ok = sm.Prev(15)
+	k, _, ok = sm.Prev(10)
 	assert.True(t, ok)
-	assert.Equal(t, 10, k)
+	assert.Equal(t, 5, k)
 
-	// Prev from first key
+	k, _, ok = sm.Prev(50)
+	assert.True(t, ok)
+	assert.Equal(t, 20, k)
+
+	// Prev from first key - no previous
 	_, _, ok = sm.Prev(1)
 	assert.False(t, ok)
 
-	// Prev from key smaller than all
+	// Prev from non-existing key - returns false (key must exist)
+	_, _, ok = sm.Prev(15)
+	assert.False(t, ok)
+
 	_, _, ok = sm.Prev(0)
 	assert.False(t, ok)
 
-	// Prev from key larger than all
-	k, _, ok = sm.Prev(100)
-	assert.True(t, ok)
-	assert.Equal(t, 50, k)
+	_, _, ok = sm.Prev(100)
+	assert.False(t, ok)
 }
 
 func TestLinkedMapPutOrderedConcurrent(t *testing.T) {
