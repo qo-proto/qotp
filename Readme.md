@@ -106,7 +106,7 @@ HeaderSize          = 1 byte
 ConnIdSize          = 8 bytes
 MsgInitFillLenSize  = 2 bytes
 
-MinInitRcvSizeHdr       = 65 bytes (header + connId + 2 pubkeys)
+MinInitRcvSizeHdr       = 73 bytes (header + connId + 2 pubkeys)
 MinInitCryptoSndSizeHdr = 65 bytes (header + 2 pubkeys)
 MinInitCryptoRcvSizeHdr = 41 bytes (header + connId + pubkey)
 MinDataSizeHdr          = 9 bytes (header + connId)
@@ -202,28 +202,29 @@ QOTP uses deterministic double encryption for sequence numbers and payload:
    - Nonce: 12 bytes deterministic
      - Bytes 0-5: Epoch (48-bit)
      - Bytes 6-11: Sequence number (48-bit)
-     - Bit 0 (MSB): 0=receiver, 1=sender (prevents nonce collision)
+     - Byte 0, bit 7 (MSB): 1=sender, 0=receiver (prevents nonce collision)
    - Encrypt payload with ChaCha20-Poly1305
-   - AAD: header + crypto data
+   - AAD: header (unencrypted packet prefix)
    - Output: ciphertext + 16-byte MAC
 
 2. **Second Layer** (Sequence Number):
-   - Nonce: First 24 bytes of first-layer ciphertext (random)
-   - Encrypt sequence number with XChaCha20-Poly1305
+   - Nonce: First 24 bytes of first-layer ciphertext
+   - Encrypt sequence number (bytes 6-11 of deterministic nonce) with XChaCha20-Poly1305
    - Take first 6 bytes only (discard MAC)
 
 **Decryption Process**:
 
-1. Extract first 24 bytes of first-layer ciphertext as nonce
-2. Decrypt 6-byte sequence number with XChaCha20-Poly1305
-3. Reconstruct deterministic nonce with decrypted sequence number
-4. Try decryption with epochs: current, current-1, current+1
-5. Verify MAC - any tampering fails authentication
+1. Extract encrypted sequence number (first 6 bytes after header)
+2. Use first 24 bytes of ciphertext as nonce
+3. Decrypt 6-byte sequence number with XChaCha20 (no MAC verification)
+4. Reconstruct deterministic nonce with decrypted sequence number
+5. Try decryption with epochs: current, current-1, current+1
+6. Verify MAC on payload - any tampering fails authentication
 
 **Epoch Handling**:
 
-- Sequence number rolls over at 2^48 (256 TB)
-- Epoch increments on rollover (47-bit, last bit for sender/receiver)
+- Sequence number rolls over at 2^48 packets (not bytes)
+- Epoch increments on rollover (47-bit; bit 7 of byte 0 reserved for direction)
 - Decryption tries 3 epochs to handle reordering near boundaries
 - Total space: 2^95 ≈ 40 ZB (exhaustion would require resending all human data 28M times)
 
@@ -502,16 +503,16 @@ Enables O(1) in-flight packet tracking and ACK processing.
 
 **Crypto Layer Overhead**:
 - InitSnd: 1400 bytes (no data, padding)
-- InitRcv: 87+ bytes (65 header + 6 SN + 16 MAC + ≥8 payload)
+- InitRcv: 103+ bytes (73 header + 6 SN + 16 MAC + ≥8 payload)
 - InitCryptoSnd: 1400 bytes (includes padding)
 - InitCryptoRcv: 63+ bytes (41 header + 6 SN + 16 MAC + ≥8 payload)
-- Data: 31+ bytes (9 header + 6 SN + 16 MAC + ≥8 payload)
+- Data: 39+ bytes (9 header + 6 SN + 16 MAC + ≥8 payload)
 
 **Transport Layer Overhead** (variable):
 - No ACK, 24-bit offset: 8 bytes
 - No ACK, 48-bit offset: 11 bytes
-- With ACK, 24-bit offset: 19 bytes
-- With ACK, 48-bit offset: 25 bytes
+- With ACK, 24-bit offset: 18 bytes
+- With ACK, 48-bit offset: 24 bytes
 
 **Total Minimum Overhead** (Data message with payload):
 - Best case: 39 bytes (9 + 6 + 16 + 8 transport header)
@@ -523,8 +524,6 @@ Enables O(1) in-flight packet tracking and ACK processing.
 ### Data Structures
 
 **LinkedMap**: O(1) insertion, deletion, lookup, and Next/Prev traversal. Used for connection and stream maps.
-
-**SortedMap**: Skip list with O(log n) insertion/deletion, O(1) Get/Next/Prev when key exists. Used for receive buffer segments.
 
 ### Thread Safety
 
