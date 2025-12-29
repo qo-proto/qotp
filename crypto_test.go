@@ -10,251 +10,267 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// =============================================================================
+// TEST HELPERS
+// =============================================================================
+
 func randomBytes(n int) []byte {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return b
 }
 
-func generateKeys(t *testing.T) *ecdh.PrivateKey {
+func generateTestKey(t *testing.T) *ecdh.PrivateKey {
 	privKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("Failed to generate key: %v", err)
+		t.Fatalf("failed to generate key: %v", err)
 	}
 	return privKey
 }
 
-func testDoubleEncryptDecrypt(t *testing.T, sn uint64, data []byte, additionalData []byte) {
-	sharedSecret := make([]byte, 32)
-	_, _ = rand.Read(sharedSecret)
+// =============================================================================
+// CHAINED ENCRYPT/DECRYPT TESTS
+// =============================================================================
 
-	buf, err := chainedEncrypt(sn, 0, true, sharedSecret, additionalData, data)
-	if len(data) < MinProtoSize {
-		assert.NotNil(t, err)
-		return
-	}
-	assert.Nil(t, err)
+func TestCryptoChainedEncryptDecrypt_ShortData(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
 
-	if len(buf) == 0 {
-		t.Fatalf("No encrypted data written")
-	}
-	t.Logf("Encrypted data: %s", hex.EncodeToString(buf))
+	buf, err := chainedEncrypt(1234567890, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, buf)
 
-	decryptedSn, decryptedEpoch, decryptedData, err := chainedDecrypt(false, 0, sharedSecret, buf[0:len(additionalData)], buf[len(additionalData):])
-	assert.Nil(t, err)
-	assert.Equal(t, uint64(0), decryptedEpoch)
-	assert.Equal(t, sn, decryptedSn)
-	assert.Equal(t, data, decryptedData)
+	sn, epoch, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1234567890), sn)
+	assert.Equal(t, uint64(0), epoch)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptShortData(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 1234567890, randomBytes(10), []byte("AAD"))
+func TestCryptoChainedEncryptDecrypt_LongData(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(1000)
+	aad := randomBytes(100)
+
+	buf, err := chainedEncrypt(987654321, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	sn, epoch, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(987654321), sn)
+	assert.Equal(t, uint64(0), epoch)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptLongData(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 987654321, randomBytes(100), randomBytes(100))
+func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte{}
+
+	buf, err := chainedEncrypt(1, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:0], buf)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), sn)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptLongDataShortAAD(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 1, randomBytes(100), []byte(""))
+func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+	maxSn := uint64(0xffffffffffff) // 48-bit max
+
+	buf, err := chainedEncrypt(maxSn, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, maxSn, sn)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptMinData(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 2, randomBytes(9), []byte("Only AAD"))
+func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(0, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), sn)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptMinData2(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 2, randomBytes(9), []byte(""))
+func TestCryptoChainedEncryptDecrypt_WithEpoch(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	sn, epoch, decrypted, err := chainedDecrypt(false, 5, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, uint64(5), epoch)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptMaxSequenceNumber(t *testing.T) {
-	testDoubleEncryptDecrypt(t, uint64(0xffffffffffff), randomBytes(10), []byte("AAD"))
+func TestCryptoChainedDecrypt_EpochWindowMinus1(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	// Encrypt with epoch 5
+	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	// Decrypt expecting epoch 6 - should still work (tries epoch-1)
+	sn, epoch, decrypted, err := chainedDecrypt(false, 6, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, uint64(5), epoch)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptZeroSequenceNumber(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 0, randomBytes(10), []byte("AAD"))
+func TestCryptoChainedDecrypt_EpochWindowPlus1(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	// Encrypt with epoch 5
+	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	// Decrypt expecting epoch 4 - should still work (tries epoch+1)
+	sn, epoch, decrypted, err := chainedDecrypt(false, 4, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, uint64(5), epoch)
+	assert.Equal(t, data, decrypted)
 }
 
-func TestCryptoDoubleEncryptDecryptLargeAAD(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 12345, randomBytes(10), randomBytes(1000))
+func TestCryptoChainedDecrypt_EpochTooFar(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	// Encrypt with epoch 5
+	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	// Decrypt expecting epoch 10 - should fail (only tries ±1)
+	_, _, _, err = chainedDecrypt(false, 10, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.Error(t, err)
 }
 
-func TestCryptoDoubleEncryptDecryptExactMinPayload(t *testing.T) {
-	testDoubleEncryptDecrypt(t, 123, randomBytes(MinProtoSize), []byte("AAD"))
+func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	wrongSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	_, _, _, err = chainedDecrypt(false, 0, wrongSecret, buf[:len(aad)], buf[len(aad):])
+	assert.Error(t, err)
 }
 
-func TestCryptoSecretKey(t *testing.T) {
-	bobPrvKeyId := generateKeys(t)
-	bobPubKeyId := bobPrvKeyId.PublicKey()
-	alicePrvKeyEp := generateKeys(t)
-	alicePubKeyEp := alicePrvKeyEp.PublicKey()
+func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
 
-	secret1, err := bobPrvKeyId.ECDH(alicePubKeyEp)
-	assert.Nil(t, err)
-	secret2, err := alicePrvKeyEp.ECDH(bobPubKeyId)
-	assert.Nil(t, err)
-	assert.Equal(t, secret1, secret2)
+	// Encrypt as sender (isSender=true)
+	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	// Decrypt as sender instead of receiver - should fail due to direction bit
+	_, _, _, err = chainedDecrypt(true, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.Error(t, err)
 }
 
-func TestCryptoSecretKeySameKeys(t *testing.T) {
-	key := generateKeys(t)
-	pubKey := key.PublicKey()
+func TestCryptoChainedDecrypt_CorruptedMAC(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	data := randomBytes(MinProtoSize)
+	aad := []byte("AAD")
 
-	secret, err := key.ECDH(pubKey)
-	assert.Nil(t, err)
-	assert.NotNil(t, secret)
-	assert.Len(t, secret, 32)
+	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	assert.NoError(t, err)
+
+	// Corrupt the last byte (MAC)
+	buf[len(buf)-1] ^= 0xFF
+
+	_, _, _, err = chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	assert.Error(t, err)
 }
 
-func TestCryptoSecretKeyDeterministic(t *testing.T) {
-	key1 := generateKeys(t)
-	key2 := generateKeys(t)
+// =============================================================================
+// INIT SND TESTS
+// =============================================================================
 
-	secret1, err := key1.ECDH(key2.PublicKey())
-	assert.Nil(t, err)
-	secret2, err := key1.ECDH(key2.PublicKey())
-	assert.Nil(t, err)
-	assert.Equal(t, secret1, secret2)
-}
+func TestCryptoInitSnd_BasicFlow(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
 
-func testEncodeDecodeInitCryptoSnd(t *testing.T, payload []byte) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
+	connId, buffer, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	assert.NoError(t, err)
+	assert.Equal(t, defaultMTU, len(buffer))
+	assert.NotZero(t, connId)
 
-	_, buffer, err := encryptInitCryptoSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, 0, defaultMTU, payload)
-	if len(payload) < 8 {
-		assert.NotNil(t, err)
-		assert.Contains(t, err.Error(), "too short")
-		return
-	}
-	assert.Nil(t, err)
-
-	_, _, m, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
-	assert.Nil(t, err)
-	assert.Equal(t, payload, m.PayloadRaw)
-}
-
-func TestCryptoEncodeDecodeInitCryptoSndShortPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoSnd(t, []byte("short1234"))
-}
-
-func TestCryptoEncodeDecodeInitCryptoSndLongPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoSnd(t, randomBytes(100))
-}
-
-func TestCryptoEncodeDecodeInitCryptoSndMaxPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoSnd(t, randomBytes(1303))
-}
-
-func TestCryptoEncodeDecodeInitCryptoSnd8BytePayload(t *testing.T) {
-	testEncodeDecodeInitCryptoSnd(t, []byte("12345678"))
-}
-
-func testEncodeDecodeInitCryptoRcv(t *testing.T, payload []byte) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
-	bobPrvKeyEp := generateKeys(t)
-
-	validPayload := payload
-	if len(payload) < 8 {
-		validPayload = []byte("12345678")
-	}
-
-	connId, bufferInit, err := encryptInitCryptoSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, 0, defaultMTU, validPayload)
-	assert.Nil(t, err)
-
-	_, _, _, err = decryptInitCryptoSnd(bufferInit, bobPrvKeyId, defaultMTU)
-	assert.Nil(t, err)
-
-	// Use encryptPacket for InitCryptoRcv
-	bufferInitReply, err := encryptPacket(
-		InitCryptoRcv,
-		connId,
-		bobPrvKeyEp,
-		nil, // pubKeyIdSnd not needed for InitCryptoRcv
-		alicePrvKeyEp.PublicKey(),
-		nil, // sharedSecret computed internally
-		0,
-		0,
-		false,
-		payload,
-	)
-
-	if len(payload) < 8 {
-		assert.NotNil(t, err)
-		assert.Contains(t, err.Error(), "too short")
-		return
-	}
-	assert.Nil(t, err)
-
-	_, _, m2, err := decryptInitCryptoRcv(bufferInitReply, alicePrvKeyEp)
-	assert.Nil(t, err)
-	assert.Equal(t, payload, m2.PayloadRaw)
-}
-
-func TestCryptoEncodeDecodeInitCryptoRcvShortPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoRcv(t, []byte("short1234"))
-}
-
-func TestCryptoEncodeDecodeInitCryptoRcvLongPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoRcv(t, randomBytes(100))
-}
-
-func TestCryptoEncodeDecodeInitCryptoRcv8BytePayload(t *testing.T) {
-	testEncodeDecodeInitCryptoRcv(t, []byte("12345678"))
-}
-
-func TestCryptoEncodeDecodeInitCryptoRcvMaxPayload(t *testing.T) {
-	testEncodeDecodeInitCryptoRcv(t, randomBytes(1303))
-}
-
-func TestCryptoInitSndBasicFlow(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-
-	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
 	pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(buffer, defaultMTU)
-
 	assert.NoError(t, err)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
 }
 
-func TestCryptoInitSndInvalidSize(t *testing.T) {
-	buffer := make([]byte, 1399)
+func TestCryptoInitSnd_NilPubKeyId(t *testing.T) {
+	alicePrvKeyEp := generateTestKey(t)
+
+	_, _, err := encryptInitSnd(nil, alicePrvKeyEp.PublicKey(), defaultMTU)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestCryptoInitSnd_NilPubKeyEp(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+
+	_, _, err := encryptInitSnd(alicePrvKeyId.PublicKey(), nil, defaultMTU)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestCryptoDecryptInitSnd_TooSmall(t *testing.T) {
+	buffer := make([]byte, defaultMTU-1)
 	_, _, err := decryptInitSnd(buffer, defaultMTU)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum init")
 }
 
-func TestCryptoInitSndExactMinSize(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-
-	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
-	assert.GreaterOrEqual(t, len(buffer), defaultMTU)
-
-	_, _, err := decryptInitSnd(buffer, defaultMTU)
-	assert.NoError(t, err)
-}
-
-func TestCryptoInitSndEmptyBuffer(t *testing.T) {
+func TestCryptoDecryptInitSnd_EmptyBuffer(t *testing.T) {
 	_, _, err := decryptInitSnd([]byte{}, defaultMTU)
 	assert.Error(t, err)
 }
 
-func TestCryptoInitRcvBasicFlow(t *testing.T) {
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
-	bobPrvKeyEp := generateKeys(t)
+// =============================================================================
+// INIT RCV TESTS
+// =============================================================================
+
+func TestCryptoInitRcv_BasicFlow(t *testing.T) {
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
 
 	rawData := []byte("test data")
-	// Use encryptPacket for InitRcv
 	buffer, err := encryptPacket(
 		InitRcv,
-		0,
+		12345,
 		bobPrvKeyEp,
 		bobPrvKeyId.PublicKey(),
 		alicePrvKeyEp.PublicKey(),
@@ -266,28 +282,49 @@ func TestCryptoInitRcvBasicFlow(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	_, pubKeyIdRcv, pubKeyEpRcv, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
-
+	sharedSecret, pubKeyIdRcv, pubKeyEpRcv, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
+	assert.NotNil(t, sharedSecret)
 	assert.Equal(t, uint64(0), msg.SnConn)
 	assert.Equal(t, rawData, msg.PayloadRaw)
 	assert.True(t, bytes.Equal(bobPrvKeyId.PublicKey().Bytes(), pubKeyIdRcv.Bytes()))
 	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
 }
 
-func TestCryptoInitRcvInvalidSize(t *testing.T) {
+func TestCryptoInitRcv_NilKeys(t *testing.T) {
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
+
+	// Missing pubKeyIdSnd
+	_, err := encryptPacket(
+		InitRcv,
+		0,
+		bobPrvKeyEp,
+		nil, // pubKeyIdSnd
+		alicePrvKeyEp.PublicKey(),
+		nil,
+		0,
+		0,
+		false,
+		[]byte("test1234"),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestCryptoDecryptInitRcv_TooSmall(t *testing.T) {
 	buffer := make([]byte, MinInitRcvSizeHdr+FooterDataSize-1)
-	_, _, _, _, err := decryptInitRcv(buffer, generateKeys(t))
+	_, _, _, _, err := decryptInitRcv(buffer, generateTestKey(t))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum init reply")
 }
 
-func TestCryptoInitRcv8BytePayload(t *testing.T) {
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
-	bobPrvKeyEp := generateKeys(t)
+func TestCryptoInitRcv_MinPayload(t *testing.T) {
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
 
-	payload := []byte("12345678")
+	payload := []byte("12345678") // 8 bytes - min proto size
 	buffer, err := encryptPacket(
 		InitRcv,
 		0,
@@ -307,187 +344,168 @@ func TestCryptoInitRcv8BytePayload(t *testing.T) {
 	assert.Equal(t, payload, msg.PayloadRaw)
 }
 
-func TestCryptoInitRcvMaxValues(t *testing.T) {
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
-	bobPrvKeyEp := generateKeys(t)
+// =============================================================================
+// INIT CRYPTO SND TESTS
+// =============================================================================
 
-	maxSn := ^uint64(0)
-	buffer, err := encryptPacket(
-		InitRcv,
-		0,
-		bobPrvKeyEp,
+func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+
+	payload := []byte("test payload data")
+	connId, buffer, err := encryptInitCryptoSnd(
 		bobPrvKeyId.PublicKey(),
+		alicePrvKeyId.PublicKey(),
+		alicePrvKeyEp,
+		0,
+		defaultMTU,
+		payload,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, defaultMTU, len(buffer))
+	assert.NotZero(t, connId)
+
+	pubKeyIdSnd, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
+	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
+}
+
+func TestCryptoInitCryptoSnd_NilKeys(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+
+	_, _, err := encryptInitCryptoSnd(
+		nil, // pubKeyIdRcv
+		alicePrvKeyId.PublicKey(),
+		alicePrvKeyEp,
+		0,
+		defaultMTU,
+		[]byte("test1234"),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestCryptoInitCryptoSnd_PayloadTooLarge(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+
+	// Payload larger than MTU allows
+	largePayload := randomBytes(defaultMTU)
+	_, _, err := encryptInitCryptoSnd(
+		bobPrvKeyId.PublicKey(),
+		alicePrvKeyId.PublicKey(),
+		alicePrvKeyEp,
+		0,
+		defaultMTU,
+		largePayload,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too large")
+}
+
+func TestCryptoInitCryptoSnd_MaxPayload(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+
+	// Calculate max payload size
+	maxPayload := defaultMTU - MinInitCryptoSndSizeHdr - FooterDataSize - MsgInitFillLenSize
+	payload := randomBytes(maxPayload)
+
+	_, buffer, err := encryptInitCryptoSnd(
+		bobPrvKeyId.PublicKey(),
+		alicePrvKeyId.PublicKey(),
+		alicePrvKeyEp,
+		0,
+		defaultMTU,
+		payload,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, defaultMTU, len(buffer))
+
+	_, _, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, msg.PayloadRaw)
+}
+
+func TestCryptoDecryptInitCryptoSnd_TooSmall(t *testing.T) {
+	bobPrvKeyId := generateTestKey(t)
+	buffer := make([]byte, defaultMTU-1)
+
+	_, _, _, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "size is below minimum init")
+}
+
+// =============================================================================
+// INIT CRYPTO RCV TESTS
+// =============================================================================
+
+func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
+
+	payload := []byte("response data")
+	buffer, err := encryptPacket(
+		InitCryptoRcv,
+		12345,
+		bobPrvKeyEp,
+		nil,
 		alicePrvKeyEp.PublicKey(),
 		nil,
-		maxSn,
+		0,
+		0,
+		false,
+		payload,
+	)
+	assert.NoError(t, err)
+
+	sharedSecret, pubKeyEpRcv, msg, err := decryptInitCryptoRcv(buffer, alicePrvKeyEp)
+	assert.NoError(t, err)
+	assert.NotNil(t, sharedSecret)
+	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
+}
+
+func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
+	bobPrvKeyEp := generateTestKey(t)
+
+	_, err := encryptPacket(
+		InitCryptoRcv,
+		0,
+		bobPrvKeyEp,
+		nil,
+		nil, // pubKeyEpRcv
+		nil,
+		0,
 		0,
 		false,
 		[]byte("test1234"),
 	)
-	assert.NoError(t, err)
-
-	_, _, _, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
-	assert.NoError(t, err)
-	assert.Equal(t, []byte("test1234"), msg.PayloadRaw)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
 }
 
-func TestCryptoFullHandshakeFlow(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
-	bobPrvKeyEp := generateKeys(t)
-
-	connId, bufferS0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
-
-	_, _, err := decryptInitSnd(bufferS0, defaultMTU)
-	assert.NoError(t, err)
-
-	rawData := []byte("handshake response")
-	bufferR0, err := encryptPacket(
-		InitRcv,
-		connId,
-		bobPrvKeyEp,
-		bobPrvKeyId.PublicKey(),
-		alicePrvKeyEp.PublicKey(),
-		nil,
-		0,
-		0,
-		false,
-		rawData,
-	)
-	assert.NoError(t, err)
-
-	_, _, _, _, err = decryptInitRcv(bufferR0, alicePrvKeyEp)
-	assert.NoError(t, err)
+func TestCryptoDecryptInitCryptoRcv_TooSmall(t *testing.T) {
+	buffer := make([]byte, MinInitCryptoRcvSizeHdr+FooterDataSize-1)
+	_, _, _, err := decryptInitCryptoRcv(buffer, generateTestKey(t))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "size is below minimum init reply")
 }
 
-func TestCryptoMultipleHandshakes(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	bobPrvKeyId := generateKeys(t)
+// =============================================================================
+// DATA MESSAGE TESTS
+// =============================================================================
 
-	// First handshake
-	alicePrvKeyEp1 := generateKeys(t)
-	bobPrvKeyEp1 := generateKeys(t)
-
-	connId, buffer1S0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp1.PublicKey(), defaultMTU)
-	_, _, err := decryptInitSnd(buffer1S0, defaultMTU)
-	assert.NoError(t, err)
-
-	buffer1R0, err := encryptPacket(
-		InitRcv,
-		connId,
-		bobPrvKeyEp1,
-		bobPrvKeyId.PublicKey(),
-		alicePrvKeyEp1.PublicKey(),
-		nil,
-		0,
-		0,
-		false,
-		[]byte("first123"),
-	)
-	assert.NoError(t, err)
-
-	_, _, _, _, err = decryptInitRcv(buffer1R0, alicePrvKeyEp1)
-	assert.NoError(t, err)
-
-	// Second handshake
-	alicePrvKeyEp2 := generateKeys(t)
-	bobPrvKeyEp2 := generateKeys(t)
-
-	connId, buffer2S0, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp2.PublicKey(), defaultMTU)
-	_, _, err = decryptInitSnd(buffer2S0, defaultMTU)
-	assert.NoError(t, err)
-
-	buffer2R0, err := encryptPacket(
-		InitRcv,
-		connId,
-		bobPrvKeyEp2,
-		bobPrvKeyId.PublicKey(),
-		alicePrvKeyEp2.PublicKey(),
-		nil,
-		0,
-		0,
-		false,
-		[]byte("second12"),
-	)
-	assert.NoError(t, err)
-
-	_, _, _, _, err = decryptInitRcv(buffer2R0, alicePrvKeyEp2)
-	assert.NoError(t, err)
-}
-
-func TestCryptoCorruptedBuffer(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-
-	_, buffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
-
-	if len(buffer) > 10 {
-		buffer[5] ^= 0xFF
-		buffer[10] ^= 0xFF
-	}
-
-	_, _, err := decryptInitSnd(buffer, defaultMTU)
-	_ = err // May or may not error depending on corruption location
-}
-
-func TestCryptoVeryLargeBuffer(t *testing.T) {
-	alicePrvKeyId := generateKeys(t)
-	alicePrvKeyEp := generateKeys(t)
-
-	_, validBuffer, _ := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
-
-	largeBuffer := make([]byte, len(validBuffer)+10000)
-	copy(largeBuffer, validBuffer)
-
-	_, _, err := decryptInitSnd(largeBuffer, defaultMTU)
-	assert.NoError(t, err)
-}
-
-func TestCryptoRandomBuffer(t *testing.T) {
-	randomBuffer := randomBytes(1000)
-	_, _, err := decryptInitSnd(randomBuffer, defaultMTU)
-	_ = err // Should handle gracefully without panic
-}
-
-func TestCryptoOverhead(t *testing.T) {
-	assert.Equal(t, -1, calcCryptoOverheadWithData(InitSnd, nil, 100))
-
-	expected := calcProtoOverhead(false, false, false) + MinInitRcvSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitRcv, nil, 100))
-
-	expected = calcProtoOverhead(false, false, false) + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoSnd, nil, 100))
-
-	expected = calcProtoOverhead(false, false, false) + MinInitCryptoRcvSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoRcv, nil, 100))
-
-	expected = calcProtoOverhead(false, false, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 2000))
-}
-
-func TestCryptoOverheadWithAck(t *testing.T) {
-	ack := &Ack{offset: 1000}
-	expected := calcProtoOverhead(true, false, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 2000))
-
-	ack = &Ack{offset: 0xFFFFFF + 1}
-	expected = calcProtoOverhead(true, true, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 100))
-}
-
-func TestCryptoOverheadLargeOffset(t *testing.T) {
-	expected := calcProtoOverhead(false, true, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 0xFFFFFF+1))
-}
-
-// Test encryptPacket for Data messages
-func TestCryptoEncryptPacketData(t *testing.T) {
-	sharedSecret := make([]byte, 32)
-	_, _ = rand.Read(sharedSecret)
-
+func TestCryptoData_BasicFlow(t *testing.T) {
+	sharedSecret := randomBytes(32)
 	payload := []byte("test data payload")
+
 	encData, err := encryptPacket(
 		Data,
 		12345,
@@ -497,14 +515,274 @@ func TestCryptoEncryptPacketData(t *testing.T) {
 		sharedSecret,
 		0,
 		0,
-		true, // sender encrypts with isSender=true
+		true,
 		payload,
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, encData)
 
-	// Receiver decrypts with isSender=false (opposite of sender)
 	msg, err := decryptData(encData, false, 0, sharedSecret)
 	assert.NoError(t, err)
 	assert.Equal(t, payload, msg.PayloadRaw)
+}
+
+func TestCryptoData_NilSharedSecret(t *testing.T) {
+	_, err := encryptPacket(
+		Data,
+		12345,
+		nil,
+		nil,
+		nil,
+		nil, // sharedSecret
+		0,
+		0,
+		true,
+		[]byte("test1234"),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestCryptoData_WithEpoch(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	payload := []byte("test data")
+
+	encData, err := encryptPacket(
+		Data,
+		12345,
+		nil,
+		nil,
+		nil,
+		sharedSecret,
+		100,
+		5,
+		true,
+		payload,
+	)
+	assert.NoError(t, err)
+
+	msg, err := decryptData(encData, false, 5, sharedSecret)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, uint64(5), msg.currentEpochCrypt)
+}
+
+func TestCryptoDecryptData_TooSmall(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	buffer := make([]byte, MinDataSizeHdr+FooterDataSize-1)
+
+	_, err := decryptData(buffer, false, 0, sharedSecret)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "size is below minimum")
+}
+
+func TestCryptoDecryptData_WrongSecret(t *testing.T) {
+	sharedSecret := randomBytes(32)
+	wrongSecret := randomBytes(32)
+	payload := []byte("test data")
+
+	encData, err := encryptPacket(
+		Data,
+		12345,
+		nil,
+		nil,
+		nil,
+		sharedSecret,
+		0,
+		0,
+		true,
+		payload,
+	)
+	assert.NoError(t, err)
+
+	_, err = decryptData(encData, false, 0, wrongSecret)
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// ENCRYPT PACKET ERROR TESTS
+// =============================================================================
+
+func TestCryptoEncryptPacket_UnsupportedMsgType(t *testing.T) {
+	_, err := encryptPacket(
+		cryptoMsgType(99),
+		0,
+		nil,
+		nil,
+		nil,
+		nil,
+		0,
+		0,
+		false,
+		[]byte("test1234"),
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+}
+
+// =============================================================================
+// FULL HANDSHAKE FLOW TESTS
+// =============================================================================
+
+func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
+
+	// Step 1: Alice sends InitSnd
+	connId, bufferS0, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	assert.NoError(t, err)
+
+	// Step 2: Bob receives InitSnd
+	_, pubKeyEpSnd, err := decryptInitSnd(bufferS0, defaultMTU)
+	assert.NoError(t, err)
+
+	// Step 3: Bob sends InitRcv
+	rawData := []byte("handshake response")
+	bufferR0, err := encryptPacket(
+		InitRcv,
+		connId,
+		bobPrvKeyEp,
+		bobPrvKeyId.PublicKey(),
+		pubKeyEpSnd,
+		nil,
+		0,
+		0,
+		false,
+		rawData,
+	)
+	assert.NoError(t, err)
+
+	// Step 4: Alice receives InitRcv
+	_, _, _, msg, err := decryptInitRcv(bufferR0, alicePrvKeyEp)
+	assert.NoError(t, err)
+	assert.Equal(t, rawData, msg.PayloadRaw)
+}
+
+func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
+
+	// Step 1: Alice sends InitCryptoSnd
+	initPayload := []byte("init data")
+	connId, bufferS0, err := encryptInitCryptoSnd(
+		bobPrvKeyId.PublicKey(),
+		alicePrvKeyId.PublicKey(),
+		alicePrvKeyEp,
+		0,
+		defaultMTU,
+		initPayload,
+	)
+	assert.NoError(t, err)
+
+	// Step 2: Bob receives InitCryptoSnd
+	_, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(bufferS0, bobPrvKeyId, defaultMTU)
+	assert.NoError(t, err)
+	assert.Equal(t, initPayload, msg.PayloadRaw)
+
+	// Step 3: Bob sends InitCryptoRcv
+	responsePayload := []byte("response")
+	bufferR0, err := encryptPacket(
+		InitCryptoRcv,
+		connId,
+		bobPrvKeyEp,
+		nil,
+		pubKeyEpSnd,
+		nil,
+		0,
+		0,
+		false,
+		responsePayload,
+	)
+	assert.NoError(t, err)
+
+	// Step 4: Alice receives InitCryptoRcv
+	_, _, msg, err = decryptInitCryptoRcv(bufferR0, alicePrvKeyEp)
+	assert.NoError(t, err)
+	assert.Equal(t, responsePayload, msg.PayloadRaw)
+}
+
+// =============================================================================
+// CRYPTO OVERHEAD TESTS
+// =============================================================================
+
+func TestCryptoOverhead_InitSnd(t *testing.T) {
+	assert.Equal(t, -1, calcCryptoOverheadWithData(InitSnd, nil, 100))
+}
+
+func TestCryptoOverhead_InitRcv(t *testing.T) {
+	expected := calcProtoOverhead(false, false, false) + MinInitRcvSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(InitRcv, nil, 100))
+}
+
+func TestCryptoOverhead_InitCryptoSnd(t *testing.T) {
+	expected := calcProtoOverhead(false, false, false) + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoSnd, nil, 100))
+}
+
+func TestCryptoOverhead_InitCryptoRcv(t *testing.T) {
+	expected := calcProtoOverhead(false, false, false) + MinInitCryptoRcvSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoRcv, nil, 100))
+}
+
+func TestCryptoOverhead_Data(t *testing.T) {
+	expected := calcProtoOverhead(false, false, false) + MinDataSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 100))
+}
+
+func TestCryptoOverhead_DataWithAck(t *testing.T) {
+	ack := &Ack{offset: 1000}
+	expected := calcProtoOverhead(true, false, false) + MinDataSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 100))
+}
+
+func TestCryptoOverhead_DataWithLargeAckOffset(t *testing.T) {
+	ack := &Ack{offset: 0xFFFFFF + 1}
+	expected := calcProtoOverhead(true, true, false) + MinDataSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 100))
+}
+
+func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
+	expected := calcProtoOverhead(false, true, false) + MinDataSizeHdr + FooterDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 0xFFFFFF+1))
+}
+
+// =============================================================================
+// DECODE HEX PUB KEY TESTS
+// =============================================================================
+
+func TestCryptoDecodeHexPubKey_Valid(t *testing.T) {
+	key := generateTestKey(t)
+	hexStr := hex.EncodeToString(key.PublicKey().Bytes())
+
+	pubKey, err := decodeHexPubKey(hexStr)
+	assert.NoError(t, err)
+	assert.True(t, bytes.Equal(key.PublicKey().Bytes(), pubKey.Bytes()))
+}
+
+func TestCryptoDecodeHexPubKey_With0xPrefix(t *testing.T) {
+	key := generateTestKey(t)
+	hexStr := "0x" + hex.EncodeToString(key.PublicKey().Bytes())
+
+	pubKey, err := decodeHexPubKey(hexStr)
+	assert.NoError(t, err)
+	assert.True(t, bytes.Equal(key.PublicKey().Bytes(), pubKey.Bytes()))
+}
+
+func TestCryptoDecodeHexPubKey_InvalidHex(t *testing.T) {
+	_, err := decodeHexPubKey("not-valid-hex!")
+	assert.Error(t, err)
+}
+
+func TestCryptoDecodeHexPubKey_WrongLength(t *testing.T) {
+	_, err := decodeHexPubKey("abcd") // Too short for X25519
+	assert.Error(t, err)
+}
+
+func TestCryptoDecodeHexPubKey_Empty(t *testing.T) {
+	_, err := decodeHexPubKey("")
+	assert.Error(t, err)
 }

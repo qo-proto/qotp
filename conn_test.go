@@ -12,7 +12,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// testDecode mirrors Listen() header parsing logic for testing
+// =============================================================================
+// TEST HELPERS
+// =============================================================================
+
+// testDecodeConn mirrors Listen() header parsing logic for testing
 func testDecodeConn(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
 	if len(encData) < MinPacketSize {
 		return nil, nil, 0, fmt.Errorf("packet too small: %d bytes", len(encData))
@@ -98,35 +102,41 @@ func getTestRemoteAddr() netip.AddrPort {
 // MSG TYPE TESTS
 // =============================================================================
 
-func TestConnMsgType(t *testing.T) {
-	tests := []struct {
-		name          string
-		isSender      bool
-		withCrypto    bool
-		handshakeDone bool
-		expected      cryptoMsgType
-	}{
-		{"sender + crypto", true, true, false, InitCryptoSnd},
-		{"receiver + crypto", false, true, false, InitCryptoRcv},
-		{"sender + no crypto", true, false, false, InitSnd},
-		{"receiver + no crypto", false, false, false, InitRcv},
-		{"handshake done", true, false, true, Data},
-	}
+func TestConnMsgType_SenderWithCrypto(t *testing.T) {
+	c := createTestConn(true, true, false)
+	assert.Equal(t, InitCryptoSnd, c.msgType())
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := createTestConn(tt.isSender, tt.withCrypto, tt.handshakeDone)
-			assert.Equal(t, tt.expected, c.msgType())
-		})
-	}
+func TestConnMsgType_ReceiverWithCrypto(t *testing.T) {
+	c := createTestConn(false, true, false)
+	assert.Equal(t, InitCryptoRcv, c.msgType())
+}
+
+func TestConnMsgType_SenderNoCrypto(t *testing.T) {
+	c := createTestConn(true, false, false)
+	assert.Equal(t, InitSnd, c.msgType())
+}
+
+func TestConnMsgType_ReceiverNoCrypto(t *testing.T) {
+	c := createTestConn(false, false, false)
+	assert.Equal(t, InitRcv, c.msgType())
+}
+
+func TestConnMsgType_HandshakeDone(t *testing.T) {
+	c := createTestConn(true, false, true)
+	assert.Equal(t, Data, c.msgType())
+}
+
+func TestConnMsgType_HandshakeDoneOverridesCrypto(t *testing.T) {
+	c := createTestConn(true, true, true)
+	assert.Equal(t, Data, c.msgType(), "handshake done should always return Data")
 }
 
 // =============================================================================
 // ENCODE TESTS
 // =============================================================================
 
-func TestConnEncodeClosedStates(t *testing.T) {
-	// Stream closed - encode still works
+func TestConnEncode_StreamClosed(t *testing.T) {
 	c := createTestConn(true, false, true)
 	stream := c.Stream(1)
 	stream.Close()
@@ -135,18 +145,19 @@ func TestConnEncodeClosedStates(t *testing.T) {
 	output, err := c.encode(p, []byte("test data"), c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
+}
 
-	// Connection closed - encode still works
-	c = createTestConn(true, false, true)
+func TestConnEncode_AllStreamsClosed(t *testing.T) {
+	c := createTestConn(true, false, true)
 	c.closeAllStreams()
 
-	p = &payloadHeader{}
-	output, err = c.encode(p, []byte("test data"), c.msgType())
+	p := &payloadHeader{}
+	output, err := c.encode(p, []byte("test data"), c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
 }
 
-func TestConnEncodeUnknownMsgType(t *testing.T) {
+func TestConnEncode_UnknownMsgType(t *testing.T) {
 	c := createTestConn(true, false, true)
 
 	p := &payloadHeader{}
@@ -155,11 +166,61 @@ func TestConnEncodeUnknownMsgType(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown message type")
 }
 
+func TestConnEncode_EmptyPayload(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	p := &payloadHeader{}
+	output, err := c.encode(p, []byte{}, c.msgType())
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+}
+
+func TestConnEncode_NilPayload(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	p := &payloadHeader{}
+	output, err := c.encode(p, nil, c.msgType())
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+}
+
+func TestConnEncode_InitSndNoPayload(t *testing.T) {
+	c := createTestConn(true, false, false)
+
+	p := &payloadHeader{}
+	output, err := c.encode(p, nil, InitSnd)
+	assert.NoError(t, err)
+	assert.NotNil(t, output)
+	assert.True(t, c.isInitSentOnSnd, "isInitSentOnSnd should be set after encoding init message")
+}
+
+func TestConnEncode_InitCryptoSnd_PayloadTooLarge(t *testing.T) {
+	c := createTestConn(true, true, false)
+
+	// Create payload larger than MTU allows
+	largePayload := createTestData(defaultMTU + 100)
+
+	p := &payloadHeader{}
+	_, err := c.encode(p, largePayload, InitCryptoSnd)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too large")
+}
+
 // =============================================================================
 // SEQUENCE NUMBER TESTS
 // =============================================================================
 
-func TestConnSequenceNumberRollover(t *testing.T) {
+func TestConnSequenceNumber_Increment(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.snCrypto = 0
+
+	p := &payloadHeader{}
+	_, err := c.encode(p, []byte("test"), Data)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1), c.snCrypto)
+}
+
+func TestConnSequenceNumber_Rollover(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.snCrypto = (1 << 48) - 2
 	c.epochCryptoSnd = 0
@@ -178,7 +239,7 @@ func TestConnSequenceNumberRollover(t *testing.T) {
 	assert.Equal(t, uint64(1), c.epochCryptoSnd)
 }
 
-func TestConnSequenceNumberExhaustion(t *testing.T) {
+func TestConnSequenceNumber_Exhaustion(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.snCrypto = (1 << 48) - 1
 	c.epochCryptoSnd = (1 << 47) - 1
@@ -189,11 +250,23 @@ func TestConnSequenceNumberExhaustion(t *testing.T) {
 	assert.Contains(t, err.Error(), "exhausted")
 }
 
+func TestConnSequenceNumber_MultipleRollovers(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.snCrypto = (1 << 48) - 1
+	c.epochCryptoSnd = 5
+
+	p := &payloadHeader{}
+	_, err := c.encode(p, []byte("test"), Data)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), c.snCrypto)
+	assert.Equal(t, uint64(6), c.epochCryptoSnd)
+}
+
 // =============================================================================
 // ENCODE/DECODE ROUNDTRIP TESTS
 // =============================================================================
 
-func TestConnEncodeDecodeRoundtripEmpty(t *testing.T) {
+func TestConnEncodeDecodeRoundtrip_EmptyPayload(t *testing.T) {
 	lAlice, lBob := createTestListeners()
 
 	connAlice := createTestConn(true, true, false)
@@ -223,7 +296,7 @@ func TestConnEncodeDecodeRoundtripEmpty(t *testing.T) {
 	}
 }
 
-func TestConnEncodeDecodeRoundtripData(t *testing.T) {
+func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	lAlice, lBob := createTestListeners()
 
 	connAlice := createTestConn(true, true, false)
@@ -241,6 +314,34 @@ func TestConnEncodeDecodeRoundtripData(t *testing.T) {
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
+
+	connBob, payload, _, err := testDecodeConn(lBob, encoded, getTestRemoteAddr())
+	assert.NoError(t, err)
+
+	p, u, err := decodeProto(payload)
+	assert.NoError(t, err)
+	s, err := connBob.processIncomingPayload(p, u, 0)
+	assert.NoError(t, err)
+	rb := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	assert.Equal(t, testData, rb)
+}
+
+func TestConnEncodeDecodeRoundtrip_SingleByte(t *testing.T) {
+	lAlice, lBob := createTestListeners()
+
+	connAlice := createTestConn(true, true, false)
+	connAlice.snd = NewSendBuffer(rcvBufferCapacity)
+	connAlice.rcv = NewReceiveBuffer(12000)
+
+	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
+	lAlice.connMap.Put(connId, connAlice)
+	connAlice.connId = connId
+
+	testData := []byte{0xFF}
+
+	p := &payloadHeader{}
+	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
+	assert.NoError(t, err)
 
 	connBob, payload, _, err := testDecodeConn(lBob, encoded, getTestRemoteAddr())
 	assert.NoError(t, err)
@@ -343,11 +444,323 @@ func TestConnFullHandshake(t *testing.T) {
 // DECODE ERROR TESTS
 // =============================================================================
 
-func TestConnDecodeErrors(t *testing.T) {
+func TestConnDecode_UnknownMsgType(t *testing.T) {
 	c := createTestConn(true, false, true)
 
-	// Unknown message type
 	_, err := c.decode([]byte{}, cryptoMsgType(99))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected message type")
+}
+
+func TestConnDecode_PacketTooSmall(t *testing.T) {
+	l, _ := createTestListeners()
+
+	// Packet smaller than MinPacketSize
+	tinyPacket := []byte{0x00, 0x01, 0x02}
+	_, _, _, err := testDecodeConn(l, tinyPacket, getTestRemoteAddr())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "packet too small")
+}
+
+func TestConnDecode_UnsupportedVersion(t *testing.T) {
+	l, _ := createTestListeners()
+
+	// Create packet with wrong version (bits 0-4)
+	badVersionPacket := make([]byte, MinPacketSize)
+	badVersionPacket[0] = 0x1F // Version 31 (max), not CryptoVersion
+
+	_, _, _, err := testDecodeConn(l, badVersionPacket, getTestRemoteAddr())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported version")
+}
+
+func TestConnDecode_ConnectionNotFound(t *testing.T) {
+	l, _ := createTestListeners()
+
+	// Create a Data packet for a connection that doesn't exist
+	c := createTestConn(true, false, true)
+	c.connId = 12345
+	p := &payloadHeader{}
+	encoded, err := c.encode(p, []byte("test"), Data)
+	assert.NoError(t, err)
+
+	// Try to decode without registering the connection
+	_, _, _, err = testDecodeConn(l, encoded, getTestRemoteAddr())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "connection not found")
+}
+
+func TestConnDecode_CorruptedMac(t *testing.T) {
+	lAlice, lBob := createTestListeners()
+
+	connAlice := createTestConn(true, true, false)
+	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
+	lAlice.connMap.Put(connId, connAlice)
+	connAlice.connId = connId
+
+	p := &payloadHeader{}
+	encoded, err := connAlice.encode(p, []byte("test"), connAlice.msgType())
+	assert.NoError(t, err)
+
+	// Corrupt the last byte (part of MAC)
+	encoded[len(encoded)-1] ^= 0xFF
+
+	_, _, _, err = testDecodeConn(lBob, encoded, getTestRemoteAddr())
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// PROCESS INCOMING PAYLOAD TESTS
+// =============================================================================
+
+func TestConnProcessIncomingPayload_NilAck(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = NewReceiveBuffer(1000)
+
+	p := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		Ack:          nil,
+	}
+
+	s, err := c.processIncomingPayload(p, []byte("data"), 0)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.Equal(t, uint32(1), s.streamID)
+}
+
+func TestConnProcessIncomingPayload_WithAck(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = NewReceiveBuffer(1000)
+	c.snd = NewSendBuffer(1000)
+
+	// Queue some data that will be acknowledged
+	c.snd.QueueData(1, []byte("test"))
+
+	ack := &Ack{
+		streamID: 1,
+		offset:   0,
+		len:      4,
+		rcvWnd:   1000,
+	}
+
+	p := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		Ack:          ack,
+	}
+
+	s, err := c.processIncomingPayload(p, []byte("response"), 1000)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+}
+
+func TestConnProcessIncomingPayload_CloseFlag(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = NewReceiveBuffer(1000)
+
+	p := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		IsClose:      true,
+		Ack:          nil,
+	}
+
+	s, err := c.processIncomingPayload(p, []byte("final"), 0)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+}
+
+func TestConnProcessIncomingPayload_EmptyPing(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = NewReceiveBuffer(1000)
+
+	p := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		Ack:          nil,
+	}
+
+	// Empty slice (not nil) represents PING
+	s, err := c.processIncomingPayload(p, []byte{}, 0)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+}
+
+func TestConnProcessIncomingPayload_FinishedStream(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = NewReceiveBuffer(1000)
+
+	// Mark stream as finished
+	c.rcv.Close(1, 0)
+	c.rcv.RemoveStream(1)
+
+	p := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		Ack:          nil,
+	}
+
+	s, err := c.processIncomingPayload(p, []byte("late data"), 0)
+	assert.NoError(t, err)
+	assert.Nil(t, s, "should return nil for finished stream")
+}
+
+// =============================================================================
+// STREAM MANAGEMENT TESTS
+// =============================================================================
+
+func TestConnStream_GetOrCreate(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	s1 := c.Stream(1)
+	assert.NotNil(t, s1)
+	assert.Equal(t, uint32(1), s1.streamID)
+
+	s1Again := c.Stream(1)
+	assert.Equal(t, s1, s1Again, "should return same stream instance")
+}
+
+func TestConnStream_MultipleStreams(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	s1 := c.Stream(1)
+	s2 := c.Stream(2)
+	s3 := c.Stream(3)
+
+	assert.NotEqual(t, s1, s2)
+	assert.NotEqual(t, s2, s3)
+	assert.Equal(t, uint32(1), s1.streamID)
+	assert.Equal(t, uint32(2), s2.streamID)
+	assert.Equal(t, uint32(3), s3.streamID)
+}
+
+func TestConnStream_FinishedStreamReturnsNil(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	// Create and finish stream
+	c.Stream(1)
+	c.rcv.Close(1, 0)
+	c.rcv.RemoveStream(1)
+
+	s := c.Stream(1)
+	assert.Nil(t, s, "should return nil for finished stream")
+}
+
+func TestConnHasActiveStreams_NoStreams(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	assert.False(t, c.HasActiveStreams())
+}
+
+func TestConnHasActiveStreams_WithActiveStream(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.Stream(1)
+
+	assert.True(t, c.HasActiveStreams())
+}
+
+func TestConnHasActiveStreams_AllClosed(t *testing.T) {
+	c := createTestConn(true, false, true)
+	s := c.Stream(1)
+	s.rcvClosed = true
+	s.sndClosed = true
+
+	assert.False(t, c.HasActiveStreams())
+}
+
+func TestConnHasActiveStreams_PartiallyClosed(t *testing.T) {
+	c := createTestConn(true, false, true)
+	s := c.Stream(1)
+	s.rcvClosed = true
+	s.sndClosed = false
+
+	assert.True(t, c.HasActiveStreams(), "stream with only rcv closed should still be active")
+}
+
+func TestConnCloseAllStreams(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.Stream(1)
+	c.Stream(2)
+	c.Stream(3)
+
+	c.closeAllStreams()
+
+	// Verify all streams have Close() called (queued for close)
+	for _, s := range c.streams.Iterator(nil) {
+		assert.True(t, s.IsCloseRequested(), "all streams should be close-requested")
+	}
+}
+
+func TestConnCleanupStream(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.listener.currentStreamID = new(uint32)
+	*c.listener.currentStreamID = 1
+
+	c.Stream(1)
+	c.Stream(2)
+
+	c.cleanupStream(1)
+
+	_, exists := c.streams.Get(1)
+	assert.False(t, exists, "stream 1 should be removed")
+
+	_, exists = c.streams.Get(2)
+	assert.True(t, exists, "stream 2 should still exist")
+}
+
+// =============================================================================
+// EDGE CASE TESTS
+// =============================================================================
+
+func TestConnEncode_NilSharedSecretForData(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.sharedSecret = nil
+
+	p := &payloadHeader{}
+	_, err := c.encode(p, []byte("test"), Data)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestConnEncode_NilPubKeyEpRcvForInitRcv(t *testing.T) {
+	c := createTestConn(false, false, false)
+	c.pubKeyEpRcv = nil
+
+	p := &payloadHeader{}
+	_, err := c.encode(p, []byte("test"), InitRcv)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+func TestConnDecode_InitRcv_TooSmall(t *testing.T) {
+	c := createTestConn(true, false, false)
+
+	// Packet smaller than MinInitRcvSizeHdr + FooterDataSize
+	smallPacket := make([]byte, MinInitRcvSizeHdr-1)
+
+	_, err := c.decode(smallPacket, InitRcv)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "decrypt InitRcv")
+}
+
+func TestConnDecode_InitCryptoRcv_TooSmall(t *testing.T) {
+	c := createTestConn(true, true, false)
+
+	// Packet smaller than MinInitCryptoRcvSizeHdr + FooterDataSize
+	smallPacket := make([]byte, MinInitCryptoRcvSizeHdr-1)
+
+	_, err := c.decode(smallPacket, InitCryptoRcv)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "decrypt InitCryptoRcv")
+}
+
+func TestConnDecode_Data_TooSmall(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	// Packet smaller than MinDataSizeHdr + FooterDataSize
+	smallPacket := make([]byte, MinDataSizeHdr-1)
+
+	_, err := c.decode(smallPacket, Data)
+	assert.Error(t, err)
 }

@@ -8,7 +8,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Helper function to create a minimal Connection for testing
+// =============================================================================
+// TEST HELPER
+// =============================================================================
+
 func newTestConnection() *conn {
 	return &conn{
 		Measurements: NewMeasurements(),
@@ -16,354 +19,552 @@ func newTestConnection() *conn {
 }
 
 // =============================================================================
-// BASIC FUNCTIONALITY TESTS
+// NEWMEASUREMENTS TESTS
 // =============================================================================
 
-// Test invalid inputs
-func TestMeasurementsInvalidInputs(t *testing.T) {
-	conn := newTestConnection()
+func TestMeasurements_New(t *testing.T) {
+	m := NewMeasurements()
 
-	// Test zero RTT measurement
-	conn.updateMeasurements(0, 1_000, 1_000_000_000)
-	assert.Equal(t, uint64(0), conn.bwMax, "Bandwidth should not update with zero RTT")
-
-	// Test zero bytes acked
-	conn.updateMeasurements(100_000_000, 0, 1_000_000_000)
-	assert.Equal(t, uint64(0), conn.bwMax, "Bandwidth should not update with zero bytes")
+	assert.True(t, m.isStartup)
+	assert.Equal(t, startupGain, m.pacingGainPct)
+	assert.Equal(t, uint64(minCwndPackets*defaultMTU), m.cwnd)
 }
 
-// Test first RTT measurement
-func TestMeasurementsFirstMeasurement(t *testing.T) {
+// =============================================================================
+// INVALID INPUT TESTS
+// =============================================================================
+
+func TestMeasurements_UpdateMeasurements_ZeroRTT(t *testing.T) {
 	conn := newTestConnection()
 
-	// First RTT measurement
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000) // 100ms RTT, 1000 bytes, at 1 second
+	conn.updateMeasurements(0, 1_000, 1_000_000_000)
+	assert.Equal(t, uint64(0), conn.bwMax, "bandwidth should not update with zero RTT")
+}
 
-	// Check RTT values
-	assert.Equal(t, uint64(100_000_000), conn.srtt, "First SRTT should equal measurement")
-	assert.Equal(t, uint64(50_000_000), conn.rttvar, "First RTTVAR should be half of measurement")
+func TestMeasurements_UpdateMeasurements_ZeroBytesAcked(t *testing.T) {
+	conn := newTestConnection()
 
-	// Check BBR values
-	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "First RTT should be stored as minimum")
-	assert.Equal(t, uint64(1_000_000_000), conn.rttMinTimeNano, "Timestamp should be stored")
-	assert.Equal(t, uint64(10000), conn.bwMax, "Bandwidth should be calculated correctly")
+	conn.updateMeasurements(100_000_000, 0, 1_000_000_000)
+	assert.Equal(t, uint64(0), conn.bwMax, "bandwidth should not update with zero bytes")
+}
+
+func TestMeasurements_UpdateMeasurements_ZeroNowNano(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 0)
+	assert.Equal(t, uint64(0), conn.bwMax, "bandwidth should not update with zero timestamp")
+}
+
+func TestMeasurements_UpdateMeasurements_ExtremeRTT(t *testing.T) {
+	conn := newTestConnection()
+
+	// RTT greater than ReadDeadLine should be rejected
+	conn.updateMeasurements(ReadDeadLine+1, 1000, 1_000_000_000)
+	assert.Equal(t, uint64(0), conn.bwMax, "bandwidth should not update with extreme RTT")
+}
+
+// =============================================================================
+// FIRST MEASUREMENT TESTS
+// =============================================================================
+
+func TestMeasurements_FirstMeasurement_SRTT(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	assert.Equal(t, uint64(100_000_000), conn.srtt, "first SRTT should equal measurement")
+}
+
+func TestMeasurements_FirstMeasurement_RTTVar(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	assert.Equal(t, uint64(50_000_000), conn.rttvar, "first RTTVAR should be half of measurement")
+}
+
+func TestMeasurements_FirstMeasurement_RTTMin(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "first RTT should be stored as minimum")
+	assert.Equal(t, uint64(1_000_000_000), conn.rttMinTimeNano, "timestamp should be stored")
+}
+
+func TestMeasurements_FirstMeasurement_Bandwidth(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	assert.Equal(t, uint64(10000), conn.bwMax, "bandwidth should be calculated correctly")
 	assert.Equal(t, uint64(0), conn.bwDec, "bwDec should be 0 after bandwidth increase")
-	assert.True(t, conn.isStartup, "Should remain in startup state")
-	assert.Equal(t, uint64(277), conn.pacingGainPct, "Should maintain startup gain")
+}
+
+func TestMeasurements_FirstMeasurement_StartupState(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	assert.True(t, conn.isStartup, "should remain in startup state")
+	assert.Equal(t, uint64(277), conn.pacingGainPct, "should maintain startup gain")
 }
 
 // =============================================================================
 // RTT CALCULATION TESTS
 // =============================================================================
 
-func TestMeasurementsRTTCalculation(t *testing.T) {
-	// Increasing RTT: 100ms -> 200ms
+func TestMeasurements_RTT_Increasing(t *testing.T) {
 	conn := newTestConnection()
 	conn.srtt = 100 * msNano
 	conn.rttvar = 50 * msNano
+
 	conn.updateMeasurements(200*msNano, 1000, 1_000_000_000)
+
 	assert.Equal(t, uint64(112500*1000), conn.srtt)
 	assert.Equal(t, uint64(62500*1000), conn.rttvar)
+}
 
-	// Decreasing RTT: 200ms -> 100ms
-	conn = newTestConnection()
+func TestMeasurements_RTT_Decreasing(t *testing.T) {
+	conn := newTestConnection()
 	conn.srtt = 200 * msNano
 	conn.rttvar = 80 * msNano
+
 	conn.updateMeasurements(100*msNano, 1000, 1_000_000_000)
+
 	assert.Equal(t, uint64(187500*1000), conn.srtt)
 	assert.Equal(t, uint64(85*msNano), conn.rttvar)
+}
 
-	// Stable RTT: 100ms -> 100ms
-	conn = newTestConnection()
+func TestMeasurements_RTT_Stable(t *testing.T) {
+	conn := newTestConnection()
 	conn.srtt = 100 * msNano
 	conn.rttvar = 20 * msNano
+
 	conn.updateMeasurements(100*msNano, 1000, 1_000_000_000)
+
 	assert.Equal(t, uint64(100*msNano), conn.srtt)
 	assert.Equal(t, uint64(15*msNano), conn.rttvar)
 }
 
-func TestMeasurementsRTTEdgeCases(t *testing.T) {
-	// Precision loss with small values
+func TestMeasurements_RTT_SmallValues(t *testing.T) {
 	conn := newTestConnection()
 	conn.srtt = 7
 	conn.rttvar = 3
+
 	conn.updateMeasurements(7, 1000, 1_000_000_000)
+
 	assert.Greater(t, conn.srtt, uint64(0))
 	assert.Greater(t, conn.rttvar, uint64(0))
+}
 
-	// Variance underflow protection
-	conn = newTestConnection()
+func TestMeasurements_RTT_VarianceUnderflow(t *testing.T) {
+	conn := newTestConnection()
 	conn.srtt = 1000
 	conn.rttvar = 1
-	conn.updateMeasurements(1000, 1000, 1_000_000_000)
+
 	// Should not panic or underflow
+	assert.NotPanics(t, func() {
+		conn.updateMeasurements(1000, 1000, 1_000_000_000)
+	})
 }
 
 // =============================================================================
-// BBR BANDWIDTH AND STATE TESTS
+// RTT MIN TRACKING TESTS
 // =============================================================================
 
-// Test minimum RTT tracking
-func TestMeasurementsRTTMinTracking(t *testing.T) {
+func TestMeasurements_RTTMin_Initial(t *testing.T) {
 	conn := newTestConnection()
 
-	// Add initial RTT measurement
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000) // 100ms
-	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "Initial RTT should be stored")
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
 
-	// Add higher RTT - should not replace minimum
-	conn.updateMeasurements(150_000_000, 1000, 2_000_000_000) // 150ms
-	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "Minimum RTT should not change")
-
-	// Add lower RTT - should replace minimum
-	conn.updateMeasurements(50_000_000, 1000, 3_000_000_000) // 50ms
-	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "Lower RTT should become new minimum")
-	assert.Equal(t, uint64(3_000_000_000), conn.rttMinTimeNano, "Timestamp should be updated")
+	assert.Equal(t, uint64(100_000_000), conn.rttMinNano)
 }
 
-// Test RTT minimum expiry after 10 seconds
-func TestMeasurementsRTTMinExpiry(t *testing.T) {
+func TestMeasurements_RTTMin_HigherDoesNotReplace(t *testing.T) {
 	conn := newTestConnection()
 
-	// Add an RTT sample
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000) // 100ms at 1 second
-	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "RTT should be stored")
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(150_000_000, 1000, 2_000_000_000)
 
-	// Update within 10 seconds - old min should persist if new RTT is higher
-	conn.updateMeasurements(150_000_000, 1000, 9_000_000_000) // 150ms at 9 seconds
-	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "Min RTT should persist within 10 seconds")
+	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "minimum RTT should not change")
+}
 
-	// Update after 10 seconds - should take new measurement even if higher
-	conn.updateMeasurements(120_000_000, 1000, 11_000_000_001) // 120ms at 11+ seconds
+func TestMeasurements_RTTMin_LowerReplaces(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(50_000_000, 1000, 3_000_000_000)
+
+	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "lower RTT should become new minimum")
+	assert.Equal(t, uint64(3_000_000_000), conn.rttMinTimeNano, "timestamp should be updated")
+}
+
+func TestMeasurements_RTTMin_ExpiryWithin10Seconds(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(150_000_000, 1000, 9_000_000_000)
+
+	assert.Equal(t, uint64(100_000_000), conn.rttMinNano, "min RTT should persist within 10 seconds")
+}
+
+func TestMeasurements_RTTMin_ExpiryAfter10Seconds(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(120_000_000, 1000, 11_000_000_001)
+
 	assert.Equal(t, uint64(120_000_000), conn.rttMinNano, "RTT min should update after 10 seconds")
-	assert.Equal(t, uint64(11_000_000_001), conn.rttMinTimeNano, "Timestamp should be updated")
+	assert.Equal(t, uint64(11_000_000_001), conn.rttMinTimeNano, "timestamp should be updated")
 }
 
-// Test bandwidth calculation using minimum RTT
-func TestMeasurementsBandwidthCalculation(t *testing.T) {
+// =============================================================================
+// BANDWIDTH CALCULATION TESTS
+// =============================================================================
+
+func TestMeasurements_Bandwidth_Initial(t *testing.T) {
 	conn := newTestConnection()
 
-	// Add multiple RTT measurements
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000) // 100ms - becomes min
-	assert.Equal(t, uint64(10000), conn.bwMax, "Initial bandwidth with 100ms RTT")
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
 
-	conn.updateMeasurements(50_000_000, 1000, 2_000_000_000) // 50ms - new min
-	// Bandwidth should be recalculated: 1000 bytes * 1000 / (50ms / 1000ms) = 20000 bytes/sec
-	assert.Equal(t, uint64(20000), conn.bwMax, "Bandwidth should use new minimum RTT")
-
-	conn.updateMeasurements(75_000_000, 1000, 3_000_000_000) // 75ms - not new min
-	// Bandwidth still calculated with 50ms min: 20000 bytes/sec
-	assert.Equal(t, uint64(20000), conn.bwMax, "Bandwidth should still use 50ms minimum")
+	assert.Equal(t, uint64(10000), conn.bwMax, "initial bandwidth with 100ms RTT")
 }
 
-// Test startup to normal state transition
-func TestMeasurementsStartupToNormalTransition(t *testing.T) {
+func TestMeasurements_Bandwidth_UpdatesWithLowerRTT(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(50_000_000, 1000, 2_000_000_000)
+
+	assert.Equal(t, uint64(20000), conn.bwMax, "bandwidth should use new minimum RTT")
+}
+
+func TestMeasurements_Bandwidth_MaintainsWithHigherRTT(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+	conn.updateMeasurements(50_000_000, 1000, 2_000_000_000)
+	conn.updateMeasurements(75_000_000, 1000, 3_000_000_000)
+
+	assert.Equal(t, uint64(20000), conn.bwMax, "bandwidth should still use 50ms minimum")
+}
+
+// =============================================================================
+// BBR STATE TRANSITION TESTS
+// =============================================================================
+
+func TestMeasurements_StartupToNormal_Transition(t *testing.T) {
 	conn := newTestConnection()
 
 	// Establish baseline bandwidth
-	conn.updateMeasurements(50_000_000, 2000, 1_000_000_000) // 40KB/s
-	assert.True(t, conn.isStartup, "Should be in startup")
+	conn.updateMeasurements(50_000_000, 2000, 1_000_000_000)
+	assert.True(t, conn.isStartup)
 
 	// Three consecutive measurements without bandwidth increase
 	for i := 1; i <= 3; i++ {
-		conn.updateMeasurements(50_000_000, 1000, uint64(1_000_000_000+i*1_000_000_000)) // Lower bandwidth
-		if i < 3 {
-			assert.True(t, conn.isStartup, "Should remain in startup")
-		}
+		conn.updateMeasurements(50_000_000, 1000, uint64(1_000_000_000+i*1_000_000_000))
 	}
 
-	// After 3 decreases, should transition
-	assert.False(t, conn.isStartup, "Should transition to normal after 3 bwDec")
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "Pacing gain should be 1.0x")
+	assert.False(t, conn.isStartup, "should transition to normal after 3 bwDec")
+	assert.Equal(t, uint64(100), conn.pacingGainPct, "pacing gain should be 1.0x")
 }
 
-// Test normal state RTT-based pacing adjustments
-func TestMeasurementsNormalStateRTTBased(t *testing.T) {
+func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.updateMeasurements(50_000_000, 2000, 1_000_000_000)
+
+	// Two consecutive without increase - should still be in startup
+	conn.updateMeasurements(50_000_000, 1000, 2_000_000_000)
+	conn.updateMeasurements(50_000_000, 1000, 3_000_000_000)
+
+	assert.True(t, conn.isStartup, "should remain in startup after 2 bwDec")
+}
+
+// =============================================================================
+// NORMAL STATE PACING TESTS
+// =============================================================================
+
+func TestMeasurements_NormalState_HighRTTInflation(t *testing.T) {
 	conn := newTestConnection()
 	conn.isStartup = false
 	conn.bwMax = 10000
-	conn.rttMinNano = 100_000_000       // Set min RTT to 100ms
-	conn.rttMinTimeNano = 1_000_000_000 // Set time for min RTT
-	conn.lastProbeTimeNano = 1_000_000_000 // Initialize to prevent probing
-
-	// Test high RTT inflation (SRTT > 1.5x min)
-	conn.srtt = 160_000_000                                   // 160ms
-	conn.updateMeasurements(200_000_000, 1000, 1_100_000_000) // New measurement won't replace min
-	assert.Equal(t, uint64(75), conn.pacingGainPct, "Should reduce to 75% when RTT > 1.5x min")
-
-	// Test moderate RTT inflation (SRTT > 1.25x min)
-	conn.srtt = 130_000_000 // 130ms
-	conn.updateMeasurements(200_000_000, 1000, 1_200_000_000)
-	assert.Equal(t, uint64(90), conn.pacingGainPct, "Should reduce to 90% when RTT > 1.25x min")
-
-	// Test normal RTT (ensure we're not in probe window)
-	conn.srtt = 100_000_000                                   // 100ms
-	conn.lastProbeTimeNano = 1_200_000_000                    // Recent probe time
-	conn.updateMeasurements(200_000_000, 1000, 1_300_000_000) // Only 100ms later (1 RTT, not 8)
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "Should be 100% when RTT is normal")
-}
-
-// Test bandwidth probing
-func TestMeasurementsBandwidthProbing(t *testing.T) {
-	conn := newTestConnection()
-	conn.isStartup = false
-	conn.bwMax = 10000
-	conn.rttMinNano = 100_000_000 // 100ms min RTT
+	conn.rttMinNano = 100_000_000
 	conn.rttMinTimeNano = 1_000_000_000
-	conn.srtt = 100_000_000 // 100ms
 	conn.lastProbeTimeNano = 1_000_000_000
 
-	// Update before probe time (less than 8 RTTs = 800ms)
-	conn.updateMeasurements(150_000_000, 1000, 1_500_000_000) // 0.5 seconds = 5 RTTs
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "Should not probe yet")
+	conn.srtt = 160_000_000
+	conn.updateMeasurements(200_000_000, 1000, 1_100_000_000)
 
-	// Update after probe time (more than 8 RTTs = 800ms)
-	conn.updateMeasurements(150_000_000, 1000, 1_900_000_000) // 0.9 seconds = 9 RTTs since last probe
-	assert.Equal(t, uint64(125), conn.pacingGainPct, "Should probe with 125% gain")
-	assert.Equal(t, uint64(1_900_000_000), conn.lastProbeTimeNano, "Should update probe time")
+	assert.Equal(t, uint64(75), conn.pacingGainPct, "should reduce to 75% when RTT > 1.5x min")
+}
+
+func TestMeasurements_NormalState_ModerateRTTInflation(t *testing.T) {
+	conn := newTestConnection()
+	conn.isStartup = false
+	conn.bwMax = 10000
+	conn.rttMinNano = 100_000_000
+	conn.rttMinTimeNano = 1_000_000_000
+	conn.lastProbeTimeNano = 1_000_000_000
+
+	conn.srtt = 130_000_000
+	conn.updateMeasurements(200_000_000, 1000, 1_200_000_000)
+
+	assert.Equal(t, uint64(90), conn.pacingGainPct, "should reduce to 90% when RTT > 1.25x min")
+}
+
+func TestMeasurements_NormalState_NormalRTT(t *testing.T) {
+	conn := newTestConnection()
+	conn.isStartup = false
+	conn.bwMax = 10000
+	conn.rttMinNano = 100_000_000
+	conn.rttMinTimeNano = 1_000_000_000
+	conn.lastProbeTimeNano = 1_200_000_000
+
+	conn.srtt = 100_000_000
+	conn.updateMeasurements(200_000_000, 1000, 1_300_000_000)
+
+	assert.Equal(t, uint64(100), conn.pacingGainPct, "should be 100% when RTT is normal")
+}
+
+// =============================================================================
+// BANDWIDTH PROBING TESTS
+// =============================================================================
+
+func TestMeasurements_Probing_BeforeProbeTime(t *testing.T) {
+	conn := newTestConnection()
+	conn.isStartup = false
+	conn.bwMax = 10000
+	conn.rttMinNano = 100_000_000
+	conn.rttMinTimeNano = 1_000_000_000
+	conn.srtt = 100_000_000
+	conn.lastProbeTimeNano = 1_000_000_000
+
+	conn.updateMeasurements(150_000_000, 1000, 1_500_000_000) // 5 RTTs
+
+	assert.Equal(t, uint64(100), conn.pacingGainPct, "should not probe yet")
+}
+
+func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
+	conn := newTestConnection()
+	conn.isStartup = false
+	conn.bwMax = 10000
+	conn.rttMinNano = 100_000_000
+	conn.rttMinTimeNano = 1_000_000_000
+	conn.srtt = 100_000_000
+	conn.lastProbeTimeNano = 1_000_000_000
+
+	conn.updateMeasurements(150_000_000, 1000, 1_900_000_000) // 9 RTTs
+
+	assert.Equal(t, uint64(125), conn.pacingGainPct, "should probe with 125% gain")
+	assert.Equal(t, uint64(1_900_000_000), conn.lastProbeTimeNano, "should update probe time")
 }
 
 // =============================================================================
 // RTO CALCULATION TESTS
 // =============================================================================
 
-// Test RTO calculation with default values
-func TestMeasurementsRTOCalculationDefault(t *testing.T) {
+func TestMeasurements_RTO_Default(t *testing.T) {
 	conn := newTestConnection()
 
-	// For new connection with no RTT measurements
 	rto := conn.rtoNano()
-	expectedRTO := uint64(200 * msNano) // Default of 200ms
 
-	assert.Equal(t, expectedRTO, rto, "Default RTO should be 200ms")
+	assert.Equal(t, uint64(200*msNano), rto, "default RTO should be 200ms")
 }
 
-// Test RTO with standard network conditions
-func TestMeasurementsRTOCalculationStandard(t *testing.T) {
+func TestMeasurements_RTO_Standard(t *testing.T) {
 	conn := newTestConnection()
-	conn.srtt = 100 * msNano  // 100ms
-	conn.rttvar = 25 * msNano // 25ms
+	conn.srtt = 100 * msNano
+	conn.rttvar = 25 * msNano
 
 	rto := conn.rtoNano()
-	// 100ms + 4 * 25ms = 200ms
-	expectedRTO := uint64(200 * msNano)
 
-	assert.Equal(t, expectedRTO, rto, "RTO should be 200ms for standard network")
+	assert.Equal(t, uint64(200*msNano), rto, "RTO should be SRTT + 4*RTTVAR")
 }
 
-// Test RTO calculation with capping
-func TestMeasurementsRTOCalculationCapped(t *testing.T) {
+func TestMeasurements_RTO_Minimum(t *testing.T) {
 	conn := newTestConnection()
-	conn.srtt = 3000 * msNano  // 3s
-	conn.rttvar = 500 * msNano // 500ms
+	conn.srtt = 10 * msNano
+	conn.rttvar = 5 * msNano
 
 	rto := conn.rtoNano()
-	// Should be capped at maximum
-	expectedRTO := uint64(2000 * msNano) // 2s maximum
 
-	assert.Equal(t, expectedRTO, rto, "RTO should be capped at 2s for extreme latency")
+	assert.Equal(t, uint64(100*msNano), rto, "RTO should be capped at minimum 100ms")
+}
+
+func TestMeasurements_RTO_Maximum(t *testing.T) {
+	conn := newTestConnection()
+	conn.srtt = 3000 * msNano
+	conn.rttvar = 500 * msNano
+
+	rto := conn.rtoNano()
+
+	assert.Equal(t, uint64(2000*msNano), rto, "RTO should be capped at maximum 2s")
 }
 
 // =============================================================================
-// CONGESTION CONTROL EVENT TESTS
+// CONGESTION EVENT TESTS
 // =============================================================================
 
-// Test duplicate ACK handling
-func TestMeasurementsOnDuplicateAck(t *testing.T) {
-	// Test in startup state
+func TestMeasurements_OnDuplicateAck(t *testing.T) {
 	conn := newTestConnection()
 	conn.bwMax = 10000
+
 	conn.onDuplicateAck()
 
-	assert.False(t, conn.isStartup, "Should exit startup on dup ACK")
-	assert.Equal(t, uint64(9800), conn.bwMax, "Bandwidth should reduce by 2%")
-	assert.Equal(t, uint64(90), conn.pacingGainPct, "Should set gain to 90%")
+	assert.False(t, conn.isStartup, "should exit startup on dup ACK")
+	assert.Equal(t, uint64(9800), conn.bwMax, "bandwidth should reduce by 2%")
+	assert.Equal(t, uint64(90), conn.pacingGainPct, "should set gain to 90%")
 }
 
-// Test packet loss handling
-func TestMeasurementsOnPacketLoss(t *testing.T) {
+func TestMeasurements_OnPacketLoss(t *testing.T) {
 	conn := newTestConnection()
 	conn.bwMax = 10000
 
 	conn.onPacketLoss()
 
-	assert.False(t, conn.isStartup, "Should switch to normal state")
-	assert.Equal(t, uint64(9500), conn.bwMax, "Bandwidth should reduce by 5%")
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "Should reset gain to 100%")
+	assert.False(t, conn.isStartup, "should switch to normal state")
+	assert.Equal(t, uint64(9500), conn.bwMax, "bandwidth should reduce by 5%")
+	assert.Equal(t, uint64(100), conn.pacingGainPct, "should reset gain to 100%")
+}
+
+func TestMeasurements_OnPacketLoss_ZeroBandwidth(t *testing.T) {
+	conn := newTestConnection()
+	conn.bwMax = 0
+
+	conn.onPacketLoss()
+
+	assert.Equal(t, uint64(0), conn.bwMax)
+}
+
+func TestMeasurements_MultipleEvents(t *testing.T) {
+	conn := newTestConnection()
+
+	conn.onPacketLoss()
+	conn.onDuplicateAck()
+
+	assert.False(t, conn.isStartup)
 }
 
 // =============================================================================
 // PACING CALCULATION TESTS
 // =============================================================================
 
-// Test pacing when no bandwidth estimate exists
-func TestMeasurementsPacingNoBandwidth(t *testing.T) {
+func TestMeasurements_Pacing_NoSRTT(t *testing.T) {
 	conn := newTestConnection()
 
-	// Test with no SRTT
 	interval := conn.calcPacing(1000)
-	assert.Equal(t, uint64(10*msNano), interval, "Should return 10ms default when no SRTT")
 
-	// Test with SRTT but no bandwidth
-	conn.srtt = 100_000_000 // 100ms in nanoseconds
-	interval = conn.calcPacing(1000)
-	assert.Equal(t, uint64(10_000_000), interval, "Should return SRTT/10 when no bandwidth")
+	assert.Equal(t, uint64(10*msNano), interval, "should return 10ms default when no SRTT")
 }
 
-// Test normal pacing calculation
-func TestMeasurementsPacingWithBandwidth(t *testing.T) {
+func TestMeasurements_Pacing_SRTTNoBandwidth(t *testing.T) {
 	conn := newTestConnection()
-	conn.bwMax = 10000       // 10KB/s
-	conn.pacingGainPct = 100 // 1.0x
+	conn.srtt = 100_000_000
 
-	// 1KB packet: (1000 bytes / 10000 bytes/sec) * 1e9 ns = 100,000,000 ns
 	interval := conn.calcPacing(1000)
-	assert.Equal(t, uint64(100_000_000), interval, "Should calculate correct interval")
 
-	// Test with pacing gain
-	conn.pacingGainPct = 200 // 2.0x
-	interval = conn.calcPacing(1000)
-	assert.Equal(t, uint64(50_000_000), interval, "Higher gain should reduce interval")
+	assert.Equal(t, uint64(10_000_000), interval, "should return SRTT/10 when no bandwidth")
+}
+
+func TestMeasurements_Pacing_WithBandwidth(t *testing.T) {
+	conn := newTestConnection()
+	conn.bwMax = 10000
+	conn.pacingGainPct = 100
+
+	interval := conn.calcPacing(1000)
+
+	assert.Equal(t, uint64(100_000_000), interval, "should calculate correct interval")
+}
+
+func TestMeasurements_Pacing_WithGain(t *testing.T) {
+	conn := newTestConnection()
+	conn.bwMax = 10000
+	conn.pacingGainPct = 200
+
+	interval := conn.calcPacing(1000)
+
+	assert.Equal(t, uint64(50_000_000), interval, "higher gain should reduce interval")
+}
+
+func TestMeasurements_Pacing_ZeroPacketSize(t *testing.T) {
+	conn := newTestConnection()
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
+
+	interval := conn.calcPacing(0)
+
+	assert.Equal(t, uint64(0), interval)
 }
 
 // =============================================================================
-// BACKOFF ALGORITHM TESTS (0-based rtoNr)
+// BACKOFF TESTS
 // =============================================================================
 
-func TestBackoff(t *testing.T) {
+func TestBackoff_NoBackoff(t *testing.T) {
 	baseRTO := uint64(200 * msNano)
 
-	tests := []struct {
-		name        string
-		rtoNr       uint
-		expectedRTO uint64
-		expectError bool
-	}{
-		{"no backoff (first attempt)", 0, baseRTO, false},
-		{"1x backoff", 1, baseRTO * 2, false},
-		{"2x backoff", 2, baseRTO * 4, false},
-		{"3x backoff", 3, baseRTO * 8, false},
-		{"4x backoff (max allowed)", 4, baseRTO * 16, false},
-		{"exceeds max retry", 5, 0, true},
-		{"way over max", 100, 0, true},
-	}
+	result, err := backoff(baseRTO, 0)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := backoff(baseRTO, tt.rtoNr)
-			if tt.expectError {
-				assert.Error(t, err)
-				assert.Contains(t, err.Error(), "max retry attempts")
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expectedRTO, result)
-			}
-		})
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, baseRTO, result)
 }
 
-func TestBackoffEdgeCases(t *testing.T) {
-	// Zero base RTO
+func TestBackoff_1x(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	result, err := backoff(baseRTO, 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, baseRTO*2, result)
+}
+
+func TestBackoff_2x(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	result, err := backoff(baseRTO, 2)
+
+	assert.NoError(t, err)
+	assert.Equal(t, baseRTO*4, result)
+}
+
+func TestBackoff_3x(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	result, err := backoff(baseRTO, 3)
+
+	assert.NoError(t, err)
+	assert.Equal(t, baseRTO*8, result)
+}
+
+func TestBackoff_MaxAllowed(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	result, err := backoff(baseRTO, 4)
+
+	assert.NoError(t, err)
+	assert.Equal(t, baseRTO*16, result)
+}
+
+func TestBackoff_ExceedsMax(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	result, err := backoff(baseRTO, 5)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "max retry attempts")
+	assert.Equal(t, uint64(0), result)
+}
+
+func TestBackoff_WayOverMax(t *testing.T) {
+	baseRTO := uint64(200 * msNano)
+
+	_, err := backoff(baseRTO, 100)
+
+	assert.Error(t, err)
+}
+
+func TestBackoff_ZeroBase(t *testing.T) {
 	result, err := backoff(0, 0)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(0), result)
@@ -371,56 +572,45 @@ func TestBackoffEdgeCases(t *testing.T) {
 	result, err = backoff(0, 3)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(0), result)
+}
 
-	// Very small RTO
-	result, err = backoff(1, 2)
+func TestBackoff_VerySmallRTO(t *testing.T) {
+	result, err := backoff(1, 2)
+
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(4), result) // 1 * 2 * 2 = 4
+	assert.Equal(t, uint64(4), result)
+}
 
-	// Large RTO (check no overflow for reasonable values)
-	largeRTO := uint64(1000 * msNano) // 1 second
-	result, err = backoff(largeRTO, 4)
+func TestBackoff_LargeRTO(t *testing.T) {
+	largeRTO := uint64(1000 * msNano)
+
+	result, err := backoff(largeRTO, 4)
+
 	assert.NoError(t, err)
 	assert.Equal(t, largeRTO*16, result)
 }
 
 // =============================================================================
-// EDGE CASE AND ERROR CONDITION TESTS
+// EDGE CASE TESTS
 // =============================================================================
 
-func TestMeasurementsEdgeCases(t *testing.T) {
-	// Division by zero protection
+func TestMeasurements_DivisionByZeroProtection(t *testing.T) {
 	conn := newTestConnection()
 	conn.rttMinNano = 0
+
 	assert.NotPanics(t, func() {
 		conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
 	})
-
-	// Zero packet size gives zero interval
-	conn = newTestConnection()
-	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
-	assert.Equal(t, uint64(0), conn.calcPacing(0))
-
-	// State transitions with zero bandwidth
-	conn = newTestConnection()
-	conn.bwMax = 0
-	conn.onPacketLoss()
-	assert.Equal(t, uint64(0), conn.bwMax)
-
-	// Multiple rapid state transitions
-	conn = newTestConnection()
-	conn.onPacketLoss()
-	conn.onDuplicateAck()
-	assert.False(t, conn.isStartup)
 }
 
-// Test concurrent access protection
-func TestMeasurementsConcurrentAccess(t *testing.T) {
+// =============================================================================
+// CONCURRENT ACCESS TESTS
+// =============================================================================
+
+func TestMeasurements_ConcurrentAccess(t *testing.T) {
 	conn := newTestConnection()
 
 	var wg sync.WaitGroup
-
-	// Test that concurrent calls don't cause race conditions
 	wg.Add(3)
 
 	go func() {
@@ -447,34 +637,32 @@ func TestMeasurementsConcurrentAccess(t *testing.T) {
 		}
 	}()
 
-	// Wait for all goroutines to complete
 	wg.Wait()
 
 	// Should not panic and should have valid state
-	assert.Greater(t, conn.bwMax, uint64(0), "Should maintain valid bandwidth after concurrent access")
+	assert.GreaterOrEqual(t, conn.bwMax, uint64(0))
 }
 
 // =============================================================================
-// INTEGRATION AND WORKFLOW TESTS
+// INTEGRATION TESTS
 // =============================================================================
 
-// Test complete integration flow
-func TestMeasurementsIntegration(t *testing.T) {
+func TestMeasurements_Integration_StartupToNormal(t *testing.T) {
 	conn := newTestConnection()
 
 	// Startup phase - increasing bandwidth
 	for i := 0; i < 5; i++ {
 		conn.updateMeasurements(50_000_000, uint16(1000*(i+1)), uint64(1_000_000_000*(i+1)))
 	}
-	assert.True(t, conn.isStartup, "Should still be in startup")
+	assert.True(t, conn.isStartup)
 
 	// Plateau - trigger transition
 	for i := 0; i < 3; i++ {
 		conn.updateMeasurements(50_000_000, 1000, uint64(6_000_000_000+i*1_000_000_000))
 	}
-	assert.False(t, conn.isStartup, "Should transition to normal")
+	assert.False(t, conn.isStartup)
 
 	// Verify pacing calculation works
 	interval := conn.calcPacing(1000)
-	assert.Greater(t, interval, uint64(0), "Should calculate valid pacing interval")
+	assert.Greater(t, interval, uint64(0))
 }

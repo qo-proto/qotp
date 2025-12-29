@@ -210,7 +210,11 @@ func (m *LinkedMap[K, V]) Prev(key K) (K, V, bool) {
 	return node.prev.key, node.prev.value, true
 }
 
-// Iterator returns a Go 1.23+ iterator starting after startKey (or from beginning if nil).
+// Iterator returns a Go 1.23+ iterator starting after startKey.
+// Falls back to iterating from beginning if:
+//   - startKey is nil
+//   - startKey doesn't exist in the map
+//   - startKey is the last element (no elements after it)
 func (m *LinkedMap[K, V]) Iterator(startKey *K) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		m.mu.RLock()

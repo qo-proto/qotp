@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
@@ -22,11 +23,10 @@ var (
 	testPrvKey2, _ = ecdh.X25519().NewPrivateKey(testPrvSeed2[:])
 
 	hexPubKey1 = fmt.Sprintf("0x%x", testPrvKey1.PublicKey().Bytes())
-	hexPubKey2 = fmt.Sprintf("0x%x", testPrvKey2.PublicKey().Bytes())
 )
 
 // =============================================================================
-// TEST HELPER - mirrors Listen() header parsing logic
+// TEST HELPER
 // =============================================================================
 
 func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
@@ -44,49 +44,342 @@ func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byt
 	return c, payload, msgType, err
 }
 
-// =============================================================================
-// LISTENER CREATION TESTS
-// =============================================================================
-
-func TestListenerNewListener(t *testing.T) {
-	t.Run("valid address", func(t *testing.T) {
-		listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
-		assert.NoError(t, err)
-		assert.NotNil(t, listener)
-		defer listener.Close()
-	})
-
-	t.Run("invalid port", func(t *testing.T) {
-		_, err := Listen(WithListenAddr("127.0.0.1:99999"), WithSeed(testPrvSeed1))
-		assert.Error(t, err)
-	})
+func getTestRemoteAddrPort() netip.AddrPort {
+	addr, _ := netip.ParseAddr("127.0.0.1")
+	return netip.AddrPortFrom(addr, 8080)
 }
 
-func TestListenerNewStream(t *testing.T) {
+// =============================================================================
+// LISTEN OPTION TESTS
+// =============================================================================
+
+func TestListen_DefaultOptions(t *testing.T) {
+	listener, err := Listen()
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.NotNil(t, listener.prvKeyId)
+	assert.NotNil(t, listener.connMap)
+	assert.Equal(t, defaultMTU, listener.mtu)
+	defer listener.Close()
+}
+
+func TestListen_WithListenAddr_Valid(t *testing.T) {
+	listener, err := Listen(WithListenAddr("127.0.0.1:8080"), WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	defer listener.Close()
+}
+
+func TestListen_WithListenAddr_InvalidPort(t *testing.T) {
+	_, err := Listen(WithListenAddr("127.0.0.1:99999"), WithSeed(testPrvSeed1))
+	assert.Error(t, err)
+}
+
+func TestListen_WithListenAddr_InvalidAddress(t *testing.T) {
+	_, err := Listen(WithListenAddr("not-an-address"), WithSeed(testPrvSeed1))
+	assert.Error(t, err)
+}
+
+func TestListen_WithSeed(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, testPrvKey1.PublicKey().Bytes(), listener.prvKeyId.PublicKey().Bytes())
+	defer listener.Close()
+}
+
+func TestListen_WithSeedHex_Valid(t *testing.T) {
+	hexSeed := fmt.Sprintf("%x", testPrvSeed1)
+	listener, err := Listen(WithSeedHex(hexSeed))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, testPrvKey1.PublicKey().Bytes(), listener.prvKeyId.PublicKey().Bytes())
+	defer listener.Close()
+}
+
+func TestListen_WithSeedHex_With0xPrefix(t *testing.T) {
+	hexSeed := "0x" + fmt.Sprintf("%x", testPrvSeed1)
+	listener, err := Listen(WithSeedHex(hexSeed))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	defer listener.Close()
+}
+
+func TestListen_WithSeedHex_InvalidHex(t *testing.T) {
+	_, err := Listen(WithSeedHex("not-valid-hex!"))
+	assert.Error(t, err)
+}
+
+func TestListen_WithSeedHex_WrongLength(t *testing.T) {
+	_, err := Listen(WithSeedHex("abcd1234"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "32 bytes")
+}
+
+func TestListen_WithSeedString(t *testing.T) {
+	listener, err := Listen(WithSeedString("my secret passphrase"))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.NotNil(t, listener.prvKeyId)
+	defer listener.Close()
+}
+
+func TestListen_WithPrvKeyId(t *testing.T) {
+	listener, err := Listen(WithPrvKeyId(testPrvKey1))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, testPrvKey1, listener.prvKeyId)
+	defer listener.Close()
+}
+
+func TestListen_WithMtu(t *testing.T) {
+	listener, err := Listen(WithMtu(1200))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, 1200, listener.mtu)
+	defer listener.Close()
+}
+
+func TestListen_WithKeyLogWriter(t *testing.T) {
+	var buf bytes.Buffer
+	listener, err := Listen(WithKeyLogWriter(&buf))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, &buf, listener.keyLogWriter)
+	defer listener.Close()
+}
+
+func TestListen_WithNetworkConn(t *testing.T) {
+	mockConn := NewConnPair("addr1", "addr2")
+	listener, err := Listen(WithNetworkConn(mockConn.Conn1))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, mockConn.Conn1, listener.localConn)
+}
+
+func TestListen_MultipleOptions(t *testing.T) {
+	listener, err := Listen(
+		WithSeed(testPrvSeed1),
+		WithMtu(1200),
+	)
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, testPrvKey1.PublicKey().Bytes(), listener.prvKeyId.PublicKey().Bytes())
+	assert.Equal(t, 1200, listener.mtu)
+	defer listener.Close()
+}
+
+// =============================================================================
+// LISTENER LIFECYCLE TESTS
+// =============================================================================
+
+func TestListener_Close(t *testing.T) {
+	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+
+	_, _ = listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
+
+	err = listener.Close()
+	assert.NoError(t, err)
+}
+
+func TestListener_Close_Empty(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+
+	err = listener.Close()
+	assert.NoError(t, err)
+}
+
+func TestListener_HasActiveStreams_Empty(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	defer listener.Close()
+
+	assert.False(t, listener.HasActiveStreams())
+}
+
+func TestListener_HasActiveStreams_WithConnection(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	defer listener.Close()
+
+	conn, err := listener.DialString("127.0.0.1:9000")
+	assert.NoError(t, err)
+
+	// Create a stream
+	conn.Stream(0)
+	assert.True(t, listener.HasActiveStreams())
+}
+
+// =============================================================================
+// DIAL FROM LISTENER TESTS
+// =============================================================================
+
+func TestListener_DialStringWithCryptoString_Valid(t *testing.T) {
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listener.Close()
 
-	t.Run("valid remote address", func(t *testing.T) {
-		conn, err := listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
-		assert.NoError(t, err)
-		assert.NotNil(t, conn)
-	})
-
-	t.Run("invalid port", func(t *testing.T) {
-		conn, err := listener.DialStringWithCryptoString("127.0.0.1:99999", hexPubKey1)
-		assert.Nil(t, conn)
-		assert.Error(t, err)
-	})
+	conn, err := listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
+	assert.NoError(t, err)
+	assert.NotNil(t, conn)
 }
 
-func TestListenerClose(t *testing.T) {
+func TestListener_DialStringWithCryptoString_InvalidPort(t *testing.T) {
 	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
+	defer listener.Close()
 
-	listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	err = listener.Close()
+	conn, err := listener.DialStringWithCryptoString("127.0.0.1:99999", hexPubKey1)
+	assert.Nil(t, conn)
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// NEWCONN TESTS
+// =============================================================================
+
+func TestListener_newConn_DuplicateConnId(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
+	defer listener.Close()
+
+	// First dial creates a connection
+	conn1, err := listener.DialString("127.0.0.1:9000")
+	assert.NoError(t, err)
+	assert.NotNil(t, conn1)
+
+	// Try to create connection with same connId - should fail
+	_, err = listener.newConn(conn1.connId, getTestRemoteAddrPort(), testPrvKey1, nil, nil, true, false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+// =============================================================================
+// CLEANUP TESTS
+// =============================================================================
+
+func TestListener_cleanupConn(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	defer listener.Close()
+
+	conn, err := listener.DialString("127.0.0.1:9000")
+	assert.NoError(t, err)
+	connId := conn.connId
+
+	assert.True(t, listener.connMap.Contains(connId))
+
+	listener.cleanupConn(connId)
+
+	assert.False(t, listener.connMap.Contains(connId))
+}
+
+func TestListener_cleanupConn_UpdatesCurrentConnID(t *testing.T) {
+	listener, err := Listen(WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+	defer listener.Close()
+
+	conn1, _ := listener.DialString("127.0.0.1:9000")
+	conn2, _ := listener.DialString("127.0.0.1:9001")
+
+	// Set current to first connection
+	listener.currentConnID = &conn1.connId
+
+	// Cleanup first connection - should advance currentConnID
+	listener.cleanupConn(conn1.connId)
+
+	assert.NotNil(t, listener.currentConnID)
+	assert.Equal(t, conn2.connId, *listener.currentConnID)
+}
+
+// =============================================================================
+// DECODE ERROR TESTS
+// =============================================================================
+
+func TestListener_Decode_EmptyBuffer(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	_, _, _, err := testDecode(l, []byte{}, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too small")
+}
+
+func TestListener_Decode_TooSmall(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	_, _, _, err := testDecode(l, []byte{0x00}, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "too small")
+}
+
+func TestListener_Decode_InvalidVersion(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	buf := make([]byte, MinPacketSize)
+	buf[0] = 0x1F // Version 31 (invalid)
+
+	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported version")
+}
+
+func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	buf := make([]byte, MinPacketSize)
+	buf[0] = byte(InitRcv) << 5
+
+	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	buf := make([]byte, MinPacketSize)
+	buf[0] = byte(InitCryptoRcv) << 5
+
+	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
+	l := &Listener{
+		connMap:  NewLinkedMap[uint64, *conn](),
+		prvKeyId: testPrvKey1,
+		mtu:      defaultMTU,
+	}
+
+	buf := make([]byte, MinPacketSize)
+	buf[0] = byte(Data) << 5
+
+	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
 }
 
 // =============================================================================
@@ -213,7 +506,7 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 // DATA TRANSFER TESTS
 // =============================================================================
 
-func TestListenerStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
+func TestListener_DataTransfer_50PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 1000,
 		func(counter int) bool { return counter%2 == 0 },
 		func(counter int) bool { return counter%2 == 0 },
@@ -221,7 +514,7 @@ func TestListenerStreamWithAdversarialNetwork50PercentLoss(t *testing.T) {
 		"50% Loss")
 }
 
-func TestListenerStreamWith10PercentLoss(t *testing.T) {
+func TestListener_DataTransfer_10PercentLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 500,
 		func(counter int) bool { return counter%10 == 0 },
 		func(counter int) bool { return counter%10 == 0 },
@@ -229,7 +522,7 @@ func TestListenerStreamWith10PercentLoss(t *testing.T) {
 		"10% Loss")
 }
 
-func TestListenerStreamWithAsymmetricLoss(t *testing.T) {
+func TestListener_DataTransfer_AsymmetricLoss(t *testing.T) {
 	runDataTransferTest(t, 10*1024, 1000,
 		func(counter int) bool { return counter%5 == 0 },
 		func(counter int) bool { return counter%2 == 0 },
@@ -237,7 +530,15 @@ func TestListenerStreamWithAsymmetricLoss(t *testing.T) {
 		"Asymmetric Loss (20% data, 50% ack)")
 }
 
-func TestListenerStreamWithReordering(t *testing.T) {
+func TestListener_DataTransfer_NoLoss(t *testing.T) {
+	runDataTransferTest(t, 10*1024, 100,
+		func(counter int) bool { return false },
+		func(counter int) bool { return false },
+		10*msNano,
+		"No Loss")
+}
+
+func TestListener_DataTransfer_Reordering(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
 	connPair.Conn1.latencyNano = 50 * msNano
@@ -317,7 +618,7 @@ func TestListenerStreamWithReordering(t *testing.T) {
 		len(receivedData), testDataSize)
 }
 
-func TestListenerStreamWithExtremeConditions(t *testing.T) {
+func TestListener_DataTransfer_ExtremeConditions(t *testing.T) {
 	maxRetry = 20
 	ReadDeadLine = uint64(300 * secondNano)
 
@@ -337,7 +638,7 @@ func TestListenerStreamWithExtremeConditions(t *testing.T) {
 // BIDIRECTIONAL TEST
 // =============================================================================
 
-func TestListenerBidirectional10Streams(t *testing.T) {
+func TestListener_Bidirectional_MultipleStreams(t *testing.T) {
 	listenerAlice, err := Listen(WithListenAddr("127.0.0.1:0"), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listenerAlice.Close()
@@ -518,67 +819,5 @@ func TestListenerBidirectional10Streams(t *testing.T) {
 	for i := 0; i < numStreams; i++ {
 		assert.Equal(t, dataSize, bobReceived[uint32(i)],
 			"Bob should receive all data on stream %d", i)
-	}
-}
-
-// =============================================================================
-// DECODE ERROR TESTS
-// =============================================================================
-
-func TestListenerDecodeErrors(t *testing.T) {
-	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
-	}
-
-	addr, _ := netip.ParseAddr("127.0.0.1")
-	remoteAddr := netip.AddrPortFrom(addr, 8080)
-
-	t.Run("empty buffer", func(t *testing.T) {
-		_, _, _, err := testDecode(l, []byte{}, remoteAddr)
-		assert.Error(t, err)
-	})
-
-	t.Run("too small", func(t *testing.T) {
-		_, _, _, err := testDecode(l, []byte{0x00}, remoteAddr)
-		assert.Error(t, err)
-	})
-
-	t.Run("invalid version", func(t *testing.T) {
-		buf := make([]byte, MinPacketSize)
-		buf[0] = 0x1F // Version 31 (invalid)
-		_, _, _, err := testDecode(l, buf, remoteAddr)
-		assert.Error(t, err)
-	})
-}
-
-func TestListenerDecodeConnNotFound(t *testing.T) {
-	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
-	}
-
-	addr, _ := netip.ParseAddr("127.0.0.1")
-	remoteAddr := netip.AddrPortFrom(addr, 8080)
-
-	tests := []struct {
-		name    string
-		msgType cryptoMsgType
-	}{
-		{"InitRcv", InitRcv},
-		{"InitCryptoRcv", InitCryptoRcv},
-		{"Data", Data},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := make([]byte, MinPacketSize)
-			buf[0] = byte(tt.msgType) << 5
-			_, _, _, err := testDecode(l, buf, remoteAddr)
-			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "not found")
-		})
 	}
 }

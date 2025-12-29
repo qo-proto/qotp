@@ -14,6 +14,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// =============================================================================
+// MOCK NETWORK IMPLEMENTATION FOR TESTING
+// =============================================================================
+
 // ConnPair represents a pair of connected NetworkConn implementations
 type ConnPair struct {
 	Conn1 *PairedConn
@@ -34,7 +38,7 @@ type PairedConn struct {
 	readQueueMu sync.Mutex
 
 	latencyNano uint64 // One-way latency in nanoseconds
-	bandwidth   uint64 // Bandwidth in bits per second (0 = unlimited)
+	bandwidth   uint64 // Bandwidth in bytes per second (0 = unlimited)
 	localTime   uint64
 
 	closed bool
@@ -63,6 +67,11 @@ func NewConnPair(addr1 string, addr2 string) *ConnPair {
 		Conn1: conn1,
 		Conn2: conn2,
 	}
+}
+
+// NewMockNetworkPair creates a ConnPair with default addresses for use in tests
+func NewMockNetworkPair() *ConnPair {
+	return NewConnPair("alice", "bob")
 }
 
 func (c *ConnPair) senderToRecipient(sequence ...int) (n int, err error) {
@@ -162,7 +171,7 @@ func (p *PairedConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, now
 	}
 
 	// Calculate transmission time based on bandwidth
-	// bandwidth is in bits per second, data is in bytes
+	// bandwidth is in bytes per second, data is in bytes
 	transmissionNano := uint64(0)
 	if p.bandwidth > 0 {
 		transmissionNano = (uint64(len(b)) * secondNano) / p.bandwidth
@@ -288,7 +297,7 @@ func (p *PairedConn) Close() error {
 	return nil
 }
 
-// LocalAddr returns the local address
+// LocalAddrString returns the local address
 func (p *PairedConn) LocalAddrString() string {
 	// Format the address as local→remote
 	if p.partner != nil {
@@ -302,28 +311,40 @@ func (p *PairedConn) isClosed() bool {
 	return p.closed
 }
 
-//************************************* TESTS
+// =============================================================================
+// CONNPAIR TESTS
+// =============================================================================
 
-func TestNetNewConnPair(t *testing.T) {
-	// Test creating a new connection pair
+func TestNet_NewConnPair(t *testing.T) {
 	connPair := NewConnPair("addr1", "addr2")
 
-	// Assert connections were created
 	assert.NotNil(t, connPair)
 	assert.NotNil(t, connPair.Conn1)
 	assert.NotNil(t, connPair.Conn2)
-
-	// Assert connections are properly linked
-	conn1 := connPair.Conn1
-	conn2 := connPair.Conn2
-
-	assert.Equal(t, "addr1", conn1.localAddr)
-	assert.Equal(t, "addr2", conn2.localAddr)
-	assert.Equal(t, conn2, conn1.partner)
-	assert.Equal(t, conn1, conn2.partner)
 }
 
-func TestNetBidirectionalCommunication(t *testing.T) {
+func TestNet_NewConnPair_ProperlyLinked(t *testing.T) {
+	connPair := NewConnPair("addr1", "addr2")
+
+	assert.Equal(t, "addr1", connPair.Conn1.localAddr)
+	assert.Equal(t, "addr2", connPair.Conn2.localAddr)
+	assert.Equal(t, connPair.Conn2, connPair.Conn1.partner)
+	assert.Equal(t, connPair.Conn1, connPair.Conn2.partner)
+}
+
+func TestNet_NewMockNetworkPair(t *testing.T) {
+	connPair := NewMockNetworkPair()
+
+	assert.NotNil(t, connPair)
+	assert.NotNil(t, connPair.Conn1)
+	assert.NotNil(t, connPair.Conn2)
+}
+
+// =============================================================================
+// BIDIRECTIONAL COMMUNICATION TESTS
+// =============================================================================
+
+func TestNet_BidirectionalCommunication(t *testing.T) {
 	connPair := NewConnPair("endpoint1", "endpoint2")
 	endpoint1 := connPair.Conn1
 	endpoint2 := connPair.Conn2
@@ -331,6 +352,7 @@ func TestNetBidirectionalCommunication(t *testing.T) {
 	dataFromEndpoint1 := []byte("message from endpoint 1")
 	dataFromEndpoint2 := []byte("response from endpoint 2")
 
+	// Endpoint1 -> Endpoint2
 	err := endpoint1.WriteToUDPAddrPort(dataFromEndpoint1, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 
@@ -338,39 +360,51 @@ func TestNetBidirectionalCommunication(t *testing.T) {
 	assert.NoError(t, err)
 
 	buffer := make([]byte, 100)
-	n2, _, err := endpoint2.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
+	n, _, err := endpoint2.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
 	assert.NoError(t, err)
-	assert.Equal(t, len(dataFromEndpoint1), n2)
+	assert.Equal(t, len(dataFromEndpoint1), n)
 
+	// Endpoint2 -> Endpoint1
 	err = endpoint2.WriteToUDPAddrPort(dataFromEndpoint2, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 
 	_, err = connPair.recipientToSender(0)
 	assert.NoError(t, err)
 
-	n4, _, err := endpoint1.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
+	n, _, err = endpoint1.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
 	assert.NoError(t, err)
-	assert.Equal(t, len(dataFromEndpoint2), n4)
+	assert.Equal(t, len(dataFromEndpoint2), n)
 }
 
-// Add test for localTime behavior:
-func TestNetLocalTimeAdvancement(t *testing.T) {
+// =============================================================================
+// LOCAL TIME TESTS
+// =============================================================================
+
+func TestNet_LocalTime_WriteAdvances(t *testing.T) {
 	connPair := NewConnPair("sender", "receiver")
 	sender := connPair.Conn1
-	receiver := connPair.Conn2
 
 	initialTime := sender.localTime
 	testData := []byte("test")
 
-	// Write advances sender time by transmission time
 	err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 	assert.Greater(t, sender.localTime, initialTime)
+}
+
+func TestNet_LocalTime_ReadAdvancesToArrival(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+	receiver := connPair.Conn2
+
+	testData := []byte("test")
+
+	err := sender.WriteToUDPAddrPort(testData, netip.AddrPort{}, 0)
+	assert.NoError(t, err)
 
 	_, err = connPair.senderToRecipient(0)
 	assert.NoError(t, err)
 
-	// Read advances receiver time to packet arrival
 	receiverInitialTime := receiver.localTime
 	buffer := make([]byte, 100)
 	_, _, err = receiver.ReadFromUDPAddrPort(buffer, 10*secondNano, 0)
@@ -378,8 +412,7 @@ func TestNetLocalTimeAdvancement(t *testing.T) {
 	assert.Greater(t, receiver.localTime, receiverInitialTime)
 }
 
-// Add timeout test:
-func TestNetReadTimeout(t *testing.T) {
+func TestNet_LocalTime_TimeoutAdvances(t *testing.T) {
 	connPair := NewConnPair("sender", "receiver")
 	receiver := connPair.Conn2
 
@@ -389,70 +422,66 @@ func TestNetReadTimeout(t *testing.T) {
 	buffer := make([]byte, 100)
 	n, _, err := receiver.ReadFromUDPAddrPort(buffer, timeout, 0)
 	assert.NoError(t, err)
-	assert.Equal(t, 0, n) // No data
+	assert.Equal(t, 0, n)
 	assert.Equal(t, initialTime+timeout, receiver.localTime)
 }
 
-func TestNetWriteToClosedConnection(t *testing.T) {
-	// Create a connection pair
+// =============================================================================
+// CONNECTION CLOSE TESTS
+// =============================================================================
+
+func TestNet_Write_ToClosedConnection(t *testing.T) {
 	connPair := NewConnPair("conn1", "conn2")
 	conn1 := connPair.Conn1
 
-	// Close one connection
 	err := conn1.Close()
 	assert.NoError(t, err)
 
-	// Attempt to write to the closed connection
 	err = conn1.WriteToUDPAddrPort([]byte("test data"), netip.AddrPort{}, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "closed")
 }
 
-func TestNetReadFromClosedConnection(t *testing.T) {
-	// Create a connection pair
+func TestNet_Read_FromClosedConnection(t *testing.T) {
 	connPair := NewConnPair("conn1", "conn2")
 	conn := connPair.Conn1
 
-	// Close the connection
 	err := conn.Close()
 	assert.NoError(t, err)
 
-	// Attempt to read from the closed connection
 	buffer := make([]byte, 100)
 	_, _, err = conn.ReadFromUDPAddrPort(buffer, 0, 0)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "connection closed")
 }
 
-func TestNetCloseTwice(t *testing.T) {
-	// Create a connection pair
+func TestNet_Close_Twice(t *testing.T) {
 	connPair := NewConnPair("conn1", "conn2")
 	conn := connPair.Conn1
 
-	// Close the connection once
 	err := conn.Close()
 	assert.NoError(t, err)
 
-	// Close the connection again
 	err = conn.Close()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already closed")
 }
 
-func TestNetMultipleWrites(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("isSender", "receiver")
+// =============================================================================
+// MULTIPLE WRITE TESTS
+// =============================================================================
+
+func TestNet_MultipleWrites_InOrder(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 	sender := connPair.Conn1
 	receiver := connPair.Conn2
 
-	// Test data
 	messages := [][]byte{
 		[]byte("message 1"),
 		[]byte("message 2"),
 		[]byte("message 3"),
 	}
 
-	// Send all messages
 	for _, msg := range messages {
 		err := sender.WriteToUDPAddrPort(msg, netip.AddrPort{}, 0)
 		assert.NoError(t, err)
@@ -461,7 +490,6 @@ func TestNetMultipleWrites(t *testing.T) {
 	_, err := connPair.senderToRecipient(0, 1, 2)
 	assert.NoError(t, err)
 
-	// Read and verify all messages in order
 	buffer := make([]byte, 100)
 	for _, expectedMsg := range messages {
 		n, _, err := receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
@@ -471,28 +499,34 @@ func TestNetMultipleWrites(t *testing.T) {
 	}
 }
 
-func TestNetLocalAddrString(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("addr1", "addr2")
-	conn1 := connPair.Conn1
-	conn2 := connPair.Conn2
+// =============================================================================
+// LOCAL ADDR STRING TESTS
+// =============================================================================
 
-	// Check local addresses
-	assert.Equal(t, "addr1→addr2", conn1.LocalAddrString())
-	assert.Equal(t, "addr2→addr1", conn2.LocalAddrString())
+func TestNet_LocalAddrString(t *testing.T) {
+	connPair := NewConnPair("addr1", "addr2")
+
+	assert.Equal(t, "addr1→addr2", connPair.Conn1.LocalAddrString())
+	assert.Equal(t, "addr2→addr1", connPair.Conn2.LocalAddrString())
 }
 
-func TestNetWriteAndReadUDPWithDrop(t *testing.T) {
-	// Create a connection pair
-	connPair := NewConnPair("isSender", "receiver")
+func TestNet_LocalAddrString_NoPartner(t *testing.T) {
+	conn := newPairedConn("lonely")
+	assert.Equal(t, "lonely→?", conn.LocalAddrString())
+}
+
+// =============================================================================
+// DROP DATA TESTS
+// =============================================================================
+
+func TestNet_Drop_SpecificPacket(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 	sender := connPair.Conn1
 	receiver := connPair.Conn2
 
-	// Test data - two packets
 	testData1 := []byte("packet 1")
 	testData2 := []byte("packet 2")
 
-	// Write both packets from isSender to receiver
 	err := sender.WriteToUDPAddrPort(testData1, netip.AddrPort{}, 0)
 	assert.NoError(t, err)
 
@@ -506,49 +540,23 @@ func TestNetWriteAndReadUDPWithDrop(t *testing.T) {
 	_, err = connPair.senderToRecipient(0)
 	assert.NoError(t, err)
 
-	// Read on receiver side - should only receive packet 1
+	// Should only receive packet 1
 	buffer := make([]byte, 100)
 	n, _, err := receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
 	assert.NoError(t, err)
 	assert.Equal(t, len(testData1), n)
 	assert.Equal(t, testData1, buffer[:n])
 
-	// Verify that packet 2 was not received (no more data in the queue)
+	// No more data
 	n, _, err = receiver.ReadFromUDPAddrPort(buffer, MinDeadLine, receiver.localTime)
-	assert.NoError(t, err) // Should return no error but zero bytes
+	assert.NoError(t, err)
 	assert.Equal(t, 0, n)
 }
 
-func TestNetPacketArrivesAfterTimeout(t *testing.T) {
-	connPair := NewConnPair("sender", "receiver")
-	sender := connPair.Conn1
-	receiver := connPair.Conn2
-
-	// Send packet with latency
-	sender.latencyNano = 10 * secondNano
-	err := sender.WriteToUDPAddrPort([]byte("late packet"), netip.AddrPort{}, 0)
-	assert.NoError(t, err)
-
-	_, err = connPair.senderToRecipient(0)
-	assert.NoError(t, err)
-
-	// Try to read with short timeout (packet won't arrive in time)
-	buffer := make([]byte, 100)
-	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 1*secondNano, 0)
-	assert.NoError(t, err)
-	assert.Equal(t, 0, n) // Timeout, no data
-
-	// Now read with sufficient timeout
-	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 20*secondNano, 0)
-	assert.NoError(t, err)
-	assert.Greater(t, n, 0) // Should get the packet
-}
-
-func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
+func TestNet_Drop_MultiplePackets(t *testing.T) {
 	connPair := NewConnPair("sender", "receiver")
 	sender := connPair.Conn1
 
-	// Send 4 packets
 	packets := [][]byte{
 		[]byte("packet 0"),
 		[]byte("packet 1"),
@@ -561,105 +569,241 @@ func TestNetCopyDataWithAbsoluteIndices(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	// Test 1: Copy all packets (no arguments)
-	t.Run("copy all", func(t *testing.T) {
-		connPair2 := NewConnPair("s2", "r2")
-		for _, pkt := range packets {
-			connPair2.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
-		}
+	// Drop packets 0 and 2
+	err := connPair.dropSender(0, 2)
+	assert.NoError(t, err)
 
-		n, err := connPair2.senderToRecipient()
+	// Deliver remaining (now at indices 0 and 1)
+	_, err = connPair.senderToRecipient(0, 1)
+	assert.NoError(t, err)
+
+	buffer := make([]byte, 100)
+
+	n, _, _ := connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[1], buffer[:n])
+
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[3], buffer[:n])
+
+	// No more packets
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, 0, n)
+}
+
+func TestNet_Drop_AllPackets(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+
+	err := sender.WriteToUDPAddrPort([]byte("packet"), netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+
+	// Drop all (no indices)
+	err = connPair.dropSender()
+	assert.NoError(t, err)
+
+	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender())
+}
+
+func TestNet_Drop_EmptyQueue(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+
+	err := connPair.dropSender(0)
+	assert.NoError(t, err)
+}
+
+func TestNet_Drop_ClosedConnection(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	connPair.Conn1.Close()
+
+	err := connPair.dropSender(0)
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// LATENCY AND ARRIVAL TIME TESTS
+// =============================================================================
+
+func TestNet_PacketArrivesAfterTimeout(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	sender := connPair.Conn1
+	receiver := connPair.Conn2
+
+	// Send packet with high latency
+	sender.latencyNano = 10 * secondNano
+	err := sender.WriteToUDPAddrPort([]byte("late packet"), netip.AddrPort{}, 0)
+	assert.NoError(t, err)
+
+	_, err = connPair.senderToRecipient(0)
+	assert.NoError(t, err)
+
+	// Try to read with short timeout
+	buffer := make([]byte, 100)
+	n, _, err := receiver.ReadFromUDPAddrPort(buffer, 1*secondNano, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+
+	// Now read with sufficient timeout
+	n, _, err = receiver.ReadFromUDPAddrPort(buffer, 20*secondNano, 0)
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0)
+}
+
+// =============================================================================
+// COPY DATA TESTS
+// =============================================================================
+
+func TestNet_CopyData_All(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+
+	packets := [][]byte{
+		[]byte("packet 0"),
+		[]byte("packet 1"),
+		[]byte("packet 2"),
+		[]byte("packet 3"),
+	}
+
+	for _, pkt := range packets {
+		connPair.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
+	}
+
+	n, err := connPair.senderToRecipient()
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0)
+
+	buffer := make([]byte, 100)
+	for i := 0; i < 4; i++ {
+		n, _, err := connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
 		assert.NoError(t, err)
 		assert.Greater(t, n, 0)
+	}
+}
 
-		// Should receive all 4 packets
-		buffer := make([]byte, 100)
-		for i := 0; i < 4; i++ {
-			n, _, err := connPair2.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-			assert.NoError(t, err)
-			assert.Greater(t, n, 0)
-		}
-	})
+func TestNet_CopyData_Reorder(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 
-	// Test 2: Reorder packets [0,2,1,3]
-	t.Run("reorder", func(t *testing.T) {
-		connPair3 := NewConnPair("s3", "r3")
-		for _, pkt := range packets {
-			connPair3.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
-		}
+	packets := [][]byte{
+		[]byte("packet 0"),
+		[]byte("packet 1"),
+		[]byte("packet 2"),
+		[]byte("packet 3"),
+	}
 
-		n, err := connPair3.senderToRecipient(0, 2, 1, 3)
-		assert.NoError(t, err)
-		assert.Greater(t, n, 0)
+	for _, pkt := range packets {
+		connPair.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
+	}
 
-		buffer := make([]byte, 100)
+	// Reorder: 0, 2, 1, 3
+	n, err := connPair.senderToRecipient(0, 2, 1, 3)
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0)
 
-		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[0], buffer[:n])
+	buffer := make([]byte, 100)
 
-		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[2], buffer[:n])
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[0], buffer[:n])
 
-		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[1], buffer[:n])
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[2], buffer[:n])
 
-		n, _, _ = connPair3.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[3], buffer[:n])
-	})
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[1], buffer[:n])
 
-	// Test 3: Duplicate packets [0,1,1,2]
-	t.Run("duplicate", func(t *testing.T) {
-		connPair4 := NewConnPair("s4", "r4")
-		for _, pkt := range packets {
-			connPair4.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
-		}
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[3], buffer[:n])
+}
 
-		n, err := connPair4.senderToRecipient(0, 1, 1, 2)
-		assert.NoError(t, err)
-		assert.Greater(t, n, 0)
+func TestNet_CopyData_Duplicate(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 
-		buffer := make([]byte, 100)
+	packets := [][]byte{
+		[]byte("packet 0"),
+		[]byte("packet 1"),
+		[]byte("packet 2"),
+		[]byte("packet 3"),
+	}
 
-		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[0], buffer[:n])
+	for _, pkt := range packets {
+		connPair.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
+	}
 
-		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[1], buffer[:n])
+	// Duplicate packet 1: 0, 1, 1, 2
+	n, err := connPair.senderToRecipient(0, 1, 1, 2)
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0)
 
-		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[1], buffer[:n]) // Duplicate
+	buffer := make([]byte, 100)
 
-		n, _, _ = connPair4.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[2], buffer[:n])
-	})
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[0], buffer[:n])
 
-	// Test 4: Drop packets using dropData
-	t.Run("drop", func(t *testing.T) {
-		connPair5 := NewConnPair("s5", "r5")
-		for _, pkt := range packets {
-			connPair5.Conn1.WriteToUDPAddrPort(pkt, netip.AddrPort{}, 0)
-		}
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[1], buffer[:n])
 
-		// Drop packets 0 and 2, which leaves packets 1 and 3 at indices 0 and 1
-		err := connPair5.dropSender(0, 2)
-		assert.NoError(t, err)
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[1], buffer[:n]) // Duplicate
 
-		// Now deliver remaining packets (which are at indices 0 and 1 after the drop)
-		n, err := connPair5.senderToRecipient(0, 1)
-		assert.NoError(t, err)
-		assert.Greater(t, n, 0)
+	n, _, _ = connPair.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
+	assert.Equal(t, packets[2], buffer[:n])
+}
 
-		buffer := make([]byte, 100)
+func TestNet_CopyData_EmptyQueue(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 
-		// Should receive what was originally packets 1 and 3
-		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[1], buffer[:n])
+	n, err := connPair.senderToRecipient()
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
 
-		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, packets[3], buffer[:n])
+func TestNet_CopyData_InvalidIndices(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
 
-		// No more packets
-		n, _, _ = connPair5.Conn2.ReadFromUDPAddrPort(buffer, MinDeadLine, 0)
-		assert.Equal(t, 0, n)
-	})
+	connPair.Conn1.WriteToUDPAddrPort([]byte("packet"), netip.AddrPort{}, 0)
+
+	// Invalid indices are skipped
+	n, err := connPair.senderToRecipient(-1, 100)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestNet_CopyData_ClosedConnection(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	connPair.Conn1.WriteToUDPAddrPort([]byte("packet"), netip.AddrPort{}, 0)
+
+	connPair.Conn1.Close()
+
+	_, err := connPair.senderToRecipient()
+	assert.Error(t, err)
+}
+
+func TestNet_CopyData_ClosedPartner(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+	connPair.Conn1.WriteToUDPAddrPort([]byte("packet"), netip.AddrPort{}, 0)
+
+	connPair.Conn2.Close()
+
+	_, err := connPair.senderToRecipient()
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// QUEUE COUNT TESTS
+// =============================================================================
+
+func TestNet_QueueCounts(t *testing.T) {
+	connPair := NewConnPair("sender", "receiver")
+
+	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender())
+	assert.Equal(t, 0, connPair.nrOutgoingPacketsReceiver())
+	assert.Equal(t, 0, connPair.nrIncomingPacketsSender())
+	assert.Equal(t, 0, connPair.nrIncomingPacketsRecipient())
+
+	connPair.Conn1.WriteToUDPAddrPort([]byte("packet 1"), netip.AddrPort{}, 0)
+	connPair.Conn1.WriteToUDPAddrPort([]byte("packet 2"), netip.AddrPort{}, 0)
+
+	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender())
+
+	connPair.senderToRecipient()
+
+	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender())
+	assert.Equal(t, 2, connPair.nrIncomingPacketsRecipient())
 }

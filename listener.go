@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -216,7 +217,14 @@ func (l *Listener) newConn(
 	if l.keyLogWriter != nil {
 		if ss, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv); err == nil {
 			if ssId, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv); err == nil {
-				logKey(l.keyLogWriter, conn.connId, ss, ssId)
+				// =============================================================================
+				// Wireshark/pcap support
+				//
+				// logKey: Writes session keys for Wireshark decryption (NSS key log format)
+				// DecryptPcap: Standalone packet decryption for offline analysis
+				// =============================================================================
+				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET %x %x\n", conn.connId, ss)
+				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET_ID %x %x\n", conn.connId, ssId)
 			}
 		}
 	}

@@ -7,6 +7,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// =============================================================================
+// TEST HELPERS
+// =============================================================================
+
 func encodePayload(payload *payloadHeader, data []byte) []byte {
 	encoded, _ := encodeProto(payload, data)
 	return encoded
@@ -43,10 +47,10 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 }
 
 // =============================================================================
-// Type 01: DATA no ACK
+// TYPE 01: DATA WITHOUT ACK
 // =============================================================================
 
-func TestProtoDataNoAck(t *testing.T) {
+func TestProto_DataNoAck_WithData(t *testing.T) {
 	original := &payloadHeader{
 		StreamID:     12345,
 		StreamOffset: 100,
@@ -59,8 +63,7 @@ func TestProtoDataNoAck(t *testing.T) {
 	assert.Equal(t, originalData, decodedData)
 }
 
-func TestProtoDataNoAckEmpty(t *testing.T) {
-	// Type 01: empty data with data header 0 -> ping
+func TestProto_DataNoAck_EmptyData(t *testing.T) {
 	original := &payloadHeader{
 		StreamID:     1,
 		StreamOffset: 0,
@@ -72,11 +75,37 @@ func TestProtoDataNoAckEmpty(t *testing.T) {
 	assert.Empty(t, decodedData)
 }
 
+func TestProto_DataNoAck_ZeroStreamID(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     0,
+		StreamOffset: 100,
+	}
+	originalData := []byte("data")
+
+	decoded, decodedData := roundTrip(t, original, originalData)
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, originalData, decodedData)
+}
+
+func TestProto_DataNoAck_MaxStreamID(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     0xFFFFFFFF,
+		StreamOffset: 100,
+	}
+	originalData := []byte("data")
+
+	decoded, decodedData := roundTrip(t, original, originalData)
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, originalData, decodedData)
+}
+
 // =============================================================================
-// Type 00: DATA with ACK
+// TYPE 00: DATA WITH ACK
 // =============================================================================
 
-func TestProtoDataWithAckAndData(t *testing.T) {
+func TestProto_DataWithAck_AndData(t *testing.T) {
 	original := &payloadHeader{
 		StreamID:     1,
 		StreamOffset: 100,
@@ -90,8 +119,7 @@ func TestProtoDataWithAckAndData(t *testing.T) {
 	assert.Equal(t, originalData, decodedData)
 }
 
-func TestProtoDataWithAckPing(t *testing.T) {
-	// Type 00: empty data + data header 0 -> ping
+func TestProto_DataWithAck_EmptyData(t *testing.T) {
 	original := &payloadHeader{
 		StreamID:     1,
 		StreamOffset: 100,
@@ -104,8 +132,7 @@ func TestProtoDataWithAckPing(t *testing.T) {
 	assert.Empty(t, decodedData)
 }
 
-func TestProtoDataWithAckNoDataHeader(t *testing.T) {
-	// Type 00: empty data + empty data header -> regular ack
+func TestProto_DataWithAck_AckOnly(t *testing.T) {
 	original := &payloadHeader{
 		Ack: &Ack{streamID: 10, offset: 200, len: 300, rcvWnd: 1000},
 	}
@@ -116,11 +143,37 @@ func TestProtoDataWithAckNoDataHeader(t *testing.T) {
 	assert.Nil(t, decodedData)
 }
 
+func TestProto_DataWithAck_ZeroLen(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 100,
+		Ack:          &Ack{streamID: 1, offset: 100, len: 0, rcvWnd: 1000},
+	}
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, uint16(0), decoded.Ack.len)
+}
+
+func TestProto_DataWithAck_MaxLen(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 100,
+		Ack:          &Ack{streamID: 1, offset: 100, len: 0xFFFF, rcvWnd: 1000},
+	}
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, uint16(0xFFFF), decoded.Ack.len)
+}
+
 // =============================================================================
-// Type 10: CLOSE with ACK
+// TYPE 10: CLOSE WITH ACK
 // =============================================================================
 
-func TestProtoCloseWithAck(t *testing.T) {
+func TestProto_CloseWithAck(t *testing.T) {
 	original := &payloadHeader{
 		IsClose:      true,
 		StreamID:     1,
@@ -135,11 +188,25 @@ func TestProtoCloseWithAck(t *testing.T) {
 	assert.Equal(t, originalData, decodedData)
 }
 
+func TestProto_CloseWithAck_NoData(t *testing.T) {
+	original := &payloadHeader{
+		IsClose:      true,
+		StreamID:     1,
+		StreamOffset: 100,
+		Ack:          &Ack{streamID: 1, offset: 50, len: 10, rcvWnd: 500},
+	}
+
+	decoded, decodedData := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Empty(t, decodedData)
+}
+
 // =============================================================================
-// Type 11: CLOSE no ACK
+// TYPE 11: CLOSE WITHOUT ACK
 // =============================================================================
 
-func TestProtoCloseNoAck(t *testing.T) {
+func TestProto_CloseNoAck(t *testing.T) {
 	original := &payloadHeader{
 		IsClose:      true,
 		StreamID:     1,
@@ -151,116 +218,223 @@ func TestProtoCloseNoAck(t *testing.T) {
 	assertPayloadEqual(t, original, decoded)
 }
 
+func TestProto_CloseNoAck_WithData(t *testing.T) {
+	original := &payloadHeader{
+		IsClose:      true,
+		StreamID:     1,
+		StreamOffset: 100,
+	}
+	originalData := []byte("final data")
+
+	decoded, decodedData := roundTrip(t, original, originalData)
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, originalData, decodedData)
+}
+
 // =============================================================================
-// Offset Size Tests
+// OFFSET SIZE TESTS (24-bit vs 48-bit)
 // =============================================================================
 
-func TestProtoOffsetSizes(t *testing.T) {
-	// 24-bit offset (max 0xFFFFFF)
-	p := &payloadHeader{StreamID: 1, StreamOffset: 0xFFFFFF}
-	decoded, _ := roundTrip(t, p, []byte{})
-	assertPayloadEqual(t, p, decoded)
+func TestProto_Offset_24BitMax(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0xFFFFFF,
+	}
 
-	// 48-bit offset (> 0xFFFFFF)
-	p = &payloadHeader{StreamID: 1, StreamOffset: 0x1000000}
-	decoded, _ = roundTrip(t, p, []byte{})
-	assertPayloadEqual(t, p, decoded)
+	decoded, _ := roundTrip(t, original, []byte{})
 
-	// 48-bit with ACK
-	p = &payloadHeader{
+	assertPayloadEqual(t, original, decoded)
+}
+
+func TestProto_Offset_48BitMin(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0x1000000,
+	}
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+}
+
+func TestProto_Offset_48BitWithAck(t *testing.T) {
+	original := &payloadHeader{
 		StreamID:     5,
 		StreamOffset: 0x1000000,
 		Ack:          &Ack{streamID: 50, offset: 0x1000000, len: 200, rcvWnd: 5000},
 	}
-	decoded, _ = roundTrip(t, p, []byte{})
-	assertPayloadEqual(t, p, decoded)
 
-	// Mixed: data 48-bit, ack 24-bit (both use 48-bit encoding)
-	p = &payloadHeader{
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+}
+
+func TestProto_Offset_MixedData48BitAck24Bit(t *testing.T) {
+	// Data needs 48-bit, ACK needs 24-bit - both use 48-bit encoding
+	original := &payloadHeader{
 		StreamID:     1,
 		StreamOffset: 0x1000000,
 		Ack:          &Ack{streamID: 10, offset: 100, len: 50, rcvWnd: 1000},
 	}
-	decoded, _ = roundTrip(t, p, []byte{})
-	assertPayloadEqual(t, p, decoded)
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
 }
 
-// =============================================================================
-// Error Tests
-// =============================================================================
-
-func TestProtoDecodeErrors(t *testing.T) {
-	// Below minimum size
-	for _, size := range []int{0, 1, 7} {
-		_, _, err := decodeProto(make([]byte, size))
-		assert.Error(t, err)
+func TestProto_Offset_MixedAck48BitData24Bit(t *testing.T) {
+	// ACK needs 48-bit, Data needs 24-bit - both use 48-bit encoding
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 100,
+		Ack:          &Ack{streamID: 10, offset: 0x1000000, len: 50, rcvWnd: 1000},
 	}
 
-	// Invalid version
-	data := make([]byte, 8)
-	data[0] = 0x1F // version bits = 31
-	_, _, err := decodeProto(data)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "version")
+	decoded, _ := roundTrip(t, original, []byte{})
 
-	// Insufficient data for ACK
-	data = make([]byte, 10)
-	data[0] = 0x00 // Type 00 (ACK) needs >= 11 bytes
-	_, _, err = decodeProto(data)
-	assert.Error(t, err)
+	assertPayloadEqual(t, original, decoded)
+}
+
+func TestProto_Offset_MaxValue(t *testing.T) {
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0xFFFFFFFFFFFF, // max 48-bit
+	}
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
 }
 
 // =============================================================================
-// RcvWindow Tests
+// DECODE ERROR TESTS
 // =============================================================================
 
-func TestProtoRcvWindow(t *testing.T) {
-	// Edge cases
+func TestProto_Decode_EmptyBuffer(t *testing.T) {
+	_, _, err := decodeProto([]byte{})
+	assert.Error(t, err)
+}
+
+func TestProto_Decode_TooSmall_1Byte(t *testing.T) {
+	_, _, err := decodeProto(make([]byte, 1))
+	assert.Error(t, err)
+}
+
+func TestProto_Decode_TooSmall_7Bytes(t *testing.T) {
+	_, _, err := decodeProto(make([]byte, 7))
+	assert.Error(t, err)
+}
+
+func TestProto_Decode_InvalidVersion(t *testing.T) {
+	data := make([]byte, 8)
+	data[0] = 0x1F // version bits = 31
+
+	_, _, err := decodeProto(data)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "version")
+}
+
+func TestProto_Decode_InsufficientDataForAck(t *testing.T) {
+	data := make([]byte, 10)
+	data[0] = 0x00 // Type 00 (ACK) needs >= 11 bytes
+
+	_, _, err := decodeProto(data)
+
+	assert.Error(t, err)
+}
+
+func TestProto_Decode_MinimumValidSize(t *testing.T) {
+	// Minimum valid: 8 bytes for DATA without ACK
+	data := make([]byte, 8)
+	data[0] = 0b01 << TypeFlag // Type 01 = DATA without ACK
+
+	_, _, err := decodeProto(data)
+
+	assert.NoError(t, err)
+}
+
+// =============================================================================
+// RCVWINDOW ENCODING TESTS
+// =============================================================================
+
+func TestProto_RcvWindow_Zero(t *testing.T) {
 	assert.Equal(t, uint8(0), encodeRcvWindow(0))
+	assert.Equal(t, uint64(0), decodeRcvWindow(0))
+}
+
+func TestProto_RcvWindow_One(t *testing.T) {
 	assert.Equal(t, uint8(1), encodeRcvWindow(1))
+	assert.Equal(t, uint64(128), decodeRcvWindow(1))
+}
+
+func TestProto_RcvWindow_SmallValues(t *testing.T) {
 	assert.Equal(t, uint8(1), encodeRcvWindow(128))
 	assert.Equal(t, uint8(1), encodeRcvWindow(255))
 	assert.Equal(t, uint8(2), encodeRcvWindow(256))
-
-	assert.Equal(t, uint64(0), decodeRcvWindow(0))
-	assert.Equal(t, uint64(128), decodeRcvWindow(1))
 	assert.Equal(t, uint64(256), decodeRcvWindow(2))
+}
 
-	// Monotonically increasing
+func TestProto_RcvWindow_MonotonicallyIncreasing(t *testing.T) {
 	prev := decodeRcvWindow(2)
 	for i := uint8(3); i <= 254; i++ {
 		curr := decodeRcvWindow(i)
-		assert.Greater(t, curr, prev)
+		assert.Greater(t, curr, prev, "decodeRcvWindow should be monotonically increasing at %d", i)
 		prev = curr
 	}
+}
 
-	// Max value
+func TestProto_RcvWindow_MaxValue(t *testing.T) {
 	assert.Equal(t, uint8(255), encodeRcvWindow(1<<63))
+
 	decoded := decodeRcvWindow(255)
 	assert.Greater(t, decoded, uint64(800_000_000_000))
+}
 
-	// Round trip preserves or increases
-	for _, input := range []uint64{0, 512, 1024, 65536, 1048576} {
+func TestProto_RcvWindow_RoundTrip(t *testing.T) {
+	testValues := []uint64{0, 512, 1024, 65536, 1048576}
+
+	for _, input := range testValues {
 		encoded := encodeRcvWindow(input)
 		decoded := decodeRcvWindow(encoded)
-		assert.LessOrEqual(t, input, decoded)
+		assert.LessOrEqual(t, input, decoded, "round trip should preserve or increase value for %d", input)
 	}
 }
 
 // =============================================================================
-// Additional Tests
+// OVERHEAD CALCULATION TESTS
 // =============================================================================
 
-func TestProtoOverheadCalculation(t *testing.T) {
-	assert.Equal(t, 8, calcProtoOverhead(false, false, false)) // No ACK, 24-bit
-	assert.Equal(t, 11, calcProtoOverhead(false, true, false)) // No ACK, 48-bit
-	assert.Equal(t, 18, calcProtoOverhead(true, false, false)) // ACK, 24-bit
-	assert.Equal(t, 24, calcProtoOverhead(true, true, false))  // ACK, 48-bit
-	assert.Equal(t, 11, calcProtoOverhead(true, false, true))  // ACK, no data header, 24-bit
-	assert.Equal(t, 14, calcProtoOverhead(true, true, true))   // ACK, no data header, 48-bit
+func TestProto_Overhead_NoAck24Bit(t *testing.T) {
+	assert.Equal(t, 8, calcProtoOverhead(false, false, false))
 }
 
-func TestProtoLargeData(t *testing.T) {
+func TestProto_Overhead_NoAck48Bit(t *testing.T) {
+	assert.Equal(t, 11, calcProtoOverhead(false, true, false))
+}
+
+func TestProto_Overhead_WithAck24Bit(t *testing.T) {
+	assert.Equal(t, 18, calcProtoOverhead(true, false, false))
+}
+
+func TestProto_Overhead_WithAck48Bit(t *testing.T) {
+	assert.Equal(t, 24, calcProtoOverhead(true, true, false))
+}
+
+func TestProto_Overhead_AckOnly24Bit(t *testing.T) {
+	assert.Equal(t, 11, calcProtoOverhead(true, false, true))
+}
+
+func TestProto_Overhead_AckOnly48Bit(t *testing.T) {
+	assert.Equal(t, 14, calcProtoOverhead(true, true, true))
+}
+
+// =============================================================================
+// LARGE DATA TESTS
+// =============================================================================
+
+func TestProto_LargeData(t *testing.T) {
 	largeData := make([]byte, 65000)
 	for i := range largeData {
 		largeData[i] = byte(i % 256)
@@ -272,18 +446,79 @@ func TestProtoLargeData(t *testing.T) {
 	}
 
 	decoded, decodedData := roundTrip(t, original, largeData)
+
 	assertPayloadEqual(t, original, decoded)
 	assert.Equal(t, largeData, decodedData)
 }
 
-func TestProtoAckZeroLength(t *testing.T) {
-	original := &payloadHeader{
-		StreamID:     1,
-		StreamOffset: 100,
-		Ack:          &Ack{streamID: 1, offset: 100, len: 0, rcvWnd: 1000},
+func TestProto_LargeData_WithAck(t *testing.T) {
+	largeData := make([]byte, 65000)
+	for i := range largeData {
+		largeData[i] = byte(i % 256)
 	}
 
-	decoded, _ := roundTrip(t, original, []byte{})
+	original := &payloadHeader{
+		StreamID:     1,
+		StreamOffset: 0,
+		Ack:          &Ack{streamID: 2, offset: 1000, len: 500, rcvWnd: 10000},
+	}
+
+	decoded, decodedData := roundTrip(t, original, largeData)
+
 	assertPayloadEqual(t, original, decoded)
-	assert.Equal(t, uint16(0), decoded.Ack.len)
+	assert.Equal(t, largeData, decodedData)
+}
+
+// =============================================================================
+// HEADER BUILDING TESTS
+// =============================================================================
+
+func TestProto_BuildHeader_DataNoAck(t *testing.T) {
+	header := buildHeader(false, false, 100, nil)
+
+	typeFlag := (header >> TypeFlag) & 0b11
+	assert.Equal(t, uint8(0b01), typeFlag)
+}
+
+func TestProto_BuildHeader_DataWithAck(t *testing.T) {
+	header := buildHeader(false, true, 100, &Ack{offset: 50})
+
+	typeFlag := (header >> TypeFlag) & 0b11
+	assert.Equal(t, uint8(0b00), typeFlag)
+}
+
+func TestProto_BuildHeader_CloseNoAck(t *testing.T) {
+	header := buildHeader(true, false, 100, nil)
+
+	typeFlag := (header >> TypeFlag) & 0b11
+	assert.Equal(t, uint8(0b11), typeFlag)
+}
+
+func TestProto_BuildHeader_CloseWithAck(t *testing.T) {
+	header := buildHeader(true, true, 100, &Ack{offset: 50})
+
+	typeFlag := (header >> TypeFlag) & 0b11
+	assert.Equal(t, uint8(0b10), typeFlag)
+}
+
+func TestProto_BuildHeader_ExtendFlag_24Bit(t *testing.T) {
+	header := buildHeader(false, false, 0xFFFFFF, nil)
+
+	isExtend := (header & (1 << Offset24or48Flag)) != 0
+	assert.False(t, isExtend)
+}
+
+func TestProto_BuildHeader_ExtendFlag_48Bit(t *testing.T) {
+	header := buildHeader(false, false, 0x1000000, nil)
+
+	isExtend := (header & (1 << Offset24or48Flag)) != 0
+	assert.True(t, isExtend)
+}
+
+func TestProto_BuildHeader_ExtendFlag_AckTriggersExtend(t *testing.T) {
+	// Data offset is 24-bit, but ACK offset is 48-bit
+	header := buildHeader(false, true, 100, &Ack{offset: 0x1000000})
+
+	isExtend := (header & (1 << Offset24or48Flag)) != 0
+	assert.True(t, isExtend)
 }

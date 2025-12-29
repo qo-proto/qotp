@@ -3,21 +3,7 @@ package qotp
 import (
 	"errors"
 	"fmt"
-	"io"
 )
-
-// =============================================================================
-// Wireshark/pcap support
-//
-// logKey: Writes session keys for Wireshark decryption (NSS key log format)
-// DecryptPcap: Standalone packet decryption for offline analysis
-// =============================================================================
-
-// logKey writes session keys in Wireshark-compatible format.
-func logKey(w io.Writer, connId uint64, secret, secretId []byte) {
-	fmt.Fprintf(w, "QOTP_SHARED_SECRET %x %x\n", connId, secret)
-	fmt.Fprintf(w, "QOTP_SHARED_SECRET_ID %x %x\n", connId, secretId)
-}
 
 // DecryptPcap decrypts a captured QOTP packet for offline analysis.
 // Auto-detects message type from header. Requires appropriate shared secret:
