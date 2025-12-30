@@ -8,25 +8,27 @@ import (
 // =============================================================================
 // Transport layer protocol encoding/decoding
 //
-// Payload format (after crypto layer decryption):
-//   Byte 0:     Header (version + type + offset size flag)
-//   [ACK]:      Optional ACK section (streamID, offset, len, rcvWnd)
-//   [Data]:     Optional data section (streamID, offset, userData)
-//
-// Type encoding (bits 5-6):
-//   00 = DATA with ACK
-//   01 = DATA without ACK
-//   10 = CLOSE with ACK
-//   11 = CLOSE without ACK
-//
-// Offset sizes: 24-bit (≤16MB) or 48-bit (>16MB), signaled by bit 7
+// Header byte:
+//   Bits 0-3: Protocol version (4 bits, currently 0)
+//   Bits 4-7: Message type (4 bits)
 // =============================================================================
 
 const (
-	protoVersion     = 0
-	typeFlag         = 5
-	offset24or48Flag = 7
-	minProtoSize     = 8
+	protoVersion = 0
+	typeShift    = 4
+	minProtoSize = 8
+
+	// Type values (bits 4-7)
+	typeDataAck24    = 0b0000 // 0: DATA + ACK, 24-bit
+	typeProbe24      = 0b0001 // 1: PROBE, 24-bit
+	typeDataAck48    = 0b0010 // 2: DATA + ACK, 48-bit
+	typeDataNoAck24  = 0b0100 // 4: DATA, 24-bit
+	typeProbe48      = 0b0101 // 5: PROBE, 48-bit
+	typeDataNoAck48  = 0b0110 // 6: DATA, 48-bit
+	typeCloseAck24   = 0b1000 // 8: CLOSE + ACK, 24-bit
+	typeCloseAck48   = 0b1010 // 10: CLOSE + ACK, 48-bit
+	typeCloseNoAck24 = 0b1100 // 12: CLOSE, 24-bit
+	typeCloseNoAck48 = 0b1110 // 14: CLOSE, 48-bit
 )
 
 // =============================================================================
@@ -35,6 +37,7 @@ const (
 
 type payloadHeader struct {
 	isClose      bool
+	isProbe      bool
 	ack          *ack
 	streamId     uint32
 	streamOffset uint64
@@ -110,17 +113,33 @@ func decodeRcvWindow(encoded uint8) uint64 {
 
 func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	hasAck := p.ack != nil
-	// ACK-only packet: has ACK, no close, nil userData (not empty slice)
-	isAckOnly := hasAck && !p.isClose && userData == nil
+	isExtend := p.streamOffset > 0xFFFFFF || (hasAck && p.ack.offset > 0xFFFFFF)
+	isAckOnly := hasAck && !p.isClose && !p.isProbe && userData == nil
 
-	header := buildHeader(p.isClose, hasAck, p.streamOffset, p.ack)
-	isExtend := (header & (1 << offset24or48Flag)) != 0
+	// Build type from bits
+	var ptype uint8
+	if p.isProbe {
+		ptype = 0b0001
+		if isExtend {
+			ptype |= 0b0100
+		}
+	} else {
+		if p.isClose {
+			ptype |= 0b1000
+		}
+		if !hasAck {
+			ptype |= 0b0100
+		}
+		if isExtend {
+			ptype |= 0b0010
+		}
+	}
 
 	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
 	encoded := make([]byte, overhead+len(userData))
 	offset := 0
 
-	encoded[offset] = header
+	encoded[offset] = protoVersion | (ptype << typeShift)
 	offset++
 
 	if hasAck {
@@ -142,30 +161,6 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	return encoded, offset
 }
 
-func buildHeader(isClose, hasAck bool, streamOffset uint64, ack *ack) uint8 {
-	header := uint8(protoVersion)
-
-	// Type flags (bits 5-6)
-	switch {
-	case isClose && hasAck:
-		header |= 0b10 << typeFlag
-	case isClose:
-		header |= 0b11 << typeFlag
-	case hasAck:
-		header |= 0b00 << typeFlag
-	default:
-		header |= 0b01 << typeFlag
-	}
-
-	// Offset size flag (bit 7)
-	needsExtend := streamOffset > 0xFFFFFF || (hasAck && ack.offset > 0xFFFFFF)
-	if needsExtend {
-		header |= 1 << offset24or48Flag
-	}
-
-	return header
-}
-
 // =============================================================================
 // Decode
 // =============================================================================
@@ -176,23 +171,31 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	}
 
 	header := data[0]
-	version := header & 0b11111
+	version := header & 0x0F
 	if version != protoVersion {
 		return nil, nil, errors.New("unsupported protocol version")
 	}
 
-	typeFlag := (header >> typeFlag) & 0b11
-	isExtend := (header & (1 << offset24or48Flag)) != 0
-	hasAck := typeFlag == 0b00 || typeFlag == 0b10
-	isClose := typeFlag == 0b10 || typeFlag == 0b11
-	isAckOnly := hasAck && len(data) < 18
+	ptype := header >> typeShift
+	isProbe := (ptype & 0b0001) != 0
+
+	var isClose, hasAck, isExtend bool
+	if isProbe {
+		isExtend = (ptype & 0b0100) != 0
+	} else {
+		isClose = (ptype & 0b1000) != 0
+		hasAck = (ptype & 0b0100) == 0
+		isExtend = (ptype & 0b0010) != 0
+	}
+
+	isAckOnly := hasAck && !isClose && !isProbe && len(data) < 18
 
 	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
 	if len(data) < overhead {
 		return nil, nil, errors.New("payload size below minimum")
 	}
 
-	payload := &payloadHeader{isClose: isClose}
+	payload := &payloadHeader{isClose: isClose, isProbe: isProbe}
 	offset := 1
 
 	if hasAck {

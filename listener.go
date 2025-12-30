@@ -29,6 +29,9 @@ type Listener struct {
 	// Round-robin state for Flush()
 	currentConnID   *uint64
 	currentStreamID *uint32
+	
+    interfaceMTU int
+    isIPv6       bool
 
 	mu sync.Mutex
 }
@@ -138,6 +141,16 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		}
 		o.localConn = NewUDPNetworkConn(conn)
 	}
+	
+	var interfaceMTU int
+    var isIPv6 bool
+    if udpConn, ok := o.localConn.(*UDPNetworkConn); ok {
+        interfaceMTU = getInterfaceMTU(udpConn.conn)
+        isIPv6 = isIPv6Conn(udpConn.conn)
+    } else {
+        interfaceMTU = 1500
+        isIPv6 = false
+    }
 
 	l := &Listener{
 		localConn:    o.localConn,
@@ -145,6 +158,8 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		mtu:          o.mtu,
 		keyLogWriter: o.keyLogWriter,
 		connMap:      newLinkedMap[uint64, *conn](),
+        interfaceMTU: interfaceMTU,
+        isIPv6:       isIPv6,
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil
@@ -211,6 +226,7 @@ func (l *Listener) newConn(
 		rcv:                newReceiveBuffer(rcvBufferCapacity),
 		measurements:       newMeasurements(),
 		rcvWndSize:         rcvBufferCapacity,
+		mtuProber: newMTUProber(l.isIPv6, l.interfaceMTU),
 	}
 
 	// Log keys for Wireshark debugging if enabled

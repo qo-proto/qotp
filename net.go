@@ -72,3 +72,36 @@ func (c *UDPNetworkConn) Close() error {
 func (c *UDPNetworkConn) LocalAddrString() string {
 	return c.conn.LocalAddr().String()
 }
+
+func getInterfaceMTU(conn *net.UDPConn) int {
+    localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+    if !ok {
+        return 1500
+    }
+
+    ifaces, err := net.Interfaces()
+    if err != nil {
+        return 1500
+    }
+
+    for _, iface := range ifaces {
+        addrs, err := iface.Addrs()
+        if err != nil {
+            continue
+        }
+        for _, addr := range addrs {
+            if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.Equal(localAddr.IP) {
+                return iface.MTU
+            }
+        }
+    }
+    return 1500
+}
+
+func isIPv6Conn(conn *net.UDPConn) bool {
+    localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+    if !ok {
+        return false
+    }
+    return localAddr.IP.To4() == nil
+}

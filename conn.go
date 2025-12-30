@@ -46,6 +46,8 @@ type conn struct {
 	// Activity tracking
 	lastReadTimeNano uint64
 
+	mtuProber *mtuProber
+
 	measurements
 	mu sync.Mutex
 }

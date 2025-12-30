@@ -287,19 +287,30 @@ After decryption, payload contains transport header + data. Min 8 bytes total.
 
 **Byte 0 (Header byte):**
 ```
-Bits 0-4: Protocol Version (5 bits, currently 0)
-Bits 5-6: Message Type (2 bits)
-Bit 7:    Offset Size (0 = 24-bit, 1 = 48-bit)
+Bits 0-3: Protocol Version (4 bits, currently 0)
+Bits 4-7: Message Type (4 bits)
 ```
 
 **Message Type Encoding (bits 5-6):**
 
-| Type | IsClose | Has ACK | Description |
-|------|---------|---------|-------------|
-| `00` | No      | Yes     | DATA with ACK |
-| `01` | No      | No      | DATA without ACK |
-| `10` | Yes     | Yes     | CLOSE with ACK |
-| `11` | Yes     | No      | CLOSE without ACK |
+| Type |IsClose |Has ACK |  Size  | Description |
+|------|--------|--------|--------|-------------|
+| 0000 | No     | Yes    | 24-bit | DATA        |
+| 0100 | No     | No     | 24-bit | DATA        |
+| 1000 | Yes    | Yes    | 24-bit | DATA/CLOSE  |
+| 1100 | Yes    | No     | 24-bit | DATA/CLOSE  |
+| 0010 | No     | Yes    | 48-bit | DATA        |
+| 0110 | No     | No     | 48-bit | DATA        |
+| 1010 | Yes    | Yes    | 48-bit | DATA/CLOSE  |
+| 1110 | Yes    | No     | 48-bit | DATA/CLOSE  |
+| 0001 | No     | No     | 24-bit | PROBE/PING  |
+| 0101 | No     | No     | 48-bit | PROBE/PING  |
+| 1001 | N/A    | N/A    | N/A    | UNUSED      |
+| 1101 | N/A    | N/A    | N/A    | UNUSED      |
+| 0011 | N/A    | N/A    | N/A    | UNUSED      |
+| 0111 | N/A    | N/A    | N/A    | UNUSED      |
+| 1011 | N/A    | N/A    | N/A    | UNUSED      |
+| 1111 | N/A    | N/A    | N/A    | UNUSED      |
 
 **Message Type Semantics:**
 

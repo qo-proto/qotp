@@ -31,6 +31,7 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 	assert.Equal(t, expected.streamId, actual.streamId)
 	assert.Equal(t, expected.streamOffset, actual.streamOffset)
 	assert.Equal(t, expected.isClose, actual.isClose)
+	assert.Equal(t, expected.isProbe, actual.isProbe)
 
 	if expected.ack == nil {
 		assert.Nil(t, actual.ack)
@@ -47,7 +48,7 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 }
 
 // =============================================================================
-// TYPE 01: DATA WITHOUT ACK
+// TYPE: DATA WITHOUT ACK (typeDataNoAck24, typeDataNoAck48)
 // =============================================================================
 
 func TestProto_DataNoAck_WithData(t *testing.T) {
@@ -102,7 +103,7 @@ func TestProto_DataNoAck_MaxStreamID(t *testing.T) {
 }
 
 // =============================================================================
-// TYPE 00: DATA WITH ACK
+// TYPE: DATA WITH ACK (typeDataAck24, typeDataAck48)
 // =============================================================================
 
 func TestProto_DataWithAck_AndData(t *testing.T) {
@@ -170,7 +171,7 @@ func TestProto_DataWithAck_MaxLen(t *testing.T) {
 }
 
 // =============================================================================
-// TYPE 10: CLOSE WITH ACK
+// TYPE: CLOSE WITH ACK (typeCloseAck24, typeCloseAck48)
 // =============================================================================
 
 func TestProto_CloseWithAck(t *testing.T) {
@@ -203,7 +204,7 @@ func TestProto_CloseWithAck_NoData(t *testing.T) {
 }
 
 // =============================================================================
-// TYPE 11: CLOSE WITHOUT ACK
+// TYPE: CLOSE WITHOUT ACK (typeCloseNoAck24, typeCloseNoAck48)
 // =============================================================================
 
 func TestProto_CloseNoAck(t *testing.T) {
@@ -230,6 +231,65 @@ func TestProto_CloseNoAck_WithData(t *testing.T) {
 
 	assertPayloadEqual(t, original, decoded)
 	assert.Equal(t, originalData, decodedData)
+}
+
+// =============================================================================
+// TYPE: PROBE (typeProbe24, typeProbe48)
+// =============================================================================
+
+func TestProto_Probe_NoPadding(t *testing.T) {
+	original := &payloadHeader{
+		isProbe:      true,
+		streamId:     1,
+		streamOffset: 0,
+	}
+
+	decoded, decodedData := roundTrip(t, original, []byte{})
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Empty(t, decodedData)
+}
+
+func TestProto_Probe_WithPadding(t *testing.T) {
+	original := &payloadHeader{
+		isProbe:      true,
+		streamId:     1,
+		streamOffset: 100,
+	}
+	padding := make([]byte, 1000)
+
+	decoded, decodedData := roundTrip(t, original, padding)
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, padding, decodedData)
+}
+
+func TestProto_Probe_48Bit(t *testing.T) {
+	original := &payloadHeader{
+		isProbe:      true,
+		streamId:     1,
+		streamOffset: 0x1000000,
+	}
+	padding := make([]byte, 100)
+
+	decoded, decodedData := roundTrip(t, original, padding)
+
+	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, padding, decodedData)
+}
+
+func TestProto_Probe_NoAckEvenIfSet(t *testing.T) {
+	// Probe should ignore ACK field
+	original := &payloadHeader{
+		isProbe:      true,
+		streamId:     1,
+		streamOffset: 0,
+	}
+
+	decoded, _ := roundTrip(t, original, []byte{})
+
+	assert.True(t, decoded.isProbe)
+	assert.Nil(t, decoded.ack)
 }
 
 // =============================================================================
@@ -328,7 +388,7 @@ func TestProto_Decode_TooSmall_7Bytes(t *testing.T) {
 
 func TestProto_Decode_InvalidVersion(t *testing.T) {
 	data := make([]byte, 8)
-	data[0] = 0x1F // version bits = 31
+	data[0] = 0x0F // version bits = 15
 
 	_, _, err := decodeProto(data)
 
@@ -338,7 +398,7 @@ func TestProto_Decode_InvalidVersion(t *testing.T) {
 
 func TestProto_Decode_InsufficientDataForAck(t *testing.T) {
 	data := make([]byte, 10)
-	data[0] = 0x00 // Type 00 (ACK) needs >= 11 bytes
+	data[0] = typeDataAck24 << typeShift // DATA+ACK needs >= 18 bytes
 
 	_, _, err := decodeProto(data)
 
@@ -348,7 +408,7 @@ func TestProto_Decode_InsufficientDataForAck(t *testing.T) {
 func TestProto_Decode_MinimumValidSize(t *testing.T) {
 	// Minimum valid: 8 bytes for DATA without ACK
 	data := make([]byte, 8)
-	data[0] = 0b01 << typeFlag // Type 01 = DATA without ACK
+	data[0] = typeDataNoAck24 << typeShift
 
 	_, _, err := decodeProto(data)
 
@@ -470,55 +530,94 @@ func TestProto_LargeData_WithAck(t *testing.T) {
 }
 
 // =============================================================================
-// HEADER BUILDING TESTS
+// HEADER ENCODING TESTS
 // =============================================================================
 
-func TestProto_BuildHeader_DataNoAck(t *testing.T) {
-	header := buildHeader(false, false, 100, nil)
+func TestProto_Header_DataNoAck24(t *testing.T) {
+	p := &payloadHeader{streamId: 1, streamOffset: 100}
+	encoded, _ := encodeProto(p, []byte{})
 
-	typeFlag := (header >> typeFlag) & 0b11
-	assert.Equal(t, uint8(0b01), typeFlag)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeDataNoAck24), ptype)
 }
 
-func TestProto_BuildHeader_DataWithAck(t *testing.T) {
-	header := buildHeader(false, true, 100, &ack{offset: 50})
+func TestProto_Header_DataAck24(t *testing.T) {
+	p := &payloadHeader{streamId: 1, streamOffset: 100, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte{})
 
-	typeFlag := (header >> typeFlag) & 0b11
-	assert.Equal(t, uint8(0b00), typeFlag)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeDataAck24), ptype)
 }
 
-func TestProto_BuildHeader_CloseNoAck(t *testing.T) {
-	header := buildHeader(true, false, 100, nil)
+func TestProto_Header_DataNoAck48(t *testing.T) {
+	p := &payloadHeader{streamId: 1, streamOffset: 0x1000000}
+	encoded, _ := encodeProto(p, []byte{})
 
-	typeFlag := (header >> typeFlag) & 0b11
-	assert.Equal(t, uint8(0b11), typeFlag)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeDataNoAck48), ptype)
 }
 
-func TestProto_BuildHeader_CloseWithAck(t *testing.T) {
-	header := buildHeader(true, true, 100, &ack{offset: 50})
+func TestProto_Header_DataAck48(t *testing.T) {
+	p := &payloadHeader{streamId: 1, streamOffset: 0x1000000, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte{})
 
-	typeFlag := (header >> typeFlag) & 0b11
-	assert.Equal(t, uint8(0b10), typeFlag)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeDataAck48), ptype)
 }
 
-func TestProto_BuildHeader_ExtendFlag_24Bit(t *testing.T) {
-	header := buildHeader(false, false, 0xFFFFFF, nil)
+func TestProto_Header_CloseNoAck24(t *testing.T) {
+	p := &payloadHeader{isClose: true, streamId: 1, streamOffset: 100}
+	encoded, _ := encodeProto(p, []byte{})
 
-	isExtend := (header & (1 << offset24or48Flag)) != 0
-	assert.False(t, isExtend)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeCloseNoAck24), ptype)
 }
 
-func TestProto_BuildHeader_ExtendFlag_48Bit(t *testing.T) {
-	header := buildHeader(false, false, 0x1000000, nil)
+func TestProto_Header_CloseAck24(t *testing.T) {
+	p := &payloadHeader{isClose: true, streamId: 1, streamOffset: 100, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte{})
 
-	isExtend := (header & (1 << offset24or48Flag)) != 0
-	assert.True(t, isExtend)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeCloseAck24), ptype)
 }
 
-func TestProto_BuildHeader_ExtendFlag_AckTriggersExtend(t *testing.T) {
+func TestProto_Header_CloseNoAck48(t *testing.T) {
+	p := &payloadHeader{isClose: true, streamId: 1, streamOffset: 0x1000000}
+	encoded, _ := encodeProto(p, []byte{})
+
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeCloseNoAck48), ptype)
+}
+
+func TestProto_Header_CloseAck48(t *testing.T) {
+	p := &payloadHeader{isClose: true, streamId: 1, streamOffset: 0x1000000, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte{})
+
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeCloseAck48), ptype)
+}
+
+func TestProto_Header_Probe24(t *testing.T) {
+	p := &payloadHeader{isProbe: true, streamId: 1, streamOffset: 100}
+	encoded, _ := encodeProto(p, []byte{})
+
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeProbe24), ptype)
+}
+
+func TestProto_Header_Probe48(t *testing.T) {
+	p := &payloadHeader{isProbe: true, streamId: 1, streamOffset: 0x1000000}
+	encoded, _ := encodeProto(p, []byte{})
+
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeProbe48), ptype)
+}
+
+func TestProto_Header_AckTriggersExtend(t *testing.T) {
 	// Data offset is 24-bit, but ACK offset is 48-bit
-	header := buildHeader(false, true, 100, &ack{offset: 0x1000000})
+	p := &payloadHeader{streamId: 1, streamOffset: 100, ack: &ack{offset: 0x1000000}}
+	encoded, _ := encodeProto(p, []byte{})
 
-	isExtend := (header & (1 << offset24or48Flag)) != 0
-	assert.True(t, isExtend)
+	ptype := encoded[0] >> typeShift
+	assert.Equal(t, uint8(typeDataAck48), ptype)
 }
