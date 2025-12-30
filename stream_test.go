@@ -259,7 +259,7 @@ func TestStream_Retransmission_MaxRetriesRemovesConnection(t *testing.T) {
 
 	// After max retries, connection should be removed
 	connA.listener.Flush((6210 * msNano) + 5)
-	assert.Equal(t, 0, connA.listener.connMap.Size(), "connection should be removed after max retries")
+	assert.Equal(t, 0, connA.listener.connMap.size(), "connection should be removed after max retries")
 }
 
 // =============================================================================

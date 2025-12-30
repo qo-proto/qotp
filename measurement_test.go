@@ -14,7 +14,7 @@ import (
 
 func newTestConnection() *conn {
 	return &conn{
-		Measurements: NewMeasurements(),
+		measurements: newMeasurements(),
 	}
 }
 
@@ -23,7 +23,7 @@ func newTestConnection() *conn {
 // =============================================================================
 
 func TestMeasurements_New(t *testing.T) {
-	m := NewMeasurements()
+	m := newMeasurements()
 
 	assert.True(t, m.isStartup)
 	assert.Equal(t, startupGain, m.pacingGainPct)

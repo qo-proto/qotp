@@ -21,7 +21,7 @@ func (l *Listener) Dial(remoteAddr netip.AddrPort) (*conn, error) {
 		return nil, err
 	}
 
-	connId := Uint64(prvKeyEp.PublicKey().Bytes())
+	connId := getUint64(prvKeyEp.PublicKey().Bytes())
 	return l.newConn(connId, remoteAddr, prvKeyEp, nil, nil, true, false)
 }
 
@@ -33,7 +33,7 @@ func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.P
 		return nil, err
 	}
 
-	connId := Uint64(prvKeyEp.PublicKey().Bytes())
+	connId := getUint64(prvKeyEp.PublicKey().Bytes())
 	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, true)
 }
 

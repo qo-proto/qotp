@@ -6,9 +6,58 @@ A UDP-based transport protocol with an opinionated approach, similar to QUIC but
 
 QOTP is P2P-friendly, supporting UDP hole punching, multi-homing (packets from different source addresses), out-of-band key exchange, no TIME_WAIT state, and single socket for multiple connections.
 
+## Example
+
+The following [link](Examples.md) shows example usage. Here is the most basic example that echoes back whatever it receives.
+
+```go
+package main
+
+import (
+    "context"
+    "io"
+    "log"
+
+    "your/path/qotp"
+)
+
+func main() {
+    // Create listener on random port
+    listener, err := qotp.Listen()
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer listener.Close()
+
+    log.Println("Server started")
+
+    // Run event loop
+    ctx := context.Background()
+    listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
+        if stream == nil {
+            return nil // No data yet
+        }
+
+        data, err := stream.Read()
+        if err == io.EOF {
+            return nil // Stream closed
+        }
+        if err != nil {
+            return err
+        }
+
+        if len(data) > 0 {
+            stream.Write(data) // Echo back
+        }
+
+        return nil
+    })
+}
+```
+
 ## Key Design Choices
 
-- **Single crypto suite**: curve25519/chacha20poly1305 (vs SSL/TLS with 57+ RFCs)
+- **Single crypto suite**: curve25519/chacha20poly1305
 - **Always encrypted**: No plaintext option, no key renegotiation
 - **0-RTT option**: User chooses between 0-RTT (no perfect forward secrecy) or 1-RTT (with perfect forward secrecy)
 - **BBR congestion control**: Estimates network capacity via bottleneck bandwidth and RTT
@@ -41,8 +90,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
   * Separate from transport layer stream offsets
   * Rollover at 2^48 packets (not bytes) increments epoch counter
   * At 2^95 exhaustion: ~5 billion ZB sent, requires manual reconnection
-* Transport sequence space: 24-bit (16MB range) or 48-bit (256TB range) stream offsets per stream
-  * Automatically uses 48-bit when offset > 0xFFFFFF (16MB)
+* Transport sequence space: 48-bit stream offsets per stream
   * Multiple independent streams per connection
 
 ## Protocol Specification
@@ -93,6 +141,9 @@ Bits 5-7: Message Type (3 bits)
 - `010` (2): InitCryptoSnd - Initial with crypto from sender
 - `011` (3): InitCryptoRcv - Initial with crypto reply from receiver
 - `100` (4): Data - All data messages
+- `101` (5): Unused
+- `110` (6): Unused
+- `111` (7): Unused
 
 #### Constants
 
@@ -132,7 +183,7 @@ Bytes 33-64:  Public Key Identity Sender (X25519)
 Bytes 65+:    Padding to 1400 bytes
 ```
 
-**Connection ID**: First 64 bits of pubKeyEpSnd used as temporary connection ID.
+**Connection ID**: First 64 bits of pubKeyEpSnd, used for the lifetime of the connection.
 
 #### InitRcv (Type 001, Min: 103 bytes)
 
@@ -147,8 +198,6 @@ Bytes 73-78:  Encrypted Sequence Number (48-bit)
 Bytes 79+:    Encrypted Payload (min 8 bytes)
 Last 16:      MAC (Poly1305)
 ```
-
-After InitRcv, connection ID becomes: `pubKeyIdRcv[0:8] XOR pubKeyIdSnd[0:8]`
 
 #### InitCryptoSnd (Type 010, Min: 1400 bytes)
 
@@ -194,7 +243,9 @@ Last 16:      MAC (Poly1305)
 
 ### Double Encryption Scheme
 
-QOTP uses deterministic double encryption for sequence numbers and payload:
+QOTP uses deterministic double encryption for sequence numbers and payload. A comparison with QUIC shows that QUIC uses a different approach called "header protection" where it samples 16 bytes from the encrypted payload, runs it through AES-ECB (or ChaCha20), and XORs the result with the packet number and header bits. This is a custom construction designed specifically for QUIC.
+
+Note: The author is not a cryptographer. QOTP's approach was chosen for simplicity and reliance on standard primitives rather than custom constructions.
 
 **Encryption Process**:
 
@@ -343,7 +394,7 @@ Always: RTT inflation check
 
 **Measurements**:
 
-```go
+```
 SRTT = (7/8) × SRTT + (1/8) × RTT_sample
 RTTVAR = (3/4) × RTTVAR + (1/4) × |SRTT - RTT_sample|
 RTT_min = min(RTT_samples) over 10 seconds
@@ -404,70 +455,70 @@ Open → Active → Close_Requested → Closed (30s timeout)
 - `CloseRequested`: Close initiated, waiting for offset acknowledgment
 - `Closed`: All data up to close offset delivered, 30-second grace period
 
-#### Bidirectional Close Protocol
+#### Close Protocol
 
-QOTP implements a clean bidirectional close mechanism similar to TCP FIN, ensuring both sides gracefully terminate:
+QOTP implements a clean bidirectional close mechanism similar to TCP FIN:
 
-**Initiator Side (calls Close() first)**:
-1. Marks `closeAtOffset` in send buffer at current write position
-2. Continues sending queued data up to `closeAtOffset`
-3. When `closeAtOffset` reached, sends CLOSE packet (may be empty if no data queued)
-4. Marks `rcvCloseAtOffset` in receive buffer at current read position
-5. Waits for CLOSE response from peer
-6. Upon receiving peer's CLOSE: marks `rcvCloseAtOffset` in receive buffer
-7. When read reaches `rcvCloseAtOffset`: receive direction closed
-8. When both `rcvClosed` and `sndClosed`: stream fully closed
+**Close Initiation (calling Close())**:
+1. Marks `closeAtOffset` in send buffer at current write position (queued data + pending)
+2. Continues sending queued data normally
+3. When all data up to `closeAtOffset` is sent, sends CLOSE packet (may contain final data)
+4. `sndClosed` becomes true when all data including CLOSE is ACKed
 
-**Responder Side (receives CLOSE first)**:
+**Receiving CLOSE**:
 1. Receives CLOSE packet at offset X
-2. Marks `rcvCloseAtOffset = X` in receive buffer
-3. Marks `sndCloseAtOffset` in send buffer at current write position
-4. When send buffer reaches `sndCloseAtOffset` AND all ACKs received (including for peer's CLOSE): send direction ready to close
-5. Sends CLOSE response packet
-6. When read reaches offset X: receive direction closed
-7. When both `rcvClosed` and `sndClosed`: stream fully closed
+2. Marks `closeAtOffset = X` in receive buffer
+3. Continues reading until reaching close offset
+4. `rcvClosed` becomes true when `nextInOrder >= closeAtOffset`
+
+**Stream Cleanup**:
+- Stream is fully closed when both `sndClosed` and `rcvClosed` are true
+- Cleanup happens when closed AND no pending ACKs for that stream
 
 **Key Properties**:
 - Both directions close independently (half-close supported)
 - CLOSE packets must be ACKed like regular data
-- Stream fully closed only when both directions closed
+- CLOSE can be combined with data (final data packet includes CLOSE flag)
 - Empty CLOSE packets allowed when no data pending
-- No grace period after bidirectional close (immediate cleanup)
+- `Write()` returns `io.EOF` after `Close()` is called
+- `Read()` returns `io.EOF` after receive direction is closed
 
 **Example Flow**:
 ```
 A writes 100 bytes → calls Close()
-A.sndCloseOffset = 100
-A sends DATA[0-100] + CLOSE
+  A.closeAtOffset = 100
+  A sends DATA[0-100] with CLOSE flag
 
 B receives CLOSE at offset 100
-B.rcvCloseOffset = 100
-B.sndCloseOffset = 50 (current position)
-B sends DATA[0-50] + CLOSE
+  B.closeAtOffset = 100
+  B sends ACK for [0-100]
+  B reads data, when nextInOrder reaches 100: B.rcvClosed = true
 
+A receives ACK for [0-100]
+  No in-flight data, sent up to closeAtOffset: A.sndClosed = true
+
+B calls Close()
+  B.closeAtOffset = 50 (whatever B's position is)
+  B sends CLOSE
+  
 A receives CLOSE at offset 50
-A.rcvCloseOffset = 50
-When A reads to offset 50: A.rcvClosed = true
-When A gets ACK for offset 100: A.sndClosed = true
-→ A fully closed
+  A.closeAtOffset = 50
+  A reads to offset 50: A.rcvClosed = true
 
-When B reads to offset 100: B.rcvClosed = true  
-When B gets ACK for offset 50: B.sndClosed = true
-→ B fully closed
+When both sides have sndClosed && rcvClosed: stream cleanup
 ```
-
-**Grace Period**: 30 seconds (ReadDeadLine) only on receiver side to handle late packets and retransmissions.
 
 ### Connection Management
 
 **Connection ID**: 
-- Initial: First 64 bits of ephemeral public key
-- Final: `pubKeyIdRcv[0:8] XOR pubKeyIdSnd[0:8]`
+- First 64 bits of sender's ephemeral public key (`pubKeyEpSnd[0:8]`)
+- Set once at connection creation, unchanged for connection lifetime
 - Enables multi-homing (packets from different source addresses)
 
 **Connection Timeout**: 
-- 30 seconds of inactivity (no packets sent or received)
+- 30 seconds of inactivity (no packets received)
 - Automatic cleanup after timeout
+- Configured via `ReadDeadLine` constant
 
 **Single Socket**: 
 - All connections share one UDP socket
@@ -477,19 +528,20 @@ When B gets ACK for offset 50: B.sndClosed = true
 ### Buffer Management
 
 **Send Buffer** (`SendBuffer`):
-- Capacity: 16 MB (configurable)
+- Capacity: 16 MB (configurable constant `sndBufferCapacity`)
 - Tracks: queued data, in-flight data, ACKed data
 - Per-stream accounting
-- `userData`: queued data not yet sent
-- `dataInFlightMap`: sent but not ACKed (key: offset+length)
+- `queuedData`: data waiting to be sent (not yet transmitted)
+- `inFlight`: sent but not ACKed (LinkedMap keyed by offset+length)
 - Retransmission: oldest unACKed packet on RTO
 
 **Receive Buffer** (`ReceiveBuffer`):
-- Capacity: 16 MB (configurable)
+- Capacity: 16 MB (configurable constant `rcvBufferCapacity`)
 - Handles: out-of-order delivery, overlapping segments
-- Per-stream segments stored in sorted map
-- Deduplication: checks against `nextInOrderOffsetToWaitFor`
-- Overlap handling: validates matching data in overlaps
+- Per-stream segments stored in LinkedMap (sorted by offset)
+- Deduplication: checks against `nextInOrder`
+- Overlap handling: validates matching data in overlaps (panics on mismatch)
+- Tracks finished streams to reject data for cleaned-up streams
 
 **Packet Key Encoding** (64-bit):
 ```
@@ -523,15 +575,20 @@ Enables O(1) in-flight packet tracking and ACK processing.
 
 ### Data Structures
 
-**LinkedMap**: O(1) insertion, deletion, lookup, and Next/Prev traversal. Used for connection and stream maps.
+**LinkedMap**: O(1) insertion, deletion, lookup, and Next/Prev traversal. Used for:
+- Connection map (connId → conn)
+- Stream map per connection (streamID → Stream)
+- In-flight packets (packetKey → sendPacket)
+- Receive segments (offset → data)
 
 ### Thread Safety
 
 All buffer operations protected by mutexes:
 - `SendBuffer.mu`: Protects send buffer operations
 - `ReceiveBuffer.mu`: Protects receive buffer operations
-- `Conn.mu`: Protects connection state
+- `conn.mu`: Protects connection state
 - `Listener.mu`: Protects listener state
+- `Stream.mu`: Protects stream read/write
 
 ### Error Handling
 
@@ -545,9 +602,9 @@ All buffer operations protected by mutexes:
 - Receive: Packet dropped with `RcvInsertBufferFull`
 
 **Connection Errors**:
-- RTO exhausted: Close connection
-- 30-second inactivity: Close connection
-- Invalid state transitions: Close connection
+- RTO exhausted (5 attempts): Connection closed with error
+- 30-second inactivity: Connection closed
+- Sequence number exhaustion (2^95): Connection closed with error
 
 ## Usage Example
 
@@ -556,22 +613,30 @@ All buffer operations protected by mutexes:
 listener, _ := qotp.Listen(qotp.WithListenAddr("127.0.0.1:8888"))
 defer listener.Close()
 
-listener.Loop(func(stream *qotp.Stream) bool {
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
     if stream == nil {
-        return true // No data yet
+        return nil // No data yet, continue
     }
+    
     data, err := stream.Read()
-    if err != nil {
-        return false // Exit loop
+    if err == io.EOF {
+        return nil // Stream closed
     }
+    if err != nil {
+        return err // Exit loop on error
+    }
+    
     if len(data) > 0 {
         stream.Write([]byte("response"))
         stream.Close()
     }
-    return true
+    return nil
 })
 
-// Client (in-band key exchange)
+// Client (in-band key exchange, 1-RTT)
 listener, _ := qotp.Listen()
 conn, _ := listener.DialString("127.0.0.1:8888")
 stream := conn.Stream(0)
@@ -579,7 +644,60 @@ stream.Write([]byte("hello"))
 
 // Client (out-of-band keys, 0-RTT)
 pubKeyHex := "0x1234..." // Receiver's public key
-conn, _ := listener.DialWithCryptoString("127.0.0.1:8888", pubKeyHex)
+conn, _ := listener.DialStringWithCryptoString("127.0.0.1:8888", pubKeyHex)
+stream := conn.Stream(0)
+stream.Write([]byte("hello"))
+```
+
+### Stream Methods
+
+```go
+// Read returns available in-order data.
+// Returns io.EOF after FIN received and all data delivered.
+// Returns nil data (not error) if no data available yet.
+func (s *Stream) Read() ([]byte, error)
+
+// Write queues data for transmission.
+// Returns io.EOF if stream is closing/closed.
+// May return partial write if buffer full.
+func (s *Stream) Write(userData []byte) (int, error)
+
+// Close initiates graceful close of send direction.
+// Receive direction remains open until peer's FIN.
+func (s *Stream) Close()
+
+// IsClosed returns true when both directions fully closed.
+func (s *Stream) IsClosed() bool
+
+// IsCloseRequested returns true if Close() has been called.
+func (s *Stream) IsCloseRequested() bool
+
+// Ping queues a ping packet for RTT measurement.
+func (s *Stream) Ping()
+```
+
+### Listener Options
+
+```go
+// Address to listen on
+qotp.WithListenAddr("127.0.0.1:8888")
+
+// Custom MTU (default 1400)
+qotp.WithMtu(1200)
+
+// Pre-configured identity key
+qotp.WithPrvKeyId(privateKey)
+
+// Derive key from seed
+qotp.WithSeed([32]byte{...})
+qotp.WithSeedHex("0x1234...")
+qotp.WithSeedString("my-secret-seed")
+
+// Custom network connection (for testing)
+qotp.WithNetworkConn(conn)
+
+// Key logging for Wireshark
+qotp.WithKeyLogWriter(file)
 ```
 
 ## Contributing

@@ -22,7 +22,7 @@ import (
 type Listener struct {
 	localConn    NetworkConn
 	prvKeyId     *ecdh.PrivateKey
-	connMap      *LinkedMap[uint64, *conn]
+	connMap      *linkedMap[uint64, *conn]
 	keyLogWriter io.Writer
 	mtu          int
 
@@ -144,7 +144,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		prvKeyId:     o.prvKeyId,
 		mtu:          o.mtu,
 		keyLogWriter: o.keyLogWriter,
-		connMap:      NewLinkedMap[uint64, *conn](),
+		connMap:      newLinkedMap[uint64, *conn](),
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil
@@ -158,7 +158,7 @@ func (l *Listener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, conn := range l.connMap.Iterator(nil) {
+	for _, conn := range l.connMap.iterator(nil) {
 		conn.closeAllStreams()
 	}
 	if err := l.localConn.TimeoutReadNow(); err != nil {
@@ -171,8 +171,8 @@ func (l *Listener) HasActiveStreams() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, conn := range l.connMap.Iterator(nil) {
-		if conn.HasActiveStreams() || conn.rcv.HasPendingAcks() {
+	for _, conn := range l.connMap.iterator(nil) {
+		if conn.HasActiveStreams() || conn.rcv.hasPendingAcks() {
 			return true
 		}
 	}
@@ -193,13 +193,13 @@ func (l *Listener) newConn(
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.connMap.Contains(connId) {
+	if l.connMap.contains(connId) {
 		return nil, errors.New("conn already exists")
 	}
 
 	conn := &conn{
 		connId:             connId,
-		streams:            NewLinkedMap[uint32, *Stream](),
+		streams:            newLinkedMap[uint32, *Stream](),
 		remoteAddr:         remoteAddr,
 		pubKeyIdRcv:        pubKeyIdRcv,
 		prvKeyEpSnd:        prvKeyEpSnd,
@@ -207,9 +207,9 @@ func (l *Listener) newConn(
 		listener:           l,
 		isSenderOnInit:     isSender,
 		isWithCryptoOnInit: withCrypto,
-		snd:                NewSendBuffer(sndBufferCapacity),
-		rcv:                NewReceiveBuffer(rcvBufferCapacity),
-		Measurements:       NewMeasurements(),
+		snd:                newSendBuffer(sndBufferCapacity),
+		rcv:                newReceiveBuffer(rcvBufferCapacity),
+		measurements:       newMeasurements(),
 		rcvWndSize:         rcvBufferCapacity,
 	}
 
@@ -229,7 +229,7 @@ func (l *Listener) newConn(
 		}
 	}
 
-	l.connMap.Put(connId, conn)
+	l.connMap.put(connId, conn)
 	return conn, nil
 }
 
@@ -239,8 +239,8 @@ func (l *Listener) cleanupConn(connId uint64) {
 
 	// Advance round-robin pointer if we're removing current connection
 	if l.currentConnID != nil && connId == *l.currentConnID {
-		tmp, _, _ := l.connMap.Next(connId)
+		tmp, _, _ := l.connMap.next(connId)
 		l.currentConnID = &tmp
 	}
-	l.connMap.Remove(connId)
+	l.connMap.remove(connId)
 }

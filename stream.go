@@ -36,9 +36,9 @@ func (s *Stream) Read() ([]byte, error) {
 		return nil, io.EOF
 	}
 
-	data := s.conn.rcv.RemoveOldestInOrder(s.streamID)
+	data := s.conn.rcv.removeOldestInOrder(s.streamID)
 
-	if s.conn.rcv.IsReadyToClose(s.streamID) {
+	if s.conn.rcv.isReadyToClose(s.streamID) {
 		s.rcvClosed = true
 	}
 
@@ -59,8 +59,8 @@ func (s *Stream) Write(userData []byte) (int, error) {
 		return 0, nil
 	}
 
-	n, status := s.conn.snd.QueueData(s.streamID, userData)
-	if status == InsertStatusOk {
+	n, status := s.conn.snd.queueData(s.streamID, userData)
+	if status == insertStatusOk {
 		// Signal to unblock any pending read so Flush can run
 		if err := s.conn.listener.localConn.TimeoutReadNow(); err != nil {
 			return 0, err
@@ -77,7 +77,7 @@ func (s *Stream) Write(userData []byte) (int, error) {
 // Close initiates graceful close of the send direction.
 // Receive direction remains open until peer's FIN arrives.
 func (s *Stream) Close() {
-	s.conn.snd.Close(s.streamID)
+	s.conn.snd.close(s.streamID)
 }
 
 // IsClosed returns true when both directions are fully closed.
@@ -87,7 +87,7 @@ func (s *Stream) IsClosed() bool {
 
 // IsCloseRequested returns true if Close() has been called (FIN queued).
 func (s *Stream) IsCloseRequested() bool {
-	return s.conn.snd.GetOffsetClosedAt(s.streamID) != nil
+	return s.conn.snd.getOffsetClosedAt(s.streamID) != nil
 }
 
 // IsOpen returns true if stream is not closing and not closed.
@@ -123,7 +123,7 @@ func (s *Stream) ConnID() uint64 {
 
 // Ping queues a ping packet for RTT measurement.
 func (s *Stream) Ping() {
-	s.conn.snd.QueuePing(s.streamID)
+	s.conn.snd.queuePing(s.streamID)
 }
 
 // NotifyDataAvailable interrupts any blocking read to allow immediate processing.

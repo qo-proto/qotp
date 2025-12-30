@@ -12,35 +12,35 @@ import (
 
 func TestEncodingUint16_Zero(t *testing.T) {
 	buf := make([]byte, 2)
-	n := PutUint16(buf, 0)
+	n := putUint16(buf, 0)
 	assert.Equal(t, 2, n)
-	assert.Equal(t, uint16(0), Uint16(buf))
+	assert.Equal(t, uint16(0), getUint16(buf))
 }
 
 func TestEncodingUint16_Max(t *testing.T) {
 	buf := make([]byte, 2)
-	PutUint16(buf, 0xFFFF)
-	assert.Equal(t, uint16(0xFFFF), Uint16(buf))
+	putUint16(buf, 0xFFFF)
+	assert.Equal(t, uint16(0xFFFF), getUint16(buf))
 }
 
 func TestEncodingUint16_LittleEndian(t *testing.T) {
 	buf := make([]byte, 2)
-	PutUint16(buf, 0x1234)
+	putUint16(buf, 0x1234)
 	assert.Equal(t, byte(0x34), buf[0], "low byte first")
 	assert.Equal(t, byte(0x12), buf[1], "high byte second")
-	assert.Equal(t, uint16(0x1234), Uint16(buf))
+	assert.Equal(t, uint16(0x1234), getUint16(buf))
 }
 
 func TestEncodingUint16_One(t *testing.T) {
 	buf := make([]byte, 2)
-	PutUint16(buf, 1)
-	assert.Equal(t, uint16(1), Uint16(buf))
+	putUint16(buf, 1)
+	assert.Equal(t, uint16(1), getUint16(buf))
 }
 
 func TestEncodingUint16_PowerOf2(t *testing.T) {
 	buf := make([]byte, 2)
-	PutUint16(buf, 256) // 2^8
-	assert.Equal(t, uint16(256), Uint16(buf))
+	putUint16(buf, 256) // 2^8
+	assert.Equal(t, uint16(256), getUint16(buf))
 	assert.Equal(t, byte(0x00), buf[0])
 	assert.Equal(t, byte(0x01), buf[1])
 }
@@ -51,37 +51,37 @@ func TestEncodingUint16_PowerOf2(t *testing.T) {
 
 func TestEncodingUint24_Zero(t *testing.T) {
 	buf := make([]byte, 3)
-	n := PutUint24(buf, 0)
+	n := putUint24(buf, 0)
 	assert.Equal(t, 3, n)
-	assert.Equal(t, uint64(0), Uint24(buf))
+	assert.Equal(t, uint64(0), getUint24(buf))
 }
 
 func TestEncodingUint24_Max(t *testing.T) {
 	buf := make([]byte, 3)
-	PutUint24(buf, 0xFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFF), Uint24(buf))
+	putUint24(buf, 0xFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFF), getUint24(buf))
 }
 
 func TestEncodingUint24_LittleEndian(t *testing.T) {
 	buf := make([]byte, 3)
-	PutUint24(buf, 0x123456)
+	putUint24(buf, 0x123456)
 	assert.Equal(t, byte(0x56), buf[0])
 	assert.Equal(t, byte(0x34), buf[1])
 	assert.Equal(t, byte(0x12), buf[2])
-	assert.Equal(t, uint64(0x123456), Uint24(buf))
+	assert.Equal(t, uint64(0x123456), getUint24(buf))
 }
 
 func TestEncodingUint24_Truncation(t *testing.T) {
 	buf := make([]byte, 3)
 	// Value larger than 24-bit gets truncated
-	PutUint24(buf, 0xFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFF), Uint24(buf))
+	putUint24(buf, 0xFFFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFF), getUint24(buf))
 }
 
 func TestEncodingUint24_One(t *testing.T) {
 	buf := make([]byte, 3)
-	PutUint24(buf, 1)
-	assert.Equal(t, uint64(1), Uint24(buf))
+	putUint24(buf, 1)
+	assert.Equal(t, uint64(1), getUint24(buf))
 }
 
 // =============================================================================
@@ -90,37 +90,37 @@ func TestEncodingUint24_One(t *testing.T) {
 
 func TestEncodingUint32_Zero(t *testing.T) {
 	buf := make([]byte, 4)
-	n := PutUint32(buf, 0)
+	n := putUint32(buf, 0)
 	assert.Equal(t, 4, n)
-	assert.Equal(t, uint32(0), Uint32(buf))
+	assert.Equal(t, uint32(0), getUint32(buf))
 }
 
 func TestEncodingUint32_Max(t *testing.T) {
 	buf := make([]byte, 4)
-	PutUint32(buf, 0xFFFFFFFF)
-	assert.Equal(t, uint32(0xFFFFFFFF), Uint32(buf))
+	putUint32(buf, 0xFFFFFFFF)
+	assert.Equal(t, uint32(0xFFFFFFFF), getUint32(buf))
 }
 
 func TestEncodingUint32_LittleEndian(t *testing.T) {
 	buf := make([]byte, 4)
-	PutUint32(buf, 0x12345678)
+	putUint32(buf, 0x12345678)
 	assert.Equal(t, byte(0x78), buf[0])
 	assert.Equal(t, byte(0x56), buf[1])
 	assert.Equal(t, byte(0x34), buf[2])
 	assert.Equal(t, byte(0x12), buf[3])
-	assert.Equal(t, uint32(0x12345678), Uint32(buf))
+	assert.Equal(t, uint32(0x12345678), getUint32(buf))
 }
 
 func TestEncodingUint32_One(t *testing.T) {
 	buf := make([]byte, 4)
-	PutUint32(buf, 1)
-	assert.Equal(t, uint32(1), Uint32(buf))
+	putUint32(buf, 1)
+	assert.Equal(t, uint32(1), getUint32(buf))
 }
 
 func TestEncodingUint32_PowerOf2(t *testing.T) {
 	buf := make([]byte, 4)
-	PutUint32(buf, 1<<24) // 2^24 = 16777216
-	assert.Equal(t, uint32(1<<24), Uint32(buf))
+	putUint32(buf, 1<<24) // 2^24 = 16777216
+	assert.Equal(t, uint32(1<<24), getUint32(buf))
 }
 
 // =============================================================================
@@ -129,46 +129,46 @@ func TestEncodingUint32_PowerOf2(t *testing.T) {
 
 func TestEncodingUint48_Zero(t *testing.T) {
 	buf := make([]byte, 6)
-	n := PutUint48(buf, 0)
+	n := putUint48(buf, 0)
 	assert.Equal(t, 6, n)
-	assert.Equal(t, uint64(0), Uint48(buf))
+	assert.Equal(t, uint64(0), getUint48(buf))
 }
 
 func TestEncodingUint48_Max(t *testing.T) {
 	buf := make([]byte, 6)
-	PutUint48(buf, 0xFFFFFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFFFFFFFF), Uint48(buf))
+	putUint48(buf, 0xFFFFFFFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFFFFFFFF), getUint48(buf))
 }
 
 func TestEncodingUint48_LittleEndian(t *testing.T) {
 	buf := make([]byte, 6)
-	PutUint48(buf, 0x123456789ABC)
+	putUint48(buf, 0x123456789ABC)
 	assert.Equal(t, byte(0xBC), buf[0])
 	assert.Equal(t, byte(0x9A), buf[1])
 	assert.Equal(t, byte(0x78), buf[2])
 	assert.Equal(t, byte(0x56), buf[3])
 	assert.Equal(t, byte(0x34), buf[4])
 	assert.Equal(t, byte(0x12), buf[5])
-	assert.Equal(t, uint64(0x123456789ABC), Uint48(buf))
+	assert.Equal(t, uint64(0x123456789ABC), getUint48(buf))
 }
 
 func TestEncodingUint48_Truncation(t *testing.T) {
 	buf := make([]byte, 6)
 	// Value larger than 48-bit gets truncated
-	PutUint48(buf, 0xFFFFFFFFFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFFFFFFFF), Uint48(buf))
+	putUint48(buf, 0xFFFFFFFFFFFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFFFFFFFF), getUint48(buf))
 }
 
 func TestEncodingUint48_One(t *testing.T) {
 	buf := make([]byte, 6)
-	PutUint48(buf, 1)
-	assert.Equal(t, uint64(1), Uint48(buf))
+	putUint48(buf, 1)
+	assert.Equal(t, uint64(1), getUint48(buf))
 }
 
 func TestEncodingUint48_PowerOf2(t *testing.T) {
 	buf := make([]byte, 6)
-	PutUint48(buf, 1<<32) // 2^32
-	assert.Equal(t, uint64(1<<32), Uint48(buf))
+	putUint48(buf, 1<<32) // 2^32
+	assert.Equal(t, uint64(1<<32), getUint48(buf))
 }
 
 // =============================================================================
@@ -177,20 +177,20 @@ func TestEncodingUint48_PowerOf2(t *testing.T) {
 
 func TestEncodingUint64_Zero(t *testing.T) {
 	buf := make([]byte, 8)
-	n := PutUint64(buf, 0)
+	n := putUint64(buf, 0)
 	assert.Equal(t, 8, n)
-	assert.Equal(t, uint64(0), Uint64(buf))
+	assert.Equal(t, uint64(0), getUint64(buf))
 }
 
 func TestEncodingUint64_Max(t *testing.T) {
 	buf := make([]byte, 8)
-	PutUint64(buf, 0xFFFFFFFFFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFFFFFFFFFFFF), Uint64(buf))
+	putUint64(buf, 0xFFFFFFFFFFFFFFFF)
+	assert.Equal(t, uint64(0xFFFFFFFFFFFFFFFF), getUint64(buf))
 }
 
 func TestEncodingUint64_LittleEndian(t *testing.T) {
 	buf := make([]byte, 8)
-	PutUint64(buf, 0x123456789ABCDEF0)
+	putUint64(buf, 0x123456789ABCDEF0)
 	assert.Equal(t, byte(0xF0), buf[0])
 	assert.Equal(t, byte(0xDE), buf[1])
 	assert.Equal(t, byte(0xBC), buf[2])
@@ -199,19 +199,19 @@ func TestEncodingUint64_LittleEndian(t *testing.T) {
 	assert.Equal(t, byte(0x56), buf[5])
 	assert.Equal(t, byte(0x34), buf[6])
 	assert.Equal(t, byte(0x12), buf[7])
-	assert.Equal(t, uint64(0x123456789ABCDEF0), Uint64(buf))
+	assert.Equal(t, uint64(0x123456789ABCDEF0), getUint64(buf))
 }
 
 func TestEncodingUint64_One(t *testing.T) {
 	buf := make([]byte, 8)
-	PutUint64(buf, 1)
-	assert.Equal(t, uint64(1), Uint64(buf))
+	putUint64(buf, 1)
+	assert.Equal(t, uint64(1), getUint64(buf))
 }
 
 func TestEncodingUint64_PowerOf2(t *testing.T) {
 	buf := make([]byte, 8)
-	PutUint64(buf, 1<<48) // 2^48
-	assert.Equal(t, uint64(1<<48), Uint64(buf))
+	putUint64(buf, 1<<48) // 2^48
+	assert.Equal(t, uint64(1<<48), getUint64(buf))
 }
 
 // =============================================================================
@@ -282,24 +282,24 @@ func TestEncodingRoundtrip_AllTypes(t *testing.T) {
 	buf := make([]byte, 8)
 
 	testVal16 := uint16(0xABCD)
-	PutUint16(buf, testVal16)
-	assert.Equal(t, testVal16, Uint16(buf))
+	putUint16(buf, testVal16)
+	assert.Equal(t, testVal16, getUint16(buf))
 
 	testVal24 := uint64(0xABCDEF)
-	PutUint24(buf, testVal24)
-	assert.Equal(t, testVal24, Uint24(buf))
+	putUint24(buf, testVal24)
+	assert.Equal(t, testVal24, getUint24(buf))
 
 	testVal32 := uint32(0xABCDEF12)
-	PutUint32(buf, testVal32)
-	assert.Equal(t, testVal32, Uint32(buf))
+	putUint32(buf, testVal32)
+	assert.Equal(t, testVal32, getUint32(buf))
 
 	testVal48 := uint64(0xABCDEF123456)
-	PutUint48(buf, testVal48)
-	assert.Equal(t, testVal48, Uint48(buf))
+	putUint48(buf, testVal48)
+	assert.Equal(t, testVal48, getUint48(buf))
 
 	testVal64 := uint64(0xABCDEF1234567890)
-	PutUint64(buf, testVal64)
-	assert.Equal(t, testVal64, Uint64(buf))
+	putUint64(buf, testVal64)
+	assert.Equal(t, testVal64, getUint64(buf))
 }
 
 func TestEncodingRoundtrip_OffsetVarint(t *testing.T) {

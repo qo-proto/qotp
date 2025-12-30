@@ -20,8 +20,8 @@ import (
 // Listen reads one packet, decrypts it, and processes the payload.
 // Returns the stream that received data, or nil on timeout/no-data.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
-	data := make([]byte, l.mtu)
-	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(data, timeoutNano, nowNano)
+	encData := make([]byte, l.mtu)
+	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(encData, timeoutNano, nowNano)
 
 	if err != nil {
 		var netErr net.Error
@@ -35,14 +35,14 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		return nil, nil
 	}
 
-	encData := data[:n]
+	encData = encData[:n]
 
 	// Parse and validate header
-	if len(encData) < MinPacketSize {
+	if len(encData) < minPacketSize {
 		return nil, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
 	header := encData[0]
-	if version := header & 0x1F; version != CryptoVersion {
+	if version := header & 0x1F; version != cryptoVersion {
 		return nil, errors.New("unsupported version")
 	}
 	msgType := cryptoMsgType(header >> 5)
@@ -59,7 +59,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 	// Decode transport layer payload
 	var p *payloadHeader
-	if len(payload) == 0 && msgType == InitSnd {
+	if len(payload) == 0 && msgType == initSnd {
 		// InitSnd has no payload - create empty header
 		p = &payloadHeader{}
 		payload = []byte{}
@@ -81,9 +81,9 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	// - Receiver receives first Data message
 	if !conn.isHandshakeDoneOnRcv {
 		switch {
-		case conn.isSenderOnInit && (msgType == InitRcv || msgType == InitCryptoRcv):
+		case conn.isSenderOnInit && (msgType == initRcv || msgType == initCryptoRcv):
 			conn.isHandshakeDoneOnRcv = true
-		case !conn.isSenderOnInit && msgType == Data:
+		case !conn.isSenderOnInit && msgType == data:
 			conn.isHandshakeDoneOnRcv = true
 		}
 	}
@@ -95,7 +95,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 // Returns minimum pacing interval until next send opportunity.
 func (l *Listener) Flush(nowNano uint64) uint64 {
 	minPacing := MinDeadLine
-	if l.connMap.Size() == 0 {
+	if l.connMap.size() == 0 {
 		return minPacing
 	}
 
@@ -116,8 +116,8 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 
 	startStreamID := l.currentStreamID
 
-	for _, conn := range l.connMap.Iterator(l.currentConnID) {
-		for _, stream := range conn.streams.Iterator(startStreamID) {
+	for _, conn := range l.connMap.iterator(l.currentConnID) {
+		for _, stream := range conn.streams.iterator(startStreamID) {
 			dataSent, pacingNano, err := conn.flushStream(stream, nowNano)
 			if err != nil {
 				slog.Info("closing connection", slog.Any("err", err))
@@ -127,7 +127,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 				return minPacing
 			}
 
-			if stream.rcvClosed && stream.sndClosed && !conn.rcv.HasPendingAckForStream(stream.streamID) {
+			if stream.rcvClosed && stream.sndClosed && !conn.rcv.hasPendingAckForStream(stream.streamID) {
 				closeStreams[conn] = append(closeStreams[conn], stream.streamID)
 				continue
 			}

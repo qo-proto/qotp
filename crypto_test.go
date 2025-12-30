@@ -34,7 +34,7 @@ func generateTestKey(t *testing.T) *ecdh.PrivateKey {
 
 func TestCryptoChainedEncryptDecrypt_ShortData(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	buf, err := chainedEncrypt(1234567890, 0, true, sharedSecret, aad, data)
@@ -65,7 +65,7 @@ func TestCryptoChainedEncryptDecrypt_LongData(t *testing.T) {
 
 func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte{}
 
 	buf, err := chainedEncrypt(1, 0, true, sharedSecret, aad, data)
@@ -79,7 +79,7 @@ func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
 
 func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 	maxSn := uint64(0xffffffffffff) // 48-bit max
 
@@ -94,7 +94,7 @@ func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
 
 func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	buf, err := chainedEncrypt(0, 0, true, sharedSecret, aad, data)
@@ -108,7 +108,7 @@ func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
 
 func TestCryptoChainedEncryptDecrypt_WithEpoch(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
@@ -123,7 +123,7 @@ func TestCryptoChainedEncryptDecrypt_WithEpoch(t *testing.T) {
 
 func TestCryptoChainedDecrypt_EpochWindowMinus1(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	// Encrypt with epoch 5
@@ -140,7 +140,7 @@ func TestCryptoChainedDecrypt_EpochWindowMinus1(t *testing.T) {
 
 func TestCryptoChainedDecrypt_EpochWindowPlus1(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	// Encrypt with epoch 5
@@ -157,7 +157,7 @@ func TestCryptoChainedDecrypt_EpochWindowPlus1(t *testing.T) {
 
 func TestCryptoChainedDecrypt_EpochTooFar(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	// Encrypt with epoch 5
@@ -172,7 +172,7 @@ func TestCryptoChainedDecrypt_EpochTooFar(t *testing.T) {
 func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
 	sharedSecret := randomBytes(32)
 	wrongSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
@@ -184,7 +184,7 @@ func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
 
 func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	// Encrypt as sender (isSender=true)
@@ -198,7 +198,7 @@ func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
 
 func TestCryptoChainedDecrypt_CorruptedMAC(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	data := randomBytes(MinProtoSize)
+	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
 	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
@@ -269,7 +269,7 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 
 	rawData := []byte("test data")
 	buffer, err := encryptPacket(
-		InitRcv,
+		initRcv,
 		12345,
 		bobPrvKeyEp,
 		bobPrvKeyId.PublicKey(),
@@ -285,8 +285,8 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 	sharedSecret, pubKeyIdRcv, pubKeyEpRcv, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
 	assert.NotNil(t, sharedSecret)
-	assert.Equal(t, uint64(0), msg.SnConn)
-	assert.Equal(t, rawData, msg.PayloadRaw)
+	assert.Equal(t, uint64(0), msg.snConn)
+	assert.Equal(t, rawData, msg.payloadRaw)
 	assert.True(t, bytes.Equal(bobPrvKeyId.PublicKey().Bytes(), pubKeyIdRcv.Bytes()))
 	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
 }
@@ -297,7 +297,7 @@ func TestCryptoInitRcv_NilKeys(t *testing.T) {
 
 	// Missing pubKeyIdSnd
 	_, err := encryptPacket(
-		InitRcv,
+		initRcv,
 		0,
 		bobPrvKeyEp,
 		nil, // pubKeyIdSnd
@@ -313,7 +313,7 @@ func TestCryptoInitRcv_NilKeys(t *testing.T) {
 }
 
 func TestCryptoDecryptInitRcv_TooSmall(t *testing.T) {
-	buffer := make([]byte, MinInitRcvSizeHdr+FooterDataSize-1)
+	buffer := make([]byte, minInitRcvSizeHdr+footerDataSize-1)
 	_, _, _, _, err := decryptInitRcv(buffer, generateTestKey(t))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum init reply")
@@ -326,7 +326,7 @@ func TestCryptoInitRcv_MinPayload(t *testing.T) {
 
 	payload := []byte("12345678") // 8 bytes - min proto size
 	buffer, err := encryptPacket(
-		InitRcv,
+		initRcv,
 		0,
 		bobPrvKeyEp,
 		bobPrvKeyId.PublicKey(),
@@ -341,7 +341,7 @@ func TestCryptoInitRcv_MinPayload(t *testing.T) {
 
 	_, _, _, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 }
 
 // =============================================================================
@@ -368,7 +368,7 @@ func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
 
 	pubKeyIdSnd, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
 }
@@ -414,7 +414,7 @@ func TestCryptoInitCryptoSnd_MaxPayload(t *testing.T) {
 	bobPrvKeyId := generateTestKey(t)
 
 	// Calculate max payload size
-	maxPayload := defaultMTU - MinInitCryptoSndSizeHdr - FooterDataSize - MsgInitFillLenSize
+	maxPayload := defaultMTU - minInitCryptoSndSizeHdr - footerDataSize - msgInitFillLenSize
 	payload := randomBytes(maxPayload)
 
 	_, buffer, err := encryptInitCryptoSnd(
@@ -430,7 +430,7 @@ func TestCryptoInitCryptoSnd_MaxPayload(t *testing.T) {
 
 	_, _, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 }
 
 func TestCryptoDecryptInitCryptoSnd_TooSmall(t *testing.T) {
@@ -452,7 +452,7 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 
 	payload := []byte("response data")
 	buffer, err := encryptPacket(
-		InitCryptoRcv,
+		initCryptoRcv,
 		12345,
 		bobPrvKeyEp,
 		nil,
@@ -468,7 +468,7 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 	sharedSecret, pubKeyEpRcv, msg, err := decryptInitCryptoRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
 	assert.NotNil(t, sharedSecret)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
 }
 
@@ -476,7 +476,7 @@ func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
 	bobPrvKeyEp := generateTestKey(t)
 
 	_, err := encryptPacket(
-		InitCryptoRcv,
+		initCryptoRcv,
 		0,
 		bobPrvKeyEp,
 		nil,
@@ -492,7 +492,7 @@ func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
 }
 
 func TestCryptoDecryptInitCryptoRcv_TooSmall(t *testing.T) {
-	buffer := make([]byte, MinInitCryptoRcvSizeHdr+FooterDataSize-1)
+	buffer := make([]byte, minInitCryptoRcvSizeHdr+footerDataSize-1)
 	_, _, _, err := decryptInitCryptoRcv(buffer, generateTestKey(t))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum init reply")
@@ -507,7 +507,7 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 	payload := []byte("test data payload")
 
 	encData, err := encryptPacket(
-		Data,
+		data,
 		12345,
 		nil,
 		nil,
@@ -523,12 +523,12 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 
 	msg, err := decryptData(encData, false, 0, sharedSecret)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 }
 
 func TestCryptoData_NilSharedSecret(t *testing.T) {
 	_, err := encryptPacket(
-		Data,
+		data,
 		12345,
 		nil,
 		nil,
@@ -548,7 +548,7 @@ func TestCryptoData_WithEpoch(t *testing.T) {
 	payload := []byte("test data")
 
 	encData, err := encryptPacket(
-		Data,
+		data,
 		12345,
 		nil,
 		nil,
@@ -563,13 +563,13 @@ func TestCryptoData_WithEpoch(t *testing.T) {
 
 	msg, err := decryptData(encData, false, 5, sharedSecret)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.PayloadRaw)
+	assert.Equal(t, payload, msg.payloadRaw)
 	assert.Equal(t, uint64(5), msg.currentEpochCrypt)
 }
 
 func TestCryptoDecryptData_TooSmall(t *testing.T) {
 	sharedSecret := randomBytes(32)
-	buffer := make([]byte, MinDataSizeHdr+FooterDataSize-1)
+	buffer := make([]byte, minDataSizeHdr+footerDataSize-1)
 
 	_, err := decryptData(buffer, false, 0, sharedSecret)
 	assert.Error(t, err)
@@ -582,7 +582,7 @@ func TestCryptoDecryptData_WrongSecret(t *testing.T) {
 	payload := []byte("test data")
 
 	encData, err := encryptPacket(
-		Data,
+		data,
 		12345,
 		nil,
 		nil,
@@ -641,7 +641,7 @@ func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
 	// Step 3: Bob sends InitRcv
 	rawData := []byte("handshake response")
 	bufferR0, err := encryptPacket(
-		InitRcv,
+		initRcv,
 		connId,
 		bobPrvKeyEp,
 		bobPrvKeyId.PublicKey(),
@@ -657,7 +657,7 @@ func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
 	// Step 4: Alice receives InitRcv
 	_, _, _, msg, err := decryptInitRcv(bufferR0, alicePrvKeyEp)
 	assert.NoError(t, err)
-	assert.Equal(t, rawData, msg.PayloadRaw)
+	assert.Equal(t, rawData, msg.payloadRaw)
 }
 
 func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
@@ -681,12 +681,12 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	// Step 2: Bob receives InitCryptoSnd
 	_, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(bufferS0, bobPrvKeyId, defaultMTU)
 	assert.NoError(t, err)
-	assert.Equal(t, initPayload, msg.PayloadRaw)
+	assert.Equal(t, initPayload, msg.payloadRaw)
 
 	// Step 3: Bob sends InitCryptoRcv
 	responsePayload := []byte("response")
 	bufferR0, err := encryptPacket(
-		InitCryptoRcv,
+		initCryptoRcv,
 		connId,
 		bobPrvKeyEp,
 		nil,
@@ -702,7 +702,7 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	// Step 4: Alice receives InitCryptoRcv
 	_, _, msg, err = decryptInitCryptoRcv(bufferR0, alicePrvKeyEp)
 	assert.NoError(t, err)
-	assert.Equal(t, responsePayload, msg.PayloadRaw)
+	assert.Equal(t, responsePayload, msg.payloadRaw)
 }
 
 // =============================================================================
@@ -710,44 +710,44 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 // =============================================================================
 
 func TestCryptoOverhead_InitSnd(t *testing.T) {
-	assert.Equal(t, -1, calcCryptoOverheadWithData(InitSnd, nil, 100))
+	assert.Equal(t, -1, calcCryptoOverheadWithData(initSnd, nil, 100))
 }
 
 func TestCryptoOverhead_InitRcv(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + MinInitRcvSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitRcv, nil, 100))
+	expected := calcProtoOverhead(false, false, false) + minInitRcvSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initRcv, nil, 100))
 }
 
 func TestCryptoOverhead_InitCryptoSnd(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoSnd, nil, 100))
+	expected := calcProtoOverhead(false, false, false) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoSnd, nil, 100))
 }
 
 func TestCryptoOverhead_InitCryptoRcv(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + MinInitCryptoRcvSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(InitCryptoRcv, nil, 100))
+	expected := calcProtoOverhead(false, false, false) + minInitCryptoRcvSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoRcv, nil, 100))
 }
 
 func TestCryptoOverhead_Data(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 100))
+	expected := calcProtoOverhead(false, false, false) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100))
 }
 
 func TestCryptoOverhead_DataWithAck(t *testing.T) {
-	ack := &Ack{offset: 1000}
-	expected := calcProtoOverhead(true, false, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 100))
+	ack := &ack{offset: 1000}
+	expected := calcProtoOverhead(true, false, false) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100))
 }
 
 func TestCryptoOverhead_DataWithLargeAckOffset(t *testing.T) {
-	ack := &Ack{offset: 0xFFFFFF + 1}
-	expected := calcProtoOverhead(true, true, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, ack, 100))
+	ack := &ack{offset: 0xFFFFFF + 1}
+	expected := calcProtoOverhead(true, true, false) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100))
 }
 
 func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
-	expected := calcProtoOverhead(false, true, false) + MinDataSizeHdr + FooterDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(Data, nil, 0xFFFFFF+1))
+	expected := calcProtoOverhead(false, true, false) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1))
 }
 
 // =============================================================================

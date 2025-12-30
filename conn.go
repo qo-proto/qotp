@@ -34,9 +34,9 @@ type conn struct {
 	isInitSentOnSnd      bool
 
 	// Stream and buffer management
-	streams      *LinkedMap[uint32, *Stream]
-	snd          *SendBuffer
-	rcv          *ReceiveBuffer
+	streams      *linkedMap[uint32, *Stream]
+	snd          *sender
+	rcv          *receiver
 	dataInFlight int
 	rcvWndSize   uint64
 
@@ -46,7 +46,7 @@ type conn struct {
 	// Activity tracking
 	lastReadTimeNano uint64
 
-	Measurements
+	measurements
 	mu sync.Mutex
 }
 
@@ -63,7 +63,7 @@ func (c *conn) Stream(streamID uint32) *Stream {
 func (c *conn) HasActiveStreams() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, val := range c.streams.Iterator(nil) {
+	for _, val := range c.streams.iterator(nil) {
 		if val != nil && (!val.rcvClosed || !val.sndClosed) {
 			return true
 		}
@@ -76,7 +76,7 @@ func (c *conn) HasActiveStreams() bool {
 // =============================================================================
 
 func (l *Listener) getOrCreateConn(connId uint64, rAddr netip.AddrPort, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, isSender, withCrypto bool) (*conn, error) {
-	if conn, exists := l.connMap.Get(connId); exists {
+	if conn, exists := l.connMap.get(connId); exists {
 		return conn, nil
 	}
 	prvKeyEp, err := generateKey()
@@ -89,7 +89,7 @@ func (l *Listener) getOrCreateConn(connId uint64, rAddr netip.AddrPort, pubKeyId
 func (c *conn) closeAllStreams() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, s := range c.streams.Iterator(nil) {
+	for _, s := range c.streams.iterator(nil) {
 		s.Close()
 	}
 }
@@ -98,12 +98,12 @@ func (c *conn) cleanupStream(streamID uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
-		tmp, _, _ := c.streams.Next(streamID)
+		tmp, _, _ := c.streams.next(streamID)
 		c.listener.currentStreamID = &tmp
 	}
-	c.streams.Remove(streamID)
-	c.snd.RemoveStream(streamID)
-	c.rcv.RemoveStream(streamID)
+	c.streams.remove(streamID)
+	c.snd.removeStream(streamID)
+	c.rcv.removeStream(streamID)
 }
 
 // =============================================================================
@@ -113,14 +113,14 @@ func (c *conn) cleanupStream(streamID uint32) {
 // getOrCreateStream returns or creates a getOrCreateStream. Returns nil if getOrCreateStream was already finished.
 // Caller must hold c.mu.
 func (c *conn) getOrCreateStream(streamID uint32) *Stream {
-	if c.rcv.IsFinished(streamID) {
+	if c.rcv.isFinished(streamID) {
 		return nil
 	}
-	if v, exists := c.streams.Get(streamID); exists {
+	if v, exists := c.streams.get(streamID); exists {
 		return v
 	}
 	s := &Stream{streamID: streamID, conn: c}
-	c.streams.Put(streamID, s)
+	c.streams.put(streamID, s)
 	return s
 }
 
@@ -129,13 +129,13 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 // =============================================================================
 
 func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, error) {
-	connId := Uint64(encData[HeaderSize : HeaderSize+ConnIdSize])
+	connId := getUint64(encData[headerSize : headerSize+connIdSize])
 
 	switch msgType {
-	case InitSnd, InitCryptoSnd:
+	case initSnd, initCryptoSnd:
 		return decodeInitPacket(l, encData, rAddr, connId, msgType)
-	case InitRcv, InitCryptoRcv, Data:
-		conn, exists := l.connMap.Get(connId)
+	case initRcv, initCryptoRcv, data:
+		conn, exists := l.connMap.get(connId)
 		if !exists {
 			return nil, nil, fmt.Errorf("connection not found: %d", connId)
 		}
@@ -147,7 +147,7 @@ func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cry
 
 func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
 	switch msgType {
-	case InitSnd:
+	case initSnd:
 		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
@@ -163,7 +163,7 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 		conn.sharedSecret = sharedSecret
 		return conn, []byte{}, nil
 
-	case InitCryptoSnd:
+	case initCryptoSnd:
 		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.mtu)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
@@ -177,14 +177,14 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 			return nil, nil, fmt.Errorf("ECDH: %w", err)
 		}
 		conn.sharedSecret = sharedSecret
-		return conn, message.PayloadRaw, nil
+		return conn, message.payloadRaw, nil
 	}
 	return nil, nil, errors.New("invalid init message type")
 }
 
 func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 	switch msgType {
-	case InitRcv:
+	case initRcv:
 		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(encData, c.prvKeyEpSnd)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt InitRcv: %w", err)
@@ -192,18 +192,18 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		c.pubKeyIdRcv = pubKeyIdRcv
 		c.pubKeyEpRcv = pubKeyEpRcv
 		c.sharedSecret = sharedSecret
-		return message.PayloadRaw, nil
+		return message.payloadRaw, nil
 
-	case InitCryptoRcv:
+	case initCryptoRcv:
 		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, c.prvKeyEpSnd)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
 		}
 		c.pubKeyEpRcv = pubKeyEpRcv
 		c.sharedSecret = sharedSecret
-		return message.PayloadRaw, nil
+		return message.payloadRaw, nil
 
-	case Data:
+	case data:
 		message, err := decryptData(encData, c.isSenderOnInit, c.epochCryptoRcv, c.sharedSecret)
 		if err != nil {
 			return nil, err
@@ -211,7 +211,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		if message.currentEpochCrypt > c.epochCryptoRcv {
 			c.epochCryptoRcv = message.currentEpochCrypt
 		}
-		return message.PayloadRaw, nil
+		return message.payloadRaw, nil
 	}
 	return nil, fmt.Errorf("unexpected message type: %v", msgType)
 }
@@ -225,13 +225,13 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 	var err error
 
 	switch msgType {
-	case InitSnd:
+	case initSnd:
 		_, encData, err = encryptInitSnd(
 			c.listener.prvKeyId.PublicKey(),
 			c.prvKeyEpSnd.PublicKey(),
 			c.listener.mtu,
 		)
-	case InitCryptoSnd:
+	case initCryptoSnd:
 		packetData, _ := encodeProto(p, userData)
 		_, encData, err = encryptInitCryptoSnd(
 			c.pubKeyIdRcv,
@@ -241,7 +241,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.mtu,
 			packetData,
 		)
-	case InitRcv, InitCryptoRcv, Data:
+	case initRcv, initCryptoRcv, data:
 		packetData, _ := encodeProto(p, userData)
 		encData, err = encryptPacket(
 			msgType,
@@ -263,7 +263,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 		return nil, err
 	}
 
-	if msgType != Data {
+	if msgType != data {
 		c.isInitSentOnSnd = true
 	}
 
@@ -295,33 +295,33 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	defer c.mu.Unlock()
 
 	// Process ACK if present
-	if p.Ack != nil {
-		ackStatus, sentTimeNano, packetSize := c.snd.AcknowledgeRange(p.Ack)
-		c.rcvWndSize = p.Ack.rcvWnd
+	if p.ack != nil {
+		ackStatus, sentTimeNano, packetSize := c.snd.acknowledgeRange(p.ack)
+		c.rcvWndSize = p.ack.rcvWnd
 
 		switch ackStatus {
-		case AckStatusOk:
-			c.dataInFlight -= int(p.Ack.len)
+		case ackStatusOk:
+			c.dataInFlight -= int(p.ack.len)
 			if nowNano > sentTimeNano {
 				c.updateMeasurements(nowNano-sentTimeNano, packetSize, nowNano)
 			}
-			if ackStream := c.getOrCreateStream(p.Ack.streamID); ackStream != nil && !ackStream.sndClosed && c.snd.CheckStreamFullyAcked(p.Ack.streamID) {
+			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed && c.snd.checkStreamFullyAcked(p.ack.streamId) {
 				ackStream.sndClosed = true
 			}
-		case AckDup:
+		case ackDup:
 			c.onDuplicateAck()
 		}
 	}
 
 	// Get or create stream; nil if stream already finished
-	s := c.getOrCreateStream(p.StreamID)
+	s := c.getOrCreateStream(p.streamId)
 	if s == nil {
 		// Stream finished but peer still sending - ACK to stop retransmits
-		if c.rcv.IsFinished(p.StreamID) {
+		if c.rcv.isFinished(p.streamId) {
 			if len(userData) > 0 {
-				c.rcv.QueueAck(p.StreamID, p.StreamOffset, uint16(len(userData)))
-			} else if p.IsClose || userData != nil {
-				c.rcv.QueueAck(p.StreamID, p.StreamOffset, 0)
+				c.rcv.queueAck(p.streamId, p.streamOffset, uint16(len(userData)))
+			} else if p.isClose || userData != nil {
+				c.rcv.queueAck(p.streamId, p.streamOffset, 0)
 			}
 		}
 		return nil, nil
@@ -329,21 +329,21 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
-		c.rcv.Insert(s.streamID, p.StreamOffset, nowNano, userData)
-	} else if p.IsClose || userData != nil {
-		c.rcv.QueueAck(s.streamID, p.StreamOffset, 0)
+		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
+	} else if p.isClose || userData != nil {
+		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
 	// Handle stream close
-	if p.IsClose {
-		c.rcv.Close(s.streamID, p.StreamOffset+uint64(len(userData)))
+	if p.isClose {
+		c.rcv.close(s.streamID, p.streamOffset+uint64(len(userData)))
 	}
 
 	// Update stream close state
-	if !s.rcvClosed && c.rcv.IsReadyToClose(s.streamID) {
+	if !s.rcvClosed && c.rcv.isReadyToClose(s.streamID) {
 		s.rcvClosed = true
 	}
-	if !s.sndClosed && c.snd.CheckStreamFullyAcked(s.streamID) {
+	if !s.sndClosed && c.snd.checkStreamFullyAcked(s.streamID) {
 		s.sndClosed = true
 	}
 
@@ -358,9 +358,9 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 // Returns (bytesSent, nextWakeupNano, error).
 // bytesSent=0 with nextWakeupNano>0 means blocked by pacing/cwnd/rwnd.
 func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
-	ack := c.rcv.GetSndAck()
+	ack := c.rcv.getSndAck()
 	if ack != nil {
-		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.Size())
+		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.size())
 	}
 
 	// Check send blockers
@@ -409,12 +409,12 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	return 0, MinDeadLine, nil
 }
 
-func (c *conn) encodeAndWrite(s *Stream, ack *Ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
+func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
 	p := &payloadHeader{
-		IsClose:      isClose,
-		Ack:          ack,
-		StreamID:     s.streamID,
-		StreamOffset: offset,
+		isClose:      isClose,
+		ack:          ack,
+		streamId:     s.streamID,
+		streamOffset: offset,
 	}
 
 	encData, err := c.encode(p, data, c.msgType())
@@ -423,7 +423,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *Ack, data []byte, offset uint64, i
 	}
 
 	if data != nil {
-		c.snd.UpdatePacketSize(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano)
+		c.snd.updatePacketSize(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano)
 	}
 
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
@@ -448,16 +448,16 @@ func (c *conn) encodeAndWrite(s *Stream, ack *Ack, data []byte, offset uint64, i
 // msgType returns the crypto message type based on handshake state.
 func (c *conn) msgType() cryptoMsgType {
 	if c.isHandshakeDoneOnRcv {
-		return Data
+		return data
 	}
 	switch {
 	case c.isWithCryptoOnInit && c.isSenderOnInit:
-		return InitCryptoSnd
+		return initCryptoSnd
 	case c.isWithCryptoOnInit:
-		return InitCryptoRcv
+		return initCryptoRcv
 	case c.isSenderOnInit:
-		return InitSnd
+		return initSnd
 	default:
-		return InitRcv
+		return initRcv
 	}
 }

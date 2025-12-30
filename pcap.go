@@ -11,12 +11,12 @@ import (
 //   - InitCryptoSnd: sharedSecretId (ECDH with identity key)
 //   - InitSnd: no decryption needed (returns empty)
 func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret, sharedSecretId []byte) ([]byte, error) {
-	if len(encData) < MinPacketSize {
-		return nil, fmt.Errorf("packet too small: need %d bytes, got %d", MinPacketSize, len(encData))
+	if len(encData) < minPacketSize {
+		return nil, fmt.Errorf("packet too small: need %d bytes, got %d", minPacketSize, len(encData))
 	}
 
 	header := encData[0]
-	if version := header & 0x1F; version != CryptoVersion {
+	if version := header & 0x1F; version != cryptoVersion {
 		return nil, fmt.Errorf("unsupported protocol version: %d", version)
 	}
 
@@ -28,43 +28,43 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret
 	var secret []byte
 
 	switch msgType {
-	case InitSnd:
+	case initSnd:
 		// Unencrypted handshake initiation
 		return []byte{}, nil
 
-	case Data:
+	case data:
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret required for Data")
 		}
-		headerLen = HeaderSize + ConnIdSize
-		minSize = MinDataSizeHdr + FooterDataSize
+		headerLen = headerSize + connIdSize
+		minSize = minDataSizeHdr + footerDataSize
 		isSender = isSenderOnInit
 		secret = sharedSecret
 
-	case InitRcv:
+	case initRcv:
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret required for InitRcv")
 		}
-		headerLen = HeaderSize + ConnIdSize + 2*PubKeySize
-		minSize = MinInitRcvSizeHdr + FooterDataSize
+		headerLen = headerSize + connIdSize + 2*pubKeySize
+		minSize = minInitRcvSizeHdr + footerDataSize
 		isSender = true
 		secret = sharedSecret
 
-	case InitCryptoRcv:
+	case initCryptoRcv:
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret required for InitCryptoRcv")
 		}
-		headerLen = HeaderSize + ConnIdSize + PubKeySize
-		minSize = MinInitCryptoRcvSizeHdr + FooterDataSize
+		headerLen = headerSize + connIdSize + pubKeySize
+		minSize = minInitCryptoRcvSizeHdr + footerDataSize
 		isSender = true
 		secret = sharedSecret
 
-	case InitCryptoSnd:
+	case initCryptoSnd:
 		if sharedSecretId == nil {
 			return nil, errors.New("sharedSecretId required for InitCryptoSnd")
 		}
-		headerLen = HeaderSize + 2*PubKeySize
-		minSize = MinInitCryptoSndSizeHdr + FooterDataSize
+		headerLen = headerSize + 2*pubKeySize
+		minSize = minInitCryptoSndSizeHdr + footerDataSize
 		isSender = false
 		secret = sharedSecretId
 
@@ -82,8 +82,8 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret
 	}
 
 	// InitCryptoSnd has padding that must be stripped
-	if msgType == InitCryptoSnd {
-		fillerLen := Uint16(packetData)
+	if msgType == initCryptoSnd {
+		fillerLen := getUint16(packetData)
 		if len(packetData) < 2+int(fillerLen) {
 			return nil, errors.New("invalid filler length")
 		}

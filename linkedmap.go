@@ -14,11 +14,11 @@ import (
 // - PutOrdered(): Maintains sorted order (O(1) for in-order arrivals)
 // =============================================================================
 
-type LinkedMap[K cmp.Ordered, V any] struct {
+type linkedMap[K cmp.Ordered, V any] struct {
 	items map[K]*lmNode[K, V]
 	head  *lmNode[K, V] // Sentinel head node
 	tail  *lmNode[K, V] // Sentinel tail node
-	size  int
+	len  int
 	mu    sync.RWMutex
 }
 
@@ -29,8 +29,8 @@ type lmNode[K cmp.Ordered, V any] struct {
 	prev  *lmNode[K, V]
 }
 
-func NewLinkedMap[K cmp.Ordered, V any]() *LinkedMap[K, V] {
-	m := &LinkedMap[K, V]{
+func newLinkedMap[K cmp.Ordered, V any]() *linkedMap[K, V] {
+	m := &linkedMap[K, V]{
 		items: make(map[K]*lmNode[K, V]),
 	}
 	m.head = &lmNode[K, V]{}
@@ -44,20 +44,20 @@ func NewLinkedMap[K cmp.Ordered, V any]() *LinkedMap[K, V] {
 // Basic operations
 // =============================================================================
 
-func (m *LinkedMap[K, V]) Size() int {
+func (m *linkedMap[K, V]) size() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.size
+	return m.len
 }
 
-func (m *LinkedMap[K, V]) Contains(key K) bool {
+func (m *linkedMap[K, V]) contains(key K) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, exists := m.items[key]
 	return exists
 }
 
-func (m *LinkedMap[K, V]) Get(key K) (V, bool) {
+func (m *linkedMap[K, V]) get(key K) (V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -68,9 +68,9 @@ func (m *LinkedMap[K, V]) Get(key K) (V, bool) {
 	return zero, false
 }
 
-// Put adds or updates a key-value pair, maintaining insertion order.
+// put adds or updates a key-value pair, maintaining insertion order.
 // If key exists, updates value but keeps position.
-func (m *LinkedMap[K, V]) Put(key K, value V) {
+func (m *linkedMap[K, V]) put(key K, value V) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -89,13 +89,13 @@ func (m *LinkedMap[K, V]) Put(key K, value V) {
 	m.tail.prev = newNode
 
 	m.items[key] = newNode
-	m.size++
+	m.len++
 }
 
-// PutOrdered inserts in sorted position, searching backwards from end.
+// putOrdered inserts in sorted position, searching backwards from end.
 // O(1) for in-order arrivals (common case for stream offsets).
 // O(n) for the worst case
-func (m *LinkedMap[K, V]) PutOrdered(key K, value V) {
+func (m *linkedMap[K, V]) putOrdered(key K, value V) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -117,10 +117,10 @@ func (m *LinkedMap[K, V]) PutOrdered(key K, value V) {
 	insertAfter.next = newNode
 
 	m.items[key] = newNode
-	m.size++
+	m.len++
 }
 
-func (m *LinkedMap[K, V]) Remove(key K) (V, bool) {
+func (m *linkedMap[K, V]) remove(key K) (V, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -135,14 +135,14 @@ func (m *LinkedMap[K, V]) Remove(key K) (V, bool) {
 	node.next.prev = node.prev
 
 	delete(m.items, key)
-	m.size--
+	m.len--
 
 	return node.value, true
 }
 
-// Replace swaps oldKey for newKey, keeping the same list position.
+// replace swaps oldKey for newKey, keeping the same list position.
 // Fails if oldKey doesn't exist or newKey already exists (and differs from oldKey).
-func (m *LinkedMap[K, V]) Replace(oldKey K, newKey K, value V) bool {
+func (m *linkedMap[K, V]) replace(oldKey K, newKey K, value V) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -172,7 +172,7 @@ func (m *LinkedMap[K, V]) Replace(oldKey K, newKey K, value V) bool {
 // Traversal - All O(1) when key exists
 // =============================================================================
 
-func (m *LinkedMap[K, V]) First() (K, V, bool) {
+func (m *linkedMap[K, V]) first() (K, V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -185,7 +185,7 @@ func (m *LinkedMap[K, V]) First() (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
-func (m *LinkedMap[K, V]) Next(key K) (K, V, bool) {
+func (m *linkedMap[K, V]) next(key K) (K, V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -197,7 +197,7 @@ func (m *LinkedMap[K, V]) Next(key K) (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
-func (m *LinkedMap[K, V]) Prev(key K) (K, V, bool) {
+func (m *linkedMap[K, V]) prev(key K) (K, V, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -210,12 +210,12 @@ func (m *LinkedMap[K, V]) Prev(key K) (K, V, bool) {
 	return node.prev.key, node.prev.value, true
 }
 
-// Iterator returns a Go 1.23+ iterator starting after startKey.
+// iterator returns a Go 1.23+ iterator starting after startKey.
 // Falls back to iterating from beginning if:
 //   - startKey is nil
 //   - startKey doesn't exist in the map
 //   - startKey is the last element (no elements after it)
-func (m *LinkedMap[K, V]) Iterator(startKey *K) iter.Seq2[K, V] {
+func (m *linkedMap[K, V]) iterator(startKey *K) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		m.mu.RLock()
 		defer m.mu.RUnlock()

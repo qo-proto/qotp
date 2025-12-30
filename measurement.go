@@ -67,7 +67,7 @@ var (
 // Measurements - RTT estimation and BBR congestion control
 // =============================================================================
 
-type Measurements struct {
+type measurements struct {
 	// RTT estimation (RFC 6298)
 	srtt   uint64 // Smoothed RTT
 	rttvar uint64 // RTT variation
@@ -87,8 +87,8 @@ type Measurements struct {
 	packetDupNr  int
 }
 
-func NewMeasurements() Measurements {
-	return Measurements{
+func newMeasurements() measurements {
+	return measurements{
 		isStartup:      true,
 		pacingGainPct:  startupGain,
 		rttMinNano:     math.MaxUint64,
@@ -101,7 +101,7 @@ func NewMeasurements() Measurements {
 // RTT and bandwidth updates
 // =============================================================================
 
-func (m *Measurements) updateMeasurements(rttNano uint64, packetSize uint16, nowNano uint64) {
+func (m *measurements) updateMeasurements(rttNano uint64, packetSize uint16, nowNano uint64) {
 	if rttNano == 0 || nowNano == 0 {
 		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
@@ -118,7 +118,7 @@ func (m *Measurements) updateMeasurements(rttNano uint64, packetSize uint16, now
 }
 
 // updateRTT implements RFC 6298 smoothed RTT calculation
-func (m *Measurements) updateRTT(rttNano uint64) {
+func (m *measurements) updateRTT(rttNano uint64) {
 	if m.srtt == 0 {
 		m.srtt = rttNano
 		m.rttvar = rttNano / 2
@@ -139,7 +139,7 @@ func (m *Measurements) updateRTT(rttNano uint64) {
 	m.srtt = (m.srtt*7 + rttNano) / 8
 }
 
-func (m *Measurements) updateMinRTT(rttNano, nowNano uint64) {
+func (m *measurements) updateMinRTT(rttNano, nowNano uint64) {
 	expired := nowNano > m.rttMinTimeNano && nowNano-m.rttMinTimeNano >= rttExpiry
 	if expired || rttNano < m.rttMinNano {
 		m.rttMinNano = rttNano
@@ -147,7 +147,7 @@ func (m *Measurements) updateMinRTT(rttNano, nowNano uint64) {
 	}
 }
 
-func (m *Measurements) updateBandwidth(packetSize uint16) {
+func (m *measurements) updateBandwidth(packetSize uint16) {
 	if m.rttMinNano == 0 {
 		return
 	}
@@ -161,7 +161,7 @@ func (m *Measurements) updateBandwidth(packetSize uint16) {
 	}
 }
 
-func (m *Measurements) updateBBRState(packetSize uint16, nowNano uint64) {
+func (m *measurements) updateBBRState(packetSize uint16, nowNano uint64) {
 	if m.lastProbeTimeNano == 0 {
 		m.lastProbeTimeNano = nowNano
 	}
@@ -173,7 +173,7 @@ func (m *Measurements) updateBBRState(packetSize uint16, nowNano uint64) {
 	}
 }
 
-func (m *Measurements) updateStartup(packetSize uint16) {
+func (m *measurements) updateStartup(packetSize uint16) {
 	if m.bwDec >= bwDecThreshold {
 		m.isStartup = false
 		m.pacingGainPct = normalGain
@@ -181,7 +181,7 @@ func (m *Measurements) updateStartup(packetSize uint16) {
 	m.cwnd += uint64(packetSize) * m.pacingGainPct / 100
 }
 
-func (m *Measurements) updateNormal(nowNano uint64) {
+func (m *measurements) updateNormal(nowNano uint64) {
 	rttRatioPct := (m.srtt * 100) / m.rttMinNano
 
 	switch {
@@ -204,7 +204,7 @@ func (m *Measurements) updateNormal(nowNano uint64) {
 // RTO calculation
 // =============================================================================
 
-func (m *Measurements) rtoNano() uint64 {
+func (m *measurements) rtoNano() uint64 {
 	rto := m.srtt + 4*m.rttvar
 
 	switch {
@@ -233,19 +233,19 @@ func backoff(rtoNano uint64, attempt uint) (uint64, error) {
 // Congestion events
 // =============================================================================
 
-func (m *Measurements) reduceCwnd(reduction, gain uint64) {
+func (m *measurements) reduceCwnd(reduction, gain uint64) {
 	m.bwMax = m.bwMax * reduction / 100
 	m.pacingGainPct = gain
 	m.isStartup = false
 	m.cwnd = max(m.cwnd*reduction/100, minCwndPackets*defaultMTU)
 }
 
-func (m *Measurements) onDuplicateAck() {
+func (m *measurements) onDuplicateAck() {
 	m.reduceCwnd(dupAckBwReduction, dupAckGain)
 	m.packetDupNr++
 }
 
-func (m *Measurements) onPacketLoss() {
+func (m *measurements) onPacketLoss() {
 	m.reduceCwnd(lossBwReduction, normalGain)
 	m.packetLossNr++
 }
@@ -254,7 +254,7 @@ func (m *Measurements) onPacketLoss() {
 // Pacing
 // =============================================================================
 
-func (m *Measurements) calcPacing(packetSize uint64) uint64 {
+func (m *measurements) calcPacing(packetSize uint64) uint64 {
 	if m.bwMax == 0 {
 		if m.srtt > 0 {
 			return m.srtt / rttDivisor

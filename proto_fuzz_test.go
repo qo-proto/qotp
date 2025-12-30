@@ -15,51 +15,51 @@ func FuzzPayload(f *testing.F) {
 		{
 			// Type 00: DATA with ACK
 			header: &payloadHeader{
-				StreamID:     1,
-				StreamOffset: 100,
-				Ack:          &Ack{streamID: 10, offset: 200, len: 10, rcvWnd: 1000},
+				streamId:     1,
+				streamOffset: 100,
+				ack:          &ack{streamId: 10, offset: 200, len: 10, rcvWnd: 1000},
 			},
 			data: []byte("test data"),
 		},
 		{
 			// Type 01: DATA no ACK (ping with empty data)
 			header: &payloadHeader{
-				StreamID:     5,
-				StreamOffset: 50,
+				streamId:     5,
+				streamOffset: 50,
 			},
 			data: []byte{},
 		},
 		{
 			// Type 10: CLOSE with ACK
 			header: &payloadHeader{
-				IsClose:      true,
-				StreamID:     10,
-				StreamOffset: 1000,
-				Ack:          &Ack{streamID: 20, offset: 500, len: 100, rcvWnd: 5000},
+				isClose:      true,
+				streamId:     10,
+				streamOffset: 1000,
+				ack:          &ack{streamId: 20, offset: 500, len: 100, rcvWnd: 5000},
 			},
 			data: []byte("closing"),
 		},
 		{
 			// Type 11: CLOSE no ACK
 			header: &payloadHeader{
-				IsClose:      true,
-				StreamID:     15,
-				StreamOffset: 200,
+				isClose:      true,
+				streamId:     15,
+				streamOffset: 200,
 			},
 			data: []byte{},
 		},
 		{
 			// Type 00: regular ack (nil userData, no data header)
 			header: &payloadHeader{
-				Ack: &Ack{streamID: 30, offset: 300, len: 50, rcvWnd: 2000},
+				ack: &ack{streamId: 30, offset: 300, len: 50, rcvWnd: 2000},
 			},
 			data: nil,
 		},
 		{
 			// Max values
 			header: &payloadHeader{
-				StreamID:     math.MaxUint32,
-				StreamOffset: math.MaxUint64,
+				streamId:     math.MaxUint32,
+				streamOffset: math.MaxUint64,
 			},
 			data: []byte("max"),
 		},
@@ -89,36 +89,36 @@ func FuzzPayload(f *testing.F) {
 		}
 
 		// Compare payload fields
-		if decoded.IsClose != reDecoded.IsClose {
+		if decoded.isClose != reDecoded.isClose {
 			t.Fatal("IsClose mismatch")
 		}
-		if decoded.StreamID != reDecoded.StreamID {
+		if decoded.streamId != reDecoded.streamId {
 			t.Fatal("StreamID mismatch")
 		}
-		if decoded.StreamOffset != reDecoded.StreamOffset {
+		if decoded.streamOffset != reDecoded.streamOffset {
 			t.Fatal("StreamOffset mismatch")
 		}
 
 		// Compare Ack
-		if (decoded.Ack == nil) != (reDecoded.Ack == nil) {
+		if (decoded.ack == nil) != (reDecoded.ack == nil) {
 			t.Fatal("Ack presence mismatch")
 		}
-		if decoded.Ack != nil {
-			if decoded.Ack.streamID != reDecoded.Ack.streamID {
+		if decoded.ack != nil {
+			if decoded.ack.streamId != reDecoded.ack.streamId {
 				t.Fatal("Ack.streamID mismatch")
 			}
-			if decoded.Ack.offset != reDecoded.Ack.offset {
+			if decoded.ack.offset != reDecoded.ack.offset {
 				t.Fatal("Ack.offset mismatch")
 			}
-			if decoded.Ack.len != reDecoded.Ack.len {
+			if decoded.ack.len != reDecoded.ack.len {
 				t.Fatal("Ack.len mismatch")
 			}
 			// rcvWnd has lossy encoding - verify both encode to same value
-			enc1 := encodeRcvWindow(decoded.Ack.rcvWnd)
-			enc2 := encodeRcvWindow(reDecoded.Ack.rcvWnd)
+			enc1 := encodeRcvWindow(decoded.ack.rcvWnd)
+			enc2 := encodeRcvWindow(reDecoded.ack.rcvWnd)
 			if enc1 != enc2 {
 				t.Fatalf("rcvWnd encodes differently: %d->%d vs %d->%d",
-					decoded.Ack.rcvWnd, enc1, reDecoded.Ack.rcvWnd, enc2)
+					decoded.ack.rcvWnd, enc1, reDecoded.ack.rcvWnd, enc2)
 			}
 		}
 	})

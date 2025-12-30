@@ -30,12 +30,12 @@ var (
 // =============================================================================
 
 func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
-	if len(encData) < MinPacketSize {
+	if len(encData) < minPacketSize {
 		return nil, nil, 0, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
 
 	header := encData[0]
-	if version := header & 0x1F; version != CryptoVersion {
+	if version := header & 0x1F; version != cryptoVersion {
 		return nil, nil, 0, errors.New("unsupported version")
 	}
 	msgType := cryptoMsgType(header >> 5)
@@ -269,11 +269,11 @@ func TestListener_cleanupConn(t *testing.T) {
 	assert.NoError(t, err)
 	connId := conn.connId
 
-	assert.True(t, listener.connMap.Contains(connId))
+	assert.True(t, listener.connMap.contains(connId))
 
 	listener.cleanupConn(connId)
 
-	assert.False(t, listener.connMap.Contains(connId))
+	assert.False(t, listener.connMap.contains(connId))
 }
 
 func TestListener_cleanupConn_UpdatesCurrentConnID(t *testing.T) {
@@ -300,7 +300,7 @@ func TestListener_cleanupConn_UpdatesCurrentConnID(t *testing.T) {
 
 func TestListener_Decode_EmptyBuffer(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
@@ -312,7 +312,7 @@ func TestListener_Decode_EmptyBuffer(t *testing.T) {
 
 func TestListener_Decode_TooSmall(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
@@ -324,12 +324,12 @@ func TestListener_Decode_TooSmall(t *testing.T) {
 
 func TestListener_Decode_InvalidVersion(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
-	buf := make([]byte, MinPacketSize)
+	buf := make([]byte, minPacketSize)
 	buf[0] = 0x1F // Version 31 (invalid)
 
 	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
@@ -339,13 +339,13 @@ func TestListener_Decode_InvalidVersion(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
-	buf := make([]byte, MinPacketSize)
-	buf[0] = byte(InitRcv) << 5
+	buf := make([]byte, minPacketSize)
+	buf[0] = byte(initRcv) << 5
 
 	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
 	assert.Error(t, err)
@@ -354,13 +354,13 @@ func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
-	buf := make([]byte, MinPacketSize)
-	buf[0] = byte(InitCryptoRcv) << 5
+	buf := make([]byte, minPacketSize)
+	buf[0] = byte(initCryptoRcv) << 5
 
 	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
 	assert.Error(t, err)
@@ -369,13 +369,13 @@ func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
 	l := &Listener{
-		connMap:  NewLinkedMap[uint64, *conn](),
+		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		mtu:      defaultMTU,
 	}
 
-	buf := make([]byte, MinPacketSize)
-	buf[0] = byte(Data) << 5
+	buf := make([]byte, minPacketSize)
+	buf[0] = byte(data) << 5
 
 	_, _, _, err := testDecode(l, buf, getTestRemoteAddrPort())
 	assert.Error(t, err)
@@ -790,16 +790,16 @@ func TestListener_Bidirectional_MultipleStreams(t *testing.T) {
 
 			allClosed := true
 			for i := 0; i < numStreams; i++ {
-				stream, exists := connAlice.streams.Get(uint32(i))
+				stream, exists := connAlice.streams.get(uint32(i))
 				if exists && stream != nil && !stream.sndClosed {
 					allClosed = false
 					break
 				}
 			}
 
-			slog.Debug("Alice check", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.HasPendingAcks(), "activeStreams", listenerAlice.HasActiveStreams())
-			if allSent && allReceived && allClosed && !connAlice.rcv.HasPendingAcks() && !listenerAlice.HasActiveStreams() {
-				slog.Debug("Alice exiting", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.HasPendingAcks())
+			slog.Debug("Alice check", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.hasPendingAcks(), "activeStreams", listenerAlice.HasActiveStreams())
+			if allSent && allReceived && allClosed && !connAlice.rcv.hasPendingAcks() && !listenerAlice.HasActiveStreams() {
+				slog.Debug("Alice exiting", "allSent", allSent, "allReceived", allReceived, "allClosed", allClosed, "pendingAcks", connAlice.rcv.hasPendingAcks())
 				cancelAlice()
 			}
 			return nil

@@ -18,40 +18,40 @@ import (
 type cryptoMsgType int8
 
 const (
-	InitSnd       cryptoMsgType = iota // Unencrypted handshake initiation
-	InitRcv                            // Encrypted handshake response (PFS)
-	InitCryptoSnd                      // Encrypted 0-RTT initiation (no PFS for first msg)
-	InitCryptoRcv                      // Encrypted 0-RTT response (PFS)
-	Data                               // Regular encrypted data
+	initSnd       cryptoMsgType = iota // Unencrypted handshake initiation
+	initRcv                            // Encrypted handshake response (PFS)
+	initCryptoSnd                      // Encrypted 0-RTT initiation (no PFS for first msg)
+	initCryptoRcv                      // Encrypted 0-RTT response (PFS)
+	data                               // Regular encrypted data
 )
 
 const (
-	CryptoVersion = 0
-	MacSize       = 16 // Poly1305 tag size
-	SnSize        = 6  // 48-bit sequence number
+	cryptoVersion = 0
+	macSize       = 16 // Poly1305 tag size
+	snSize        = 6  // 48-bit sequence number
 
-	PubKeySize         = 32 // X25519 public key
-	HeaderSize         = 1  // Message type + version
-	ConnIdSize         = 8
-	MsgInitFillLenSize = 2 // Padding length field for InitCryptoSnd
+	pubKeySize         = 32 // X25519 public key
+	headerSize         = 1  // Message type + version
+	connIdSize         = 8
+	msgInitFillLenSize = 2 // Padding length field for InitCryptoSnd
 
 	// Minimum header sizes (before encrypted payload)
-	MinInitRcvSizeHdr       = HeaderSize + ConnIdSize + (2 * PubKeySize) // 73 bytes
-	MinInitCryptoSndSizeHdr = HeaderSize + (2 * PubKeySize)              // 65 bytes
-	MinInitCryptoRcvSizeHdr = HeaderSize + ConnIdSize + PubKeySize       // 41 bytes
-	MinDataSizeHdr          = HeaderSize + ConnIdSize                    // 9 bytes
+	minInitRcvSizeHdr       = headerSize + connIdSize + (2 * pubKeySize) // 73 bytes
+	minInitCryptoSndSizeHdr = headerSize + (2 * pubKeySize)              // 65 bytes
+	minInitCryptoRcvSizeHdr = headerSize + connIdSize + pubKeySize       // 41 bytes
+	minDataSizeHdr          = headerSize + connIdSize                    // 9 bytes
 
 	// Footer: encrypted sequence number + MAC
-	FooterDataSize = SnSize + MacSize // 22 bytes
+	footerDataSize = snSize + macSize // 22 bytes
 
-	MinPacketSize = MinDataSizeHdr + FooterDataSize + MinProtoSize // 39 bytes
+	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 39 bytes
 )
 
-// Message represents a decrypted QOTP message.
-type Message struct {
-	SnConn            uint64
+// msg represents a decrypted QOTP message.
+type msg struct {
+	snConn            uint64
 	currentEpochCrypt uint64
-	PayloadRaw        []byte
+	payloadRaw        []byte
 }
 
 // =============================================================================
@@ -66,10 +66,10 @@ func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, mtu int) (connId u
 		return 0, nil, errors.New("handshake keys cannot be nil")
 	}
 	encData = make([]byte, mtu)
-	encData[0] = (uint8(InitSnd) << 5) | CryptoVersion
-	copy(encData[HeaderSize:], pubKeyEpSnd.Bytes())
-	copy(encData[HeaderSize+PubKeySize:], pubKeyIdSnd.Bytes())
-	return Uint64(encData[HeaderSize:]), encData, nil
+	encData[0] = (uint8(initSnd) << 5) | cryptoVersion
+	copy(encData[headerSize:], pubKeyEpSnd.Bytes())
+	copy(encData[headerSize+pubKeySize:], pubKeyIdSnd.Bytes())
+	return getUint64(encData[headerSize:]), encData, nil
 }
 
 // encryptInitCryptoSnd creates an encrypted 0-RTT initiation packet.
@@ -86,18 +86,18 @@ func encryptInitCryptoSnd(
 		return 0, nil, errors.New("handshake keys cannot be nil")
 	}
 
-	header := make([]byte, MinInitCryptoSndSizeHdr)
-	header[0] = (uint8(InitCryptoSnd) << 5) | CryptoVersion
-	copy(header[HeaderSize:], prvKeyEpSnd.PublicKey().Bytes())
-	copy(header[HeaderSize+PubKeySize:], pubKeyIdSnd.Bytes())
+	header := make([]byte, minInitCryptoSndSizeHdr)
+	header[0] = (uint8(initCryptoSnd) << 5) | cryptoVersion
+	copy(header[headerSize:], prvKeyEpSnd.PublicKey().Bytes())
+	copy(header[headerSize+pubKeySize:], pubKeyIdSnd.Bytes())
 
 	// Pad to MTU: [fillLen (2 bytes)][filler (fillLen bytes)][packetData]
-	fillLen := mtu - (MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize + len(packetData))
+	fillLen := mtu - (minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize + len(packetData))
 	if fillLen < 0 {
 		return 0, nil, errors.New("packet data too large for MTU")
 	}
-	padded := make([]byte, len(packetData)+MsgInitFillLenSize+fillLen)
-	PutUint16(padded, uint16(fillLen))
+	padded := make([]byte, len(packetData)+msgInitFillLenSize+fillLen)
+	putUint16(padded, uint16(fillLen))
 	copy(padded[2+fillLen:], packetData)
 
 	secret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
@@ -105,7 +105,7 @@ func encryptInitCryptoSnd(
 		return 0, nil, err
 	}
 	encData, err = chainedEncrypt(snCrypto, 0, true, secret, header, padded)
-	return Uint64(header[HeaderSize:]), encData, err
+	return getUint64(header[headerSize:]), encData, err
 }
 
 // encryptPacket encrypts InitRcv, InitCryptoRcv, or Data messages.
@@ -126,42 +126,42 @@ func encryptPacket(
 	var secret []byte
 
 	switch msgType {
-	case InitRcv:
+	case initRcv:
 		if pubKeyIdSnd == nil || pubKeyEpRcv == nil || prvKeyEpSnd == nil {
 			return nil, errors.New("handshake keys cannot be nil")
 		}
-		header = make([]byte, MinInitRcvSizeHdr)
-		header[0] = (uint8(InitRcv) << 5) | CryptoVersion
-		PutUint64(header[HeaderSize:], connId)
-		copy(header[HeaderSize+ConnIdSize:], prvKeyEpSnd.PublicKey().Bytes())
-		copy(header[HeaderSize+ConnIdSize+PubKeySize:], pubKeyIdSnd.Bytes())
+		header = make([]byte, minInitRcvSizeHdr)
+		header[0] = (uint8(initRcv) << 5) | cryptoVersion
+		putUint64(header[headerSize:], connId)
+		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
+		copy(header[headerSize+connIdSize+pubKeySize:], pubKeyIdSnd.Bytes())
 		var err error
 		secret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
 		if err != nil {
 			return nil, err
 		}
 
-	case InitCryptoRcv:
+	case initCryptoRcv:
 		if pubKeyEpRcv == nil || prvKeyEpSnd == nil {
 			return nil, errors.New("handshake keys cannot be nil")
 		}
-		header = make([]byte, MinInitCryptoRcvSizeHdr)
-		header[0] = (uint8(InitCryptoRcv) << 5) | CryptoVersion
-		PutUint64(header[HeaderSize:], connId)
-		copy(header[HeaderSize+ConnIdSize:], prvKeyEpSnd.PublicKey().Bytes())
+		header = make([]byte, minInitCryptoRcvSizeHdr)
+		header[0] = (uint8(initCryptoRcv) << 5) | cryptoVersion
+		putUint64(header[headerSize:], connId)
+		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
 		var err error
 		secret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
 		if err != nil {
 			return nil, err
 		}
 
-	case Data:
+	case data:
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret cannot be nil")
 		}
-		header = make([]byte, HeaderSize+ConnIdSize)
-		header[0] = (uint8(Data) << 5) | CryptoVersion
-		PutUint64(header[HeaderSize:], connId)
+		header = make([]byte, headerSize+connIdSize)
+		header[0] = (uint8(data) << 5) | cryptoVersion
+		putUint64(header[headerSize:], connId)
 		secret = sharedSecret
 		// Data messages use epochCrypto; init messages always use epoch 0
 		return chainedEncrypt(snCrypto, epochCrypto, isSender, secret, header, packetData)
@@ -183,8 +183,8 @@ func encryptPacket(
 func chainedEncrypt(snCrypt, epochConn uint64, isSender bool, sharedSecret, header, packetData []byte) ([]byte, error) {
 	// Build deterministic nonce
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
-	PutUint48(nonceDet, epochConn)
-	PutUint48(nonceDet[6:], snCrypt)
+	putUint48(nonceDet, epochConn)
+	putUint48(nonceDet[6:], snCrypt)
 
 	// Set direction bit to prevent nonce collision between peers
 	if isSender {
@@ -207,12 +207,12 @@ func chainedEncrypt(snCrypt, epochConn uint64, isSender bool, sharedSecret, head
 	}
 
 	// Output: [header][encryptedSn (6 bytes)][sealed payload + MAC]
-	encData := make([]byte, len(header)+SnSize+len(sealed))
+	encData := make([]byte, len(header)+snSize+len(sealed))
 	copy(encData, header)
 
 	encSn := aeadSn.Seal(nil, sealed[0:24], nonceDet[6:12], nil)
-	copy(encData[len(header):], encSn[:SnSize])
-	copy(encData[len(header)+SnSize:], sealed)
+	copy(encData[len(header):], encSn[:snSize])
+	copy(encData[len(header)+snSize:], sealed)
 
 	return encData, nil
 }
@@ -227,11 +227,11 @@ func decryptInitSnd(encData []byte, mtu int) (pubKeyIdSnd, pubKeyEpSnd *ecdh.Pub
 	if len(encData) < mtu {
 		return nil, nil, errors.New("size is below minimum init")
 	}
-	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[HeaderSize : HeaderSize+PubKeySize])
+	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize : headerSize+pubKeySize])
 	if err != nil {
 		return nil, nil, err
 	}
-	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[HeaderSize+PubKeySize : HeaderSize+(2*PubKeySize)])
+	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize+pubKeySize : headerSize+(2*pubKeySize)])
 	if err != nil {
 		return nil, nil, err
 	}
@@ -241,16 +241,16 @@ func decryptInitSnd(encData []byte, mtu int) (pubKeyIdSnd, pubKeyEpSnd *ecdh.Pub
 // decryptInitRcv decrypts an InitRcv handshake response.
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv).
 func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
-	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, m *Message, err error) {
-	if len(encData) < MinInitRcvSizeHdr+FooterDataSize {
+	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, m *msg, err error) {
+	if len(encData) < minInitRcvSizeHdr+footerDataSize {
 		return nil, nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
-	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[HeaderSize+ConnIdSize : HeaderSize+ConnIdSize+PubKeySize])
+	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[headerSize+connIdSize : headerSize+connIdSize+pubKeySize])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	pubKeyIdRcv, err = ecdh.X25519().NewPublicKey(encData[HeaderSize+ConnIdSize+PubKeySize : HeaderSize+ConnIdSize+(2*PubKeySize)])
+	pubKeyIdRcv, err = ecdh.X25519().NewPublicKey(encData[headerSize+connIdSize+pubKeySize : headerSize+connIdSize+(2*pubKeySize)])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -260,28 +260,28 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, nil, err
 	}
 
-	headerLen := HeaderSize + ConnIdSize + (2 * PubKeySize)
+	headerLen := headerSize + connIdSize + (2 * pubKeySize)
 	snConn, epochCrypt, packetData, err := chainedDecrypt(true, 0, sharedSecret, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
 // decryptInitCryptoSnd decrypts a 0-RTT initiation packet.
 // Uses receiver's identity key for decryption (no PFS for this message).
 func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int) (
-	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, m *Message, err error) {
+	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, m *msg, err error) {
 	if len(encData) < mtu {
 		return nil, nil, nil, errors.New("size is below minimum init")
 	}
 
-	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[HeaderSize : HeaderSize+PubKeySize])
+	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize : headerSize+pubKeySize])
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[HeaderSize+PubKeySize : HeaderSize+(2*PubKeySize)])
+	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize+pubKeySize : headerSize+(2*pubKeySize)])
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -291,28 +291,28 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int)
 		return nil, nil, nil, err
 	}
 
-	headerLen := HeaderSize + (2 * PubKeySize)
+	headerLen := headerSize + (2 * pubKeySize)
 	snConn, epochCrypt, packetData, err := chainedDecrypt(false, 0, secret, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	// Remove padding: [fillLen (2 bytes)][filler][actualData]
-	fillerLen := Uint16(packetData)
+	fillerLen := getUint16(packetData)
 	actualData := packetData[2+int(fillerLen):]
 
-	return pubKeyIdSnd, pubKeyEpSnd, &Message{PayloadRaw: actualData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return pubKeyIdSnd, pubKeyEpSnd, &msg{payloadRaw: actualData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
 // decryptInitCryptoRcv decrypts a 0-RTT response packet.
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
 func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
-	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, m *Message, err error) {
-	if len(encData) < MinInitCryptoRcvSizeHdr+FooterDataSize {
+	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, m *msg, err error) {
+	if len(encData) < minInitCryptoRcvSizeHdr+footerDataSize {
 		return nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
-	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[HeaderSize+ConnIdSize : HeaderSize+ConnIdSize+PubKeySize])
+	pubKeyEpRcv, err = ecdh.X25519().NewPublicKey(encData[headerSize+connIdSize : headerSize+connIdSize+pubKeySize])
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -322,28 +322,28 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	headerLen := HeaderSize + ConnIdSize + PubKeySize
+	headerLen := headerSize + connIdSize + pubKeySize
 	snConn, epochCrypt, packetData, err := chainedDecrypt(true, 0, sharedSecret, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyEpRcv, &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return sharedSecret, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
 }
 
 // decryptData decrypts a regular Data packet using the established shared secret.
-func decryptData(encData []byte, isSender bool, epochCrypt uint64, sharedSecret []byte) (*Message, error) {
-	if len(encData) < MinDataSizeHdr+FooterDataSize {
+func decryptData(encData []byte, isSender bool, epochCrypt uint64, sharedSecret []byte) (*msg, error) {
+	if len(encData) < minDataSizeHdr+footerDataSize {
 		return nil, errors.New("size is below minimum")
 	}
 
-	headerLen := HeaderSize + ConnIdSize
+	headerLen := headerSize + connIdSize
 	snConn, currentEpoch, packetData, err := chainedDecrypt(isSender, epochCrypt, sharedSecret, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, err
 	}
 
-	return &Message{PayloadRaw: packetData, SnConn: snConn, currentEpochCrypt: currentEpoch}, nil
+	return &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: currentEpoch}, nil
 }
 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
@@ -352,17 +352,17 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 	snConn, currentEpochCrypt uint64, packetData []byte, err error) {
 
 	// Extract encrypted sequence number and ciphertext
-	encSn := encData[:SnSize]
-	encData = encData[SnSize:]
+	encSn := encData[:snSize]
+	encData = encData[snSize:]
 	nonceRand := encData[:24]
 
 	// Decrypt sequence number (no MAC verification - MAC is on payload)
-	snConnBytes := make([]byte, SnSize)
+	snConnBytes := make([]byte, snSize)
 	snConnBytes, err = decryptSnWithoutMAC(sharedSecret, nonceRand, encSn, snConnBytes)
 	if err != nil {
 		return 0, 0, nil, err
 	}
-	snConn = Uint48(snConnBytes)
+	snConn = getUint48(snConnBytes)
 
 	aead, err := chacha20poly1305.New(sharedSecret)
 	if err != nil {
@@ -370,7 +370,7 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 	}
 
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
-	PutUint48(nonceDet[6:], snConn)
+	putUint48(nonceDet[6:], snConn)
 
 	// Try current epoch, then ±1 to handle reordering near epoch boundaries
 	epochs := []uint64{epochCrypt}
@@ -380,7 +380,7 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 	epochs = append(epochs, epochCrypt+1)
 
 	for _, epoch := range epochs {
-		PutUint48(nonceDet, epoch)
+		putUint48(nonceDet, epoch)
 		// Receiver uses opposite direction bit from sender
 		if isSender {
 			nonceDet[0] &^= 0x80
@@ -426,20 +426,20 @@ func generateKey() (*ecdh.PrivateKey, error) {
 
 // calcCryptoOverheadWithData returns the crypto layer overhead for a given message type.
 // Returns -1 for InitSnd (no payload allowed).
-func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *Ack, offset uint64) int {
+func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) int {
 	hasAck := ack != nil
 	needsExtension := (hasAck && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF
 	overhead := calcProtoOverhead(hasAck, needsExtension, false)
 
 	switch msgType {
-	case InitRcv:
-		return overhead + MinInitRcvSizeHdr + FooterDataSize
-	case InitCryptoSnd:
-		return overhead + MinInitCryptoSndSizeHdr + FooterDataSize + MsgInitFillLenSize
-	case InitCryptoRcv:
-		return overhead + MinInitCryptoRcvSizeHdr + FooterDataSize
-	case Data:
-		return overhead + MinDataSizeHdr + FooterDataSize
+	case initRcv:
+		return overhead + minInitRcvSizeHdr + footerDataSize
+	case initCryptoSnd:
+		return overhead + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
+	case initCryptoRcv:
+		return overhead + minInitCryptoRcvSizeHdr + footerDataSize
+	case data:
+		return overhead + minDataSizeHdr + footerDataSize
 	default: // InitSnd cannot carry payload
 		return -1
 	}

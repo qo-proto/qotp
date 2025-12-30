@@ -114,15 +114,15 @@ func TestDial_AddsToConnMap(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	assert.Equal(t, 0, l.connMap.Size())
+	assert.Equal(t, 0, l.connMap.size())
 
 	_, err = l.DialString("127.0.0.1:9000")
 	assert.NoError(t, err)
-	assert.Equal(t, 1, l.connMap.Size())
+	assert.Equal(t, 1, l.connMap.size())
 
 	_, err = l.DialString("127.0.0.1:9001")
 	assert.NoError(t, err)
-	assert.Equal(t, 2, l.connMap.Size())
+	assert.Equal(t, 2, l.connMap.size())
 }
 
 // =============================================================================
