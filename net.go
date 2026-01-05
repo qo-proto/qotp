@@ -2,6 +2,7 @@ package qotp
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -74,34 +75,47 @@ func (c *UDPNetworkConn) LocalAddrString() string {
 }
 
 func getInterfaceMTU(conn *net.UDPConn) int {
-    localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
-    if !ok {
-        return 1500
-    }
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return 1500
+	}
 
-    ifaces, err := net.Interfaces()
-    if err != nil {
-        return 1500
-    }
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return 1500
+	}
 
-    for _, iface := range ifaces {
-        addrs, err := iface.Addrs()
-        if err != nil {
-            continue
-        }
-        for _, addr := range addrs {
-            if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.Equal(localAddr.IP) {
-                return iface.MTU
-            }
-        }
-    }
-    return 1500
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.Equal(localAddr.IP) {
+				return iface.MTU
+			}
+		}
+	}
+	return 1500
 }
 
 func isIPv6Conn(conn *net.UDPConn) bool {
-    localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
-    if !ok {
-        return false
-    }
-    return localAddr.IP.To4() == nil
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok {
+		return false
+	}
+	return localAddr.IP.To4() == nil
+}
+
+func logDFResult(errIPv4, errIPv6 error) {
+	switch {
+	case errIPv4 == nil && errIPv6 == nil:
+		slog.Info("setting DF for IPv4 and IPv6")
+	case errIPv4 == nil && errIPv6 != nil:
+		slog.Info("setting DF for IPv4 only")
+	case errIPv4 != nil && errIPv6 == nil:
+		slog.Info("setting DF for IPv6 only")
+	case errIPv4 != nil && errIPv6 != nil:
+		slog.Error("setting DF failed for both IPv4 and IPv6")
+	}
 }

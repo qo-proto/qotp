@@ -177,15 +177,3 @@ func (p *mtuProber) onRetransmitFailed() {
         p.probeSize = 0
     }
 }
-
-func (p *mtuProber) currentMTU() int {
-    return p.confirmed
-}
-
-func (p *mtuProber) isProbing() bool {
-    return p.probeSize != 0
-}
-
-func (p *mtuProber) getProbeSize() int {
-    return p.probeSize
-}

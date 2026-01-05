@@ -3,7 +3,6 @@
 package qotp
 
 import (
-	"log/slog"
 	"net"
 
 	"golang.org/x/sys/unix"
@@ -24,17 +23,6 @@ func setDontFragment(conn *net.UDPConn) error {
 		return err
 	}
 
-	switch {
-	case errDFIPv4 == nil && errDFIPv6 == nil:
-		slog.Info("setting DF for IPv4 and IPv6")
-		// TODO: expose this and don't probe for higher MTU when not DF not supported
-	case errDFIPv4 == nil && errDFIPv6 != nil:
-		slog.Info("setting DF for IPv4 only")
-	case errDFIPv4 != nil && errDFIPv6 == nil:
-		slog.Info("setting DF for IPv6 only")
-	case errDFIPv4 != nil && errDFIPv6 != nil:
-		slog.Error("setting DF failed for both IPv4 and IPv6")
-	}
-
+	logDFResult(errDFIPv4, errDFIPv6)
 	return nil
 }

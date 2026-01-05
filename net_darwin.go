@@ -3,7 +3,6 @@
 package qotp
 
 import (
-	"log/slog"
 	"net"
 	"strconv"
 	"strings"
@@ -32,17 +31,7 @@ func setDontFragment(conn *net.UDPConn) error {
 		return err
 	}
 
-	switch {
-	case errDFIPv4 == nil && errDFIPv6 == nil:
-		slog.Info("setting DF for IPv4 and IPv6")
-	case errDFIPv4 == nil && errDFIPv6 != nil:
-		slog.Info("setting DF for IPv4 only")
-	case errDFIPv4 != nil && errDFIPv6 == nil:
-		slog.Info("setting DF for IPv6 only")
-	case errDFIPv4 != nil && errDFIPv6 != nil:
-		slog.Error("setting DF failed for both IPv4 and IPv6")
-	}
-
+	logDFResult(errDFIPv4, errDFIPv6)
 	return nil
 }
 
