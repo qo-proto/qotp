@@ -62,7 +62,6 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 
 func TestProto_DataNoAck_WithData(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     12345,
 		streamOffset: 100,
 	}
@@ -76,7 +75,6 @@ func TestProto_DataNoAck_WithData(t *testing.T) {
 
 func TestProto_DataNoAck_EmptyData(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0,
 	}
@@ -89,7 +87,6 @@ func TestProto_DataNoAck_EmptyData(t *testing.T) {
 
 func TestProto_DataNoAck_ZeroStreamID(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     0,
 		streamOffset: 100,
 	}
@@ -103,7 +100,6 @@ func TestProto_DataNoAck_ZeroStreamID(t *testing.T) {
 
 func TestProto_DataNoAck_MaxStreamID(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     0xFFFFFFFF,
 		streamOffset: 100,
 	}
@@ -121,7 +117,6 @@ func TestProto_DataNoAck_MaxStreamID(t *testing.T) {
 
 func TestProto_DataWithAck_AndData(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 		ack:          &ack{streamId: 10, offset: 200, len: 300, rcvWnd: 1000},
@@ -136,7 +131,6 @@ func TestProto_DataWithAck_AndData(t *testing.T) {
 
 func TestProto_DataWithAck_EmptyData(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 		ack:          &ack{streamId: 1, offset: 50, len: 0, rcvWnd: 1000},
@@ -162,7 +156,6 @@ func TestProto_DataWithAck_AckOnly(t *testing.T) {
 
 func TestProto_DataWithAck_ZeroLen(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 		ack:          &ack{streamId: 1, offset: 100, len: 0, rcvWnd: 1000},
@@ -176,7 +169,6 @@ func TestProto_DataWithAck_ZeroLen(t *testing.T) {
 
 func TestProto_DataWithAck_MaxLen(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 		ack:          &ack{streamId: 1, offset: 100, len: 0xFFFF, rcvWnd: 1000},
@@ -344,7 +336,6 @@ func TestProto_KeyUpdate_WithData(t *testing.T) {
 	original := &payloadHeader{
 		isKeyUpdate:  true,
 		keyUpdatePub: pubKey,
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 	}
@@ -407,7 +398,6 @@ func TestProto_KeyUpdateAck_WithData(t *testing.T) {
 	original := &payloadHeader{
 		isKeyUpdateAck:  true,
 		keyUpdatePubAck: pubKey,
-		hasData:         true,
 		streamId:        1,
 		streamOffset:    100,
 	}
@@ -451,7 +441,6 @@ func TestProto_KeyUpdateAndAck_Both(t *testing.T) {
 
 func TestProto_NeedsReTx_WithData(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 	}
@@ -523,8 +512,8 @@ func TestProto_NeedsReTx_ProbeOnly(t *testing.T) {
 
 	decoded, _ := roundTrip(t, original, []byte{})
 
-	// Probe without data doesn't need retransmit
-	assert.False(t, decoded.needsReTx)
+	// Probe sets needsReTx
+	assert.True(t, decoded.needsReTx)
 }
 
 // =============================================================================
@@ -533,7 +522,6 @@ func TestProto_NeedsReTx_ProbeOnly(t *testing.T) {
 
 func TestProto_Offset_24BitMax(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0xFFFFFF,
 	}
@@ -545,7 +533,6 @@ func TestProto_Offset_24BitMax(t *testing.T) {
 
 func TestProto_Offset_48BitMin(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0x1000000,
 	}
@@ -557,7 +544,6 @@ func TestProto_Offset_48BitMin(t *testing.T) {
 
 func TestProto_Offset_48BitWithAck(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     5,
 		streamOffset: 0x1000000,
 		ack:          &ack{streamId: 50, offset: 0x1000000, len: 200, rcvWnd: 5000},
@@ -571,7 +557,6 @@ func TestProto_Offset_48BitWithAck(t *testing.T) {
 func TestProto_Offset_MixedData48BitAck24Bit(t *testing.T) {
 	// Data needs 48-bit, ACK needs 24-bit - both use 48-bit encoding
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0x1000000,
 		ack:          &ack{streamId: 10, offset: 100, len: 50, rcvWnd: 1000},
@@ -585,7 +570,6 @@ func TestProto_Offset_MixedData48BitAck24Bit(t *testing.T) {
 func TestProto_Offset_MixedAck48BitData24Bit(t *testing.T) {
 	// ACK needs 48-bit, Data needs 24-bit - both use 48-bit encoding
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 100,
 		ack:          &ack{streamId: 10, offset: 0x1000000, len: 50, rcvWnd: 1000},
@@ -598,7 +582,6 @@ func TestProto_Offset_MixedAck48BitData24Bit(t *testing.T) {
 
 func TestProto_Offset_MaxValue(t *testing.T) {
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0xFFFFFFFFFFFF, // max 48-bit
 	}
@@ -627,7 +610,7 @@ func TestProto_Decode_TooSmall_ForAck(t *testing.T) {
 
 func TestProto_Decode_TooSmall_ForKeyUpdate(t *testing.T) {
 	data := make([]byte, 10)
-	data[0] = flagKeyUpdate | flagHasData // Has key update but not enough bytes
+	data[0] = flagKeyUpdate // Has key update but not enough bytes
 
 	_, _, err := decodeProto(data)
 	assert.Error(t, err)
@@ -695,32 +678,26 @@ func TestProto_RcvWindow_RoundTrip(t *testing.T) {
 // OVERHEAD CALCULATION TESTS
 // =============================================================================
 
-func TestProto_Overhead_DataOnly24Bit(t *testing.T) {
-	var flags uint8 = flagHasData
+func TestProto_Overhead_NoAck24Bit(t *testing.T) {
+	// No ACK means stream header is always included: 1 + 4 + 3 = 8
+	var flags uint8 = 0
 	assert.Equal(t, 8, calcProtoOverhead(flags))
 }
 
-func TestProto_Overhead_DataOnly48Bit(t *testing.T) {
-	var flags uint8 = flagHasData | flagExtend
+func TestProto_Overhead_NoAck48Bit(t *testing.T) {
+	// No ACK, extended: 1 + 4 + 6 = 11
+	var flags uint8 = flagExtend
 	assert.Equal(t, 11, calcProtoOverhead(flags))
 }
 
-func TestProto_Overhead_DataWithAck24Bit(t *testing.T) {
-	var flags uint8 = flagHasData | flagHasAck
-	assert.Equal(t, 18, calcProtoOverhead(flags))
-}
-
-func TestProto_Overhead_DataWithAck48Bit(t *testing.T) {
-	var flags uint8 = flagHasData | flagHasAck | flagExtend
-	assert.Equal(t, 24, calcProtoOverhead(flags))
-}
-
-func TestProto_Overhead_AckOnly24Bit(t *testing.T) {
+func TestProto_Overhead_WithAck24Bit(t *testing.T) {
+	// ACK only (no stream header): 1 + 4 + 3 + 2 + 1 = 11
 	var flags uint8 = flagHasAck
 	assert.Equal(t, 11, calcProtoOverhead(flags))
 }
 
-func TestProto_Overhead_AckOnly48Bit(t *testing.T) {
+func TestProto_Overhead_WithAck48Bit(t *testing.T) {
+	// ACK only, extended: 1 + 4 + 6 + 2 + 1 = 14
 	var flags uint8 = flagHasAck | flagExtend
 	assert.Equal(t, 14, calcProtoOverhead(flags))
 }
@@ -741,13 +718,6 @@ func TestProto_Overhead_KeyUpdateAndAck(t *testing.T) {
 	var flags uint8 = flagKeyUpdate | flagKeyUpdateAck
 	// 1 (header) + 32 + 32 (both pubkeys) + 4 (streamId) + 3 (offset 24-bit) = 72
 	assert.Equal(t, 72, calcProtoOverhead(flags))
-}
-
-func TestProto_Overhead_KeyUpdateWithData(t *testing.T) {
-	var flags uint8 = flagKeyUpdate | flagHasData
-	// 1 (header) + 32 (pubkey) + 4 (streamId) + 3 (offset 24-bit) = 40
-	// hasData doesn't add extra because streamId/offset already included
-	assert.Equal(t, 40, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_Close(t *testing.T) {
@@ -773,7 +743,6 @@ func TestProto_LargeData(t *testing.T) {
 	}
 
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0,
 	}
@@ -791,7 +760,6 @@ func TestProto_LargeData_WithAck(t *testing.T) {
 	}
 
 	original := &payloadHeader{
-		hasData:      true,
 		streamId:     1,
 		streamOffset: 0,
 		ack:          &ack{streamId: 2, offset: 1000, len: 500, rcvWnd: 10000},
@@ -808,41 +776,37 @@ func TestProto_LargeData_WithAck(t *testing.T) {
 // =============================================================================
 
 func TestProto_Flags_DataNoAck24(t *testing.T) {
-	p := &payloadHeader{hasData: true, streamId: 1, streamOffset: 100}
-	encoded, _ := encodeProto(p, []byte{})
+	p := &payloadHeader{streamId: 1, streamOffset: 100}
+	encoded, _ := encodeProto(p, []byte("data"))
 
 	flags := encoded[0]
-	assert.True(t, flags&flagHasData != 0)
 	assert.True(t, flags&flagHasAck == 0)
 	assert.True(t, flags&flagExtend == 0)
 }
 
 func TestProto_Flags_DataWithAck24(t *testing.T) {
-	p := &payloadHeader{hasData: true, streamId: 1, streamOffset: 100, ack: &ack{offset: 50}}
-	encoded, _ := encodeProto(p, []byte{})
+	p := &payloadHeader{streamId: 1, streamOffset: 100, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte("data"))
 
 	flags := encoded[0]
-	assert.True(t, flags&flagHasData != 0)
 	assert.True(t, flags&flagHasAck != 0)
 	assert.True(t, flags&flagExtend == 0)
 }
 
 func TestProto_Flags_DataNoAck48(t *testing.T) {
-	p := &payloadHeader{hasData: true, streamId: 1, streamOffset: 0x1000000}
-	encoded, _ := encodeProto(p, []byte{})
+	p := &payloadHeader{streamId: 1, streamOffset: 0x1000000}
+	encoded, _ := encodeProto(p, []byte("data"))
 
 	flags := encoded[0]
-	assert.True(t, flags&flagHasData != 0)
 	assert.True(t, flags&flagHasAck == 0)
 	assert.True(t, flags&flagExtend != 0)
 }
 
 func TestProto_Flags_DataWithAck48(t *testing.T) {
-	p := &payloadHeader{hasData: true, streamId: 1, streamOffset: 0x1000000, ack: &ack{offset: 50}}
-	encoded, _ := encodeProto(p, []byte{})
+	p := &payloadHeader{streamId: 1, streamOffset: 0x1000000, ack: &ack{offset: 50}}
+	encoded, _ := encodeProto(p, []byte("data"))
 
 	flags := encoded[0]
-	assert.True(t, flags&flagHasData != 0)
 	assert.True(t, flags&flagHasAck != 0)
 	assert.True(t, flags&flagExtend != 0)
 }
@@ -902,9 +866,55 @@ func TestProto_Flags_KeyUpdateAck(t *testing.T) {
 
 func TestProto_Flags_AckTriggersExtend(t *testing.T) {
 	// Data offset is 24-bit, but ACK offset is 48-bit
-	p := &payloadHeader{hasData: true, streamId: 1, streamOffset: 100, ack: &ack{offset: 0x1000000}}
-	encoded, _ := encodeProto(p, []byte{})
+	p := &payloadHeader{streamId: 1, streamOffset: 100, ack: &ack{offset: 0x1000000}}
+	encoded, _ := encodeProto(p, []byte("data"))
 
 	flags := encoded[0]
 	assert.True(t, flags&flagExtend != 0)
+}
+
+// =============================================================================
+// STREAM HEADER PRESENCE TESTS
+// =============================================================================
+
+func TestProto_StreamHeader_NoAckMeansStreamHeader(t *testing.T) {
+	// When there's no ACK, stream header is always included (for minimum packet size)
+	original := &payloadHeader{
+		streamId:     42,
+		streamOffset: 123,
+	}
+
+	decoded, userData := roundTrip(t, original, nil)
+
+	assert.Equal(t, uint32(42), decoded.streamId)
+	assert.Equal(t, uint64(123), decoded.streamOffset)
+	assert.NotNil(t, userData) // empty slice, not nil
+	assert.Empty(t, userData)
+}
+
+func TestProto_StreamHeader_AckOnlyNoStreamHeader(t *testing.T) {
+	// ACK-only packets don't include stream header
+	original := &payloadHeader{
+		ack: &ack{streamId: 10, offset: 200, len: 50, rcvWnd: 1000},
+	}
+
+	decoded, userData := roundTrip(t, original, nil)
+
+	assert.NotNil(t, decoded.ack)
+	assert.Nil(t, userData) // nil means no stream header was parsed
+}
+
+func TestProto_StreamHeader_AckWithDataHasStreamHeader(t *testing.T) {
+	// ACK with data includes stream header
+	original := &payloadHeader{
+		streamId:     5,
+		streamOffset: 50,
+		ack:          &ack{streamId: 10, offset: 200, len: 50, rcvWnd: 1000},
+	}
+
+	decoded, userData := roundTrip(t, original, []byte("test"))
+
+	assert.NotNil(t, decoded.ack)
+	assert.Equal(t, uint32(5), decoded.streamId)
+	assert.Equal(t, []byte("test"), userData)
 }

@@ -58,7 +58,8 @@ func main() {
 ## Key Design Choices
 
 - **Single crypto suite**: curve25519/chacha20poly1305
-- **Always encrypted**: No plaintext option, no key renegotiation
+- **Always encrypted**: No plaintext option
+- **In-band key rotation**: Forward secrecy preserved via periodic ECDH rekeying
 - **0-RTT option**: User chooses between 0-RTT (no perfect forward secrecy) or 1-RTT (with perfect forward secrecy)
 - **BBR congestion control**: Estimates network capacity via bottleneck bandwidth and RTT
 - **Connection-level flow control**: Congestion control at connection level, not per-stream
@@ -278,6 +279,50 @@ Note: The author is not a cryptographer. QOTP's approach was chosen for simplici
 - Epoch increments on rollover (47-bit; bit 7 of byte 0 reserved for direction)
 - Decryption tries 3 epochs to handle reordering near boundaries
 - Total space: 2^95 ≈ 40 ZB (exhaustion would require resending all human data 28M times)
+
+### Key Rotation
+
+QOTP supports in-band key rotation to maintain forward secrecy over long-lived connections. Both peers can initiate rotation independently.
+
+**Protocol Flags**:
+- `flagKeyUpdate` (bit 5): Carries initiator's new ephemeral public key (32 bytes)
+- `flagKeyUpdateAck` (bit 6): Carries responder's new ephemeral public key (32 bytes)
+
+**Key State**:
+Each direction maintains three key slots:
+- `prev`: Previous key (for packets in transit during rotation)
+- `cur`: Current active key
+- `next`: Pending key (computed but not yet promoted)
+
+**Rotation Flow**:
+```
+Initiator                          Responder
+    |                                  |
+    |  KEY_UPDATE (new pubKeyEp)       |
+    |--------------------------------->|
+    |                                  | Generate new prvKeyEp
+    |                                  | Compute next secret
+    |  KEY_UPDATE_ACK (new pubKeyEp)   |
+    |<---------------------------------|
+    | Compute next secret              |
+    | Promote: prev=cur, cur=next      |
+    |                                  |
+```
+
+**Decryption**: Receiver tries `cur`, then `prev`, then `next` secrets to handle packets in flight during rotation.
+
+**Retransmission Handling**: Duplicate KEY_UPDATE packets (same pubKey as current or previous round) are ignored or re-ACKed without generating new keys.
+```
+
+**3. Update "Error Handling" section (line 606)**
+
+Change:
+```
+- Epoch mismatches handled with ±1 epoch tolerance
+```
+To:
+```
+- Key rotation: tries current, previous, and next secrets during transition
 
 ### Transport Layer (Payload Format)
 

@@ -418,7 +418,6 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, 
 	if (ack != nil && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF {
 		flags |= flagExtend
 	}
-	flags |= flagHasData // we're calculating for data
 	if isKeyUpdate {
 		flags |= flagKeyUpdate
 	}
@@ -426,7 +425,7 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, 
 		flags |= flagKeyUpdateAck
 	}
 
-	overhead := calcProtoOverhead(flags)
+	overhead := calcProtoOverheadWithStream(flags, true)
 
 	switch msgType {
 	case initRcv:

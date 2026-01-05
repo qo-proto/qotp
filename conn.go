@@ -12,17 +12,26 @@ import (
 type sndKeyState struct {
 	prev, cur, next []byte
 	snCrypto        uint64
-	prvKeyEp        *ecdh.PrivateKey // my current ephemeral
-	prvKeyEpNext    *ecdh.PrivateKey // generated, sent, awaiting ACK
+	prvKeyEp        *ecdh.PrivateKey
+	prvKeyEpNext    *ecdh.PrivateKey
 }
 
 type rcvKeyState struct {
-	prev, cur, next  []byte
-	prvKeyEp         *ecdh.PrivateKey
-	prvKeyEpNext     *ecdh.PrivateKey
-	peerPubKeyEp     *ecdh.PublicKey // peer's current public
-	peerPubKeyEpNext *ecdh.PublicKey
+	prev, cur, next []byte
+	prvKeyEp        *ecdh.PrivateKey
+	prvKeyEpNext    *ecdh.PrivateKey
+	pubKeyEp        *ecdh.PublicKey
+	pubKeyEpNext    *ecdh.PublicKey
 }
+
+type connPhase int
+
+const (
+	phaseCreated          connPhase = iota // nothing sent
+	phaseInitSent                          // init sent, awaiting reply
+	phaseReady                             // handshake complete, idle
+	phaseKeyUpdatePending                  // received KEY_UPDATE, need to send ACK
+)
 
 // conn represents a QOTP connection to a remote peer.
 // A single conn can multiplex multiple streams.
@@ -32,16 +41,14 @@ type conn struct {
 	remoteAddr netip.AddrPort
 	listener   *Listener
 
-	pubKeyIdRcv         *ecdh.PublicKey // Identity
-	sndKeys             *sndKeyState
-	rcvKeys             *rcvKeyState
-	pendingKeyUpdateAck bool
+	pubKeyIdRcv *ecdh.PublicKey // Identity
+	sndKeys     *sndKeyState
+	rcvKeys     *rcvKeyState
 
 	// Handshake state
-	isSenderOnInit       bool
-	isWithCryptoOnInit   bool
-	isHandshakeDoneOnRcv bool
-	isInitSentOnSnd      bool
+	isSenderOnInit     bool
+	isWithCryptoOnInit bool
+	phase              connPhase
 
 	// Stream and buffer management
 	streams      *linkedMap[uint32, *Stream]
@@ -204,7 +211,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 			return nil, fmt.Errorf("decrypt InitRcv: %w", err)
 		}
 		c.pubKeyIdRcv = pubKeyIdRcv
-		c.rcvKeys.peerPubKeyEp = pubKeyEpRcv
+		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
 		return message.payloadRaw, nil
@@ -214,7 +221,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
 		}
-		c.rcvKeys.peerPubKeyEp = pubKeyEpRcv
+		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
 		return message.payloadRaw, nil
@@ -269,7 +276,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.connId,
 			c.sndKeys.prvKeyEp,
 			c.listener.prvKeyId.PublicKey(),
-			c.rcvKeys.peerPubKeyEp,
+			c.rcvKeys.pubKeyEp,
 			c.sndKeys.cur,
 			c.sndKeys.snCrypto,
 			c.isSenderOnInit,
@@ -282,7 +289,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.connId,
 			c.sndKeys.prvKeyEp,
 			c.listener.prvKeyId.PublicKey(),
-			c.rcvKeys.peerPubKeyEp,
+			c.rcvKeys.pubKeyEp,
 			c.sndKeys.cur,
 			c.sndKeys.snCrypto,
 			c.isSenderOnInit,
@@ -297,7 +304,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 	}
 
 	if msgType != data {
-		c.isInitSentOnSnd = true
+		c.phase = phaseInitSent
 	}
 
 	c.sndKeys.snCrypto++
@@ -311,22 +318,18 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 	}
 
 	// At overflow: rotate
-	if c.sndKeys.snCrypto >= 1<<47 {
+	if c.sndKeys.snCrypto == 1<<47 {
 		if c.sndKeys.next == nil {
 			return nil, errors.New("key rotation not completed before overflow")
 		}
-		c.rotateSndKeys()
+		c.sndKeys.prev = c.sndKeys.cur
+		c.sndKeys.cur = c.sndKeys.next
+		c.sndKeys.next = nil
+		c.sndKeys.prvKeyEp = c.sndKeys.prvKeyEpNext
+		c.sndKeys.prvKeyEpNext = nil
+		c.sndKeys.snCrypto = 0
 	}
 	return encData, nil
-}
-
-func (c *conn) rotateSndKeys() {
-	c.sndKeys.prev = c.sndKeys.cur
-	c.sndKeys.cur = c.sndKeys.next
-	c.sndKeys.next = nil
-	c.sndKeys.prvKeyEp = c.sndKeys.prvKeyEpNext
-	c.sndKeys.prvKeyEpNext = nil
-	c.sndKeys.snCrypto = 0
 }
 
 // =============================================================================
@@ -392,7 +395,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
-	} else if p.hasData || p.isClose || p.isProbe || p.isKeyUpdate || p.isKeyUpdateAck {
+	} else if userData !=nil || p.isClose || p.isProbe || p.isKeyUpdate || p.isKeyUpdateAck {
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
@@ -414,33 +417,33 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	peerNewPubKey, err := ecdh.X25519().NewPublicKey(peerNewPubKeyBytes)
-    if err != nil {
-        return err
-    }
+	if err != nil {
+		return err
+	}
 
-    // Retransmit of PREVIOUS round's KEY_UPDATE (already rotated past)
-    if c.rcvKeys.peerPubKeyEp != nil &&
-        bytes.Equal(c.rcvKeys.peerPubKeyEp.Bytes(), peerNewPubKeyBytes) {
-        return nil  // Ignore, we've moved on
-    }
+	// Retransmit of PREVIOUS round's KEY_UPDATE (already rotated past)
+	if c.rcvKeys.pubKeyEp != nil &&
+		bytes.Equal(c.rcvKeys.pubKeyEp.Bytes(), peerNewPubKeyBytes) {
+		return nil // Ignore, we've moved on
+	}
 
-    // Retransmit of CURRENT round's KEY_UPDATE
-    if c.rcvKeys.peerPubKeyEpNext != nil &&
-        bytes.Equal(c.rcvKeys.peerPubKeyEpNext.Bytes(), peerNewPubKeyBytes) {
-        c.pendingKeyUpdateAck = true
-        return nil
-    }
+	// Retransmit of CURRENT round's KEY_UPDATE
+	if c.rcvKeys.pubKeyEpNext != nil &&
+		bytes.Equal(c.rcvKeys.pubKeyEpNext.Bytes(), peerNewPubKeyBytes) {
+		c.phase = phaseKeyUpdatePending
+		return nil
+	}
 
-    // NEW KEY_UPDATE - rotate if needed, then process
+	// NEW KEY_UPDATE - rotate if needed, then process
 	if c.rcvKeys.next != nil {
 		c.rcvKeys.prev = c.rcvKeys.cur
 		c.rcvKeys.cur = c.rcvKeys.next
 		c.rcvKeys.next = nil
 		c.rcvKeys.prvKeyEp = c.rcvKeys.prvKeyEpNext
 		c.rcvKeys.prvKeyEpNext = nil
-		c.rcvKeys.peerPubKeyEp = c.rcvKeys.peerPubKeyEpNext // MUST be before setting to nil
-		c.rcvKeys.peerPubKeyEpNext = nil
-		c.pendingKeyUpdateAck = false
+		c.rcvKeys.pubKeyEp = c.rcvKeys.pubKeyEpNext // MUST be before setting to nil
+		c.rcvKeys.pubKeyEpNext = nil
+		c.phase = phaseReady
 	}
 
 	// Generate fresh key for this KEY_UPDATE
@@ -449,7 +452,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 		return err
 	}
 	c.rcvKeys.prvKeyEpNext = newPriv
-	c.rcvKeys.peerPubKeyEpNext = peerNewPubKey
+	c.rcvKeys.pubKeyEpNext = peerNewPubKey
 
 	// Compute next secret
 	newSecret, err := c.rcvKeys.prvKeyEpNext.ECDH(peerNewPubKey)
@@ -458,7 +461,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	}
 	c.rcvKeys.next = newSecret
 
-	c.pendingKeyUpdateAck = true
+	c.phase = phaseKeyUpdatePending
 	return nil
 }
 
@@ -509,7 +512,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		}
 		// Blocked but have ACK to send
 		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.pendingKeyUpdateAck && c.rcvKeys.prvKeyEpNext != nil
+		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
 
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
@@ -527,16 +530,16 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	}
 
 	// Try sending new data (only after handshake or if init not yet sent)
-	if c.isHandshakeDoneOnRcv || !c.isInitSentOnSnd {
+	if c.phase == phaseReady || c.phase == phaseCreated {
 		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.pendingKeyUpdateAck && c.rcvKeys.prvKeyEpNext != nil
+		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
 		}
-		if ack != nil || !c.isInitSentOnSnd {
+		if ack != nil || c.phase == phaseCreated {
 			isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-			isKeyUpdateAck := c.pendingKeyUpdateAck && c.rcvKeys.prvKeyEpNext != nil
+			isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 			offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
 
 			return c.encodeAndWrite(s, ack, nil, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
@@ -546,7 +549,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// Send ACK-only if pending
 	if ack != nil {
 		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.pendingKeyUpdateAck && c.rcvKeys.prvKeyEpNext != nil
+		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
 
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
@@ -558,7 +561,6 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose, isKeyUpdate, isKeyUpdateAck bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
 	p := &payloadHeader{
 		isClose:      isClose,
-		hasData:      len(data) > 0,
 		ack:          ack,
 		streamId:     s.streamID,
 		streamOffset: offset,
@@ -589,7 +591,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	if isKeyUpdateAck {
-		c.pendingKeyUpdateAck = false
+		c.phase = phaseReady
 	}
 
 	pacingNano := c.calcPacing(uint64(len(encData)))
@@ -609,7 +611,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 
 // msgType returns the crypto message type based on handshake state.
 func (c *conn) msgType() cryptoMsgType {
-	if c.isHandshakeDoneOnRcv {
+	if c.phase >= phaseReady {
 		return data
 	}
 	switch {

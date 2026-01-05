@@ -18,13 +18,13 @@ const (
 
 	// Flags (bits 0-6)
 	flagHasAck       = 1 << 0
-	flagExtend       = 1 << 1 // 48-bit offsets
-	flagHasData      = 1 << 2 // stream data present
-	flagProbe        = 1 << 3
-	flagClose        = 1 << 4
-	flagKeyUpdate    = 1 << 5
-	flagKeyUpdateAck = 1 << 6
-	flagNeedsReTx    = 1 << 7
+	flagExtend       = 1 << 1
+	flagProbe        = 1 << 2
+	flagClose        = 1 << 3
+	flagKeyUpdate    = 1 << 4
+	flagKeyUpdateAck = 1 << 5
+	flagNeedsReTx    = 1 << 6
+	flagUnused       = 1 << 7
 )
 
 // =============================================================================
@@ -33,7 +33,6 @@ const (
 
 type payloadHeader struct {
 	hasAck          bool
-	hasData         bool
 	isProbe         bool
 	isClose         bool
 	isKeyUpdate     bool
@@ -117,6 +116,13 @@ func decodeRcvWindow(encoded uint8) uint64 {
 func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
+	// Stream header (streamId+offset) included when:
+	// - any control flag (probe/close/keyUpdate/keyUpdateAck), OR
+	// - has user data, OR
+	// - no ACK (for minimum packet size)
+	hasStreamHeader := p.isProbe || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
+		userData != nil || p.ack == nil
+
 	// Build flags
 	var flags uint8
 	if p.ack != nil {
@@ -124,9 +130,6 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	}
 	if isExtend {
 		flags |= flagExtend
-	}
-	if len(userData) > 0 || p.hasData {
-		flags |= flagHasData
 	}
 	if p.isProbe {
 		flags |= flagProbe
@@ -141,11 +144,11 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		flags |= flagKeyUpdateAck
 	}
 
-	if len(userData) > 0 || p.hasData || p.isKeyUpdate || p.isKeyUpdateAck || p.isClose {
+	if userData != nil || p.isKeyUpdate || p.isKeyUpdateAck || p.isClose || p.isProbe {
 		flags |= flagNeedsReTx
 	}
 
-	overhead := calcProtoOverhead(flags)
+	overhead := calcProtoOverheadWithStream(flags, hasStreamHeader)
 	encoded := make([]byte, overhead+len(userData))
 	offset := 0
 
@@ -170,7 +173,7 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset += pubKeySize
 	}
 
-	if flags&flagHasData != 0 || flags&flagProbe != 0 || flags&flagClose != 0 || flags&flagKeyUpdate != 0 || flags&flagKeyUpdateAck != 0 {
+	if hasStreamHeader {
 		offset += putUint32(encoded[offset:], p.streamId)
 		offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
 	}
@@ -189,16 +192,10 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	}
 
 	flags := data[0]
-
 	isExtend := flags&flagExtend != 0
-	overhead := calcProtoOverhead(flags)
-	if len(data) < overhead {
-		return nil, nil, errors.New("payload size below minimum")
-	}
 
 	p := &payloadHeader{
 		hasAck:         flags&flagHasAck != 0,
-		hasData:        flags&flagHasData != 0,
 		isProbe:        flags&flagProbe != 0,
 		isClose:        flags&flagClose != 0,
 		isKeyUpdate:    flags&flagKeyUpdate != 0,
@@ -208,6 +205,9 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	offset := 1
 
 	if p.hasAck {
+		if len(data) < offset+10 {
+			return nil, nil, errors.New("payload too small for ack")
+		}
 		p.ack = &ack{
 			streamId: getUint32(data[offset:]),
 		}
@@ -221,16 +221,29 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	}
 
 	if p.isKeyUpdate {
+		if len(data) < offset+pubKeySize {
+			return nil, nil, errors.New("payload too small for keyUpdate")
+		}
 		p.keyUpdatePub = data[offset : offset+pubKeySize]
 		offset += pubKeySize
 	}
 
 	if p.isKeyUpdateAck {
+		if len(data) < offset+pubKeySize {
+			return nil, nil, errors.New("payload too small for keyUpdateAck")
+		}
 		p.keyUpdatePubAck = data[offset : offset+pubKeySize]
 		offset += pubKeySize
 	}
 
-	if p.hasData || p.isProbe || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck {
+	hasStreamHeader := p.isProbe || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
+		!p.hasAck || len(data) > offset
+
+	if hasStreamHeader {
+		streamHeaderSize := 4 + offsetSize(isExtend)
+		if len(data) < offset+streamHeaderSize {
+			return nil, nil, errors.New("payload too small for stream header")
+		}
 		p.streamId = getUint32(data[offset:])
 		offset += 4
 		p.streamOffset = offsetVarint(data[offset:], isExtend)
@@ -238,7 +251,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	}
 
 	var userData []byte
-	if len(data) > offset {
+	if hasStreamHeader {
 		userData = data[offset:]
 	}
 
@@ -249,7 +262,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 // Overhead calculation
 // =============================================================================
 
-func calcProtoOverhead(flags uint8) int {
+func calcProtoOverheadWithStream(flags uint8, hasStreamHeader bool) int {
 	overhead := 1 // header
 
 	isExtend := flags&flagExtend != 0
@@ -270,9 +283,16 @@ func calcProtoOverhead(flags uint8) int {
 		overhead += pubKeySize
 	}
 
-	if flags&flagHasData != 0 || flags&flagProbe != 0 || flags&flagClose != 0 || flags&flagKeyUpdate != 0 || flags&flagKeyUpdateAck != 0 {
+	if hasStreamHeader {
 		overhead += 4 + offsetBytes // streamId + offset
 	}
 
 	return overhead
+}
+
+func calcProtoOverhead(flags uint8) int {
+	// Stream header present if any control flag or no ACK
+	hasStreamHeader := flags&(flagProbe|flagClose|flagKeyUpdate|flagKeyUpdateAck) != 0 ||
+		flags&flagHasAck == 0
+	return calcProtoOverheadWithStream(flags, hasStreamHeader)
 }

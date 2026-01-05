@@ -217,7 +217,7 @@ func (l *Listener) newConn(
 		streams:    newLinkedMap[uint32, *Stream](),
 		remoteAddr: remoteAddr,
 		rcvKeys: &rcvKeyState{
-			peerPubKeyEp: pubKeyEpRcv,
+			pubKeyEp: pubKeyEpRcv,
 			prvKeyEp:     prvKeyEpSnd,
 		},
 		sndKeys: &sndKeyState{
@@ -236,7 +236,7 @@ func (l *Listener) newConn(
 
 	// Log keys for Wireshark debugging if enabled
 	if l.keyLogWriter != nil {
-		if ss, err := conn.sndKeys.prvKeyEp.ECDH(conn.rcvKeys.peerPubKeyEp); err == nil {
+		if ss, err := conn.sndKeys.prvKeyEp.ECDH(conn.rcvKeys.pubKeyEp); err == nil {
 			if ssId, err := conn.sndKeys.prvKeyEp.ECDH(conn.pubKeyIdRcv); err == nil {
 				// =============================================================================
 				// Wireshark/pcap support

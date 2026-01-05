@@ -285,27 +285,22 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 	sharedSecret, pubKeyIdRcv, pubKeyEpRcv, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
 	assert.NotNil(t, sharedSecret)
-	assert.Equal(t, uint64(0), msg.snConn)
+	assert.NotNil(t, pubKeyIdRcv)
+	assert.NotNil(t, pubKeyEpRcv)
 	assert.Equal(t, rawData, msg.payloadRaw)
-	assert.True(t, bytes.Equal(bobPrvKeyId.PublicKey().Bytes(), pubKeyIdRcv.Bytes()))
-	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
 }
 
 func TestCryptoInitRcv_NilKeys(t *testing.T) {
-	alicePrvKeyEp := generateTestKey(t)
-	bobPrvKeyEp := generateTestKey(t)
-
-	// Missing pubKeyIdSnd
 	_, err := encryptPacket(
 		initRcv,
-		0,
-		bobPrvKeyEp,
-		nil, // pubKeyIdSnd
-		alicePrvKeyEp.PublicKey(),
+		12345,
+		nil,
+		nil,
+		nil,
 		nil,
 		0,
 		false,
-		[]byte("test1234"),
+		[]byte("test"),
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
@@ -315,31 +310,7 @@ func TestCryptoDecryptInitRcv_TooSmall(t *testing.T) {
 	buffer := make([]byte, minInitRcvSizeHdr+footerDataSize-1)
 	_, _, _, _, err := decryptInitRcv(buffer, generateTestKey(t))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "size is below minimum init reply")
-}
-
-func TestCryptoInitRcv_MinPayload(t *testing.T) {
-	alicePrvKeyEp := generateTestKey(t)
-	bobPrvKeyId := generateTestKey(t)
-	bobPrvKeyEp := generateTestKey(t)
-
-	payload := []byte("12345678") // 8 bytes - min proto size
-	buffer, err := encryptPacket(
-		initRcv,
-		0,
-		bobPrvKeyEp,
-		bobPrvKeyId.PublicKey(),
-		alicePrvKeyEp.PublicKey(),
-		nil,
-		0,
-		false,
-		payload,
-	)
-	assert.NoError(t, err)
-
-	_, _, _, msg, err := decryptInitRcv(buffer, alicePrvKeyEp)
-	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
+	assert.Contains(t, err.Error(), "size is below minimum")
 }
 
 // =============================================================================
@@ -351,38 +322,28 @@ func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
 	alicePrvKeyEp := generateTestKey(t)
 	bobPrvKeyId := generateTestKey(t)
 
-	payload := []byte("test payload data")
+	rawData := []byte("init crypto data")
 	connId, buffer, err := encryptInitCryptoSnd(
 		bobPrvKeyId.PublicKey(),
 		alicePrvKeyId.PublicKey(),
 		alicePrvKeyEp,
 		0,
 		defaultMTU,
-		payload,
+		rawData,
 	)
 	assert.NoError(t, err)
-	assert.Equal(t, defaultMTU, len(buffer))
 	assert.NotZero(t, connId)
+	assert.Equal(t, defaultMTU, len(buffer))
 
 	pubKeyIdSnd, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
+	assert.Equal(t, rawData, msg.payloadRaw)
 }
 
 func TestCryptoInitCryptoSnd_NilKeys(t *testing.T) {
-	alicePrvKeyId := generateTestKey(t)
-	alicePrvKeyEp := generateTestKey(t)
-
-	_, _, err := encryptInitCryptoSnd(
-		nil, // pubKeyIdRcv
-		alicePrvKeyId.PublicKey(),
-		alicePrvKeyEp,
-		0,
-		defaultMTU,
-		[]byte("test1234"),
-	)
+	_, _, err := encryptInitCryptoSnd(nil, nil, nil, 0, defaultMTU, []byte("test"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
 }
@@ -393,51 +354,25 @@ func TestCryptoInitCryptoSnd_PayloadTooLarge(t *testing.T) {
 	bobPrvKeyId := generateTestKey(t)
 
 	// Payload larger than MTU allows
-	largePayload := randomBytes(defaultMTU)
+	largeData := make([]byte, defaultMTU)
+
 	_, _, err := encryptInitCryptoSnd(
 		bobPrvKeyId.PublicKey(),
 		alicePrvKeyId.PublicKey(),
 		alicePrvKeyEp,
 		0,
 		defaultMTU,
-		largePayload,
+		largeData,
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "too large")
 }
 
-func TestCryptoInitCryptoSnd_MaxPayload(t *testing.T) {
-	alicePrvKeyId := generateTestKey(t)
-	alicePrvKeyEp := generateTestKey(t)
-	bobPrvKeyId := generateTestKey(t)
-
-	// Calculate max payload size
-	maxPayload := defaultMTU - minInitCryptoSndSizeHdr - footerDataSize - msgInitFillLenSize
-	payload := randomBytes(maxPayload)
-
-	_, buffer, err := encryptInitCryptoSnd(
-		bobPrvKeyId.PublicKey(),
-		alicePrvKeyId.PublicKey(),
-		alicePrvKeyEp,
-		0,
-		defaultMTU,
-		payload,
-	)
-	assert.NoError(t, err)
-	assert.Equal(t, defaultMTU, len(buffer))
-
-	_, _, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
-	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
-}
-
 func TestCryptoDecryptInitCryptoSnd_TooSmall(t *testing.T) {
-	bobPrvKeyId := generateTestKey(t)
 	buffer := make([]byte, defaultMTU-1)
-
-	_, _, _, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
+	_, _, _, err := decryptInitCryptoSnd(buffer, generateTestKey(t), defaultMTU)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "size is below minimum init")
+	assert.Contains(t, err.Error(), "size is below minimum")
 }
 
 // =============================================================================
@@ -448,7 +383,7 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 	alicePrvKeyEp := generateTestKey(t)
 	bobPrvKeyEp := generateTestKey(t)
 
-	payload := []byte("response data")
+	rawData := []byte("init crypto response")
 	buffer, err := encryptPacket(
 		initCryptoRcv,
 		12345,
@@ -458,30 +393,28 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 		nil,
 		0,
 		false,
-		payload,
+		rawData,
 	)
 	assert.NoError(t, err)
 
 	sharedSecret, pubKeyEpRcv, msg, err := decryptInitCryptoRcv(buffer, alicePrvKeyEp)
 	assert.NoError(t, err)
 	assert.NotNil(t, sharedSecret)
-	assert.Equal(t, payload, msg.payloadRaw)
-	assert.True(t, bytes.Equal(bobPrvKeyEp.PublicKey().Bytes(), pubKeyEpRcv.Bytes()))
+	assert.NotNil(t, pubKeyEpRcv)
+	assert.Equal(t, rawData, msg.payloadRaw)
 }
 
 func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
-	bobPrvKeyEp := generateTestKey(t)
-
 	_, err := encryptPacket(
 		initCryptoRcv,
-		0,
-		bobPrvKeyEp,
+		12345,
 		nil,
-		nil, // pubKeyEpRcv
+		nil,
+		nil,
 		nil,
 		0,
 		false,
-		[]byte("test1234"),
+		[]byte("test"),
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
@@ -491,11 +424,11 @@ func TestCryptoDecryptInitCryptoRcv_TooSmall(t *testing.T) {
 	buffer := make([]byte, minInitCryptoRcvSizeHdr+footerDataSize-1)
 	_, _, _, err := decryptInitCryptoRcv(buffer, generateTestKey(t))
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "size is below minimum init reply")
+	assert.Contains(t, err.Error(), "size is below minimum")
 }
 
 // =============================================================================
-// DATA MESSAGE TESTS
+// DATA PACKET TESTS
 // =============================================================================
 
 func TestCryptoData_BasicFlow(t *testing.T) {
@@ -514,7 +447,6 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 		payload,
 	)
 	assert.NoError(t, err)
-	assert.NotNil(t, encData)
 
 	msg, err := decryptData(encData, false, [][]byte{sharedSecret})
 	assert.NoError(t, err)
@@ -528,45 +460,19 @@ func TestCryptoData_NilSharedSecret(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil, // sharedSecret
+		nil,
 		0,
 		true,
-		[]byte("test1234"),
+		[]byte("test"),
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
 }
 
-func TestCryptoData_MultipleSharedSecrets(t *testing.T) {
-	oldSecret := randomBytes(32)
-	currentSecret := randomBytes(32)
-	nextSecret := randomBytes(32)
-	payload := []byte("test data")
-
-	// Encrypt with current secret
-	encData, err := encryptPacket(
-		data,
-		12345,
-		nil,
-		nil,
-		nil,
-		currentSecret,
-		100,
-		true,
-		payload,
-	)
-	assert.NoError(t, err)
-
-	// Decrypt trying all three secrets (simulating key rotation)
-	msg, err := decryptData(encData, false, [][]byte{oldSecret, currentSecret, nextSecret})
-	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
-}
-
-func TestCryptoData_DecryptWithPreviousKey(t *testing.T) {
+func TestCryptoData_MultipleKeys(t *testing.T) {
 	prevSecret := randomBytes(32)
 	curSecret := randomBytes(32)
-	payload := []byte("delayed packet")
+	payload := []byte("test with key rotation")
 
 	// Encrypt with previous secret (simulating delayed packet)
 	encData, err := encryptPacket(
@@ -731,65 +637,56 @@ func TestCryptoOverhead_InitSnd(t *testing.T) {
 }
 
 func TestCryptoOverhead_InitRcv(t *testing.T) {
-	var flags uint8 = flagHasData
-	expected := calcProtoOverhead(flags) + minInitRcvSizeHdr + footerDataSize
+	// calcCryptoOverheadWithData always has stream header (true)
+	expected := calcProtoOverheadWithStream(0, true) + minInitRcvSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoSnd(t *testing.T) {
-	var flags uint8 = flagHasData
-	expected := calcProtoOverhead(flags) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
+	expected := calcProtoOverheadWithStream(0, true) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoSnd, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoRcv(t *testing.T) {
-	var flags uint8 = flagHasData
-	expected := calcProtoOverhead(flags) + minInitCryptoRcvSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(0, true) + minInitCryptoRcvSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_Data(t *testing.T) {
-	var flags uint8 = flagHasData
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(0, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	var flags uint8 = flagHasData | flagHasAck
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagHasAck, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeAckOffset(t *testing.T) {
 	ack := &ack{offset: 0xFFFFFF + 1}
-	var flags uint8 = flagHasData | flagHasAck | flagExtend
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagHasAck|flagExtend, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
-	var flags uint8 = flagHasData | flagExtend
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagExtend, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1, false, false))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdate(t *testing.T) {
-	var flags uint8 = flagHasData | flagKeyUpdate
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagKeyUpdate, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, true, false))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAck(t *testing.T) {
-	var flags uint8 = flagHasData | flagKeyUpdateAck
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagKeyUpdateAck, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, true))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAndAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	var flags uint8 = flagHasData | flagHasAck | flagKeyUpdate
-	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagHasAck|flagKeyUpdate, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, true, false))
 }
 

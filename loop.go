@@ -79,12 +79,12 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	// Handshake completes when:
 	// - Sender receives InitRcv/InitCryptoRcv
 	// - Receiver receives first Data message
-	if !conn.isHandshakeDoneOnRcv {
+	if conn.phase < phaseReady {
 		switch {
 		case conn.isSenderOnInit && (msgType == initRcv || msgType == initCryptoRcv):
-			conn.isHandshakeDoneOnRcv = true
+			conn.phase = phaseReady
 		case !conn.isSenderOnInit && msgType == data:
-			conn.isHandshakeDoneOnRcv = true
+			conn.phase = phaseReady
 		}
 	}
 
