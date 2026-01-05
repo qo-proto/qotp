@@ -90,6 +90,12 @@ func (c *conn) HasActiveStreams() bool {
 	return false
 }
 
+func (c *conn) keyUpdateFlags() (isKeyUpdate, isKeyUpdateAck bool) {
+    isKeyUpdate = c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
+    isKeyUpdateAck = c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
+    return
+}
+
 // =============================================================================
 // Connection lifecycle
 // =============================================================================
@@ -269,20 +275,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.mtu,
 			packetData,
 		)
-	case initRcv, initCryptoRcv:
-		packetData, _ := encodeProto(p, userData)
-		encData, err = encryptPacket(
-			msgType,
-			c.connId,
-			c.sndKeys.prvKeyEp,
-			c.listener.prvKeyId.PublicKey(),
-			c.rcvKeys.pubKeyEp,
-			c.sndKeys.cur,
-			c.sndKeys.snCrypto,
-			c.isSenderOnInit,
-			packetData,
-		)
-	case data:
+	case initRcv, initCryptoRcv, data:
 		packetData, _ := encodeProto(p, userData)
 		encData, err = encryptPacket(
 			msgType,
@@ -502,6 +495,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	isBlockedByPacing := c.nextWriteTime > nowNano
 	isBlockedByCwnd := c.dataInFlight >= int(c.cwnd)
 	isBlockedByRwnd := c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize)
+	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
 
 	if isBlockedByPacing || isBlockedByCwnd || isBlockedByRwnd {
 		if ack == nil {
@@ -511,10 +505,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			return 0, MinDeadLine, nil
 		}
 		// Blocked but have ACK to send
-		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 
@@ -531,27 +522,20 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.phase == phaseReady || c.phase == phaseCreated {
-		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
+		
 		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
 		}
 		if ack != nil || c.phase == phaseCreated {
-			isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-			isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 			offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-
 			return c.encodeAndWrite(s, ack, nil, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 		}
 	}
 
 	// Send ACK-only if pending
 	if ack != nil {
-		isKeyUpdate := c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-		isKeyUpdateAck := c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 

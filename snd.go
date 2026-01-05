@@ -168,7 +168,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	}
 
 	// Priority 1: Ping request
-	if stream.pingRequested && !(isKeyUpdate || isKeyUpdateAck) {
+	if stream.pingRequested {
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
 		//
