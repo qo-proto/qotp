@@ -54,15 +54,27 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		phase = phaseReady
 	}
 
+	// Compute initMsgType from flags
+	var initMsgType cryptoMsgType
+	switch {
+	case withCrypto && isSender:
+		initMsgType = initCryptoSnd
+	case withCrypto:
+		initMsgType = initCryptoRcv
+	case isSender:
+		initMsgType = initSnd
+	default:
+		initMsgType = initRcv
+	}
+
 	c := &conn{
-		isSenderOnInit:     isSender,
-		isWithCryptoOnInit: withCrypto,
-		phase:              phase,
-		pubKeyIdRcv:        prvIdBob.PublicKey(),
-		listener:           &Listener{prvKeyId: prvIdAlice, mtu: defaultMTU},
-		snd:                newSendBuffer(sndBufferCapacity),
-		rcv:                newReceiveBuffer(1000),
-		streams:            newLinkedMap[uint32, *Stream](),
+		initMsgType: initMsgType,
+		phase:       phase,
+		pubKeyIdRcv: prvIdBob.PublicKey(),
+		listener:    &Listener{prvKeyId: prvIdAlice, mtu: defaultMTU},
+		snd:         newSendBuffer(sndBufferCapacity),
+		rcv:         newReceiveBuffer(1000),
+		streams:     newLinkedMap[uint32, *Stream](),
 		sndKeys: &sndKeyState{
 			cur:      sharedSecret,
 			prvKeyEp: prvEpAlice,
@@ -486,12 +498,12 @@ func TestConnFullHandshake(t *testing.T) {
 
 	// Alice's initial connection
 	connAlice := &conn{
-		connId:         getUint64(prvEpAlice.PublicKey().Bytes()),
-		isSenderOnInit: true,
-		listener:       lAlice,
-		rcv:            newReceiveBuffer(1000),
-		snd:            newSendBuffer(1000),
-		streams:        newLinkedMap[uint32, *Stream](),
+		connId:      getUint64(prvEpAlice.PublicKey().Bytes()),
+		initMsgType: initSnd,
+		listener:    lAlice,
+		rcv:         newReceiveBuffer(1000),
+		snd:         newSendBuffer(1000),
+		streams:     newLinkedMap[uint32, *Stream](),
 		sndKeys: &sndKeyState{
 			prvKeyEp: prvEpAlice,
 			snCrypto: 0,
@@ -882,7 +894,7 @@ func TestConnDecode_DataWithPrevKey(t *testing.T) {
 		c.rcvKeys.pubKeyEp,
 		prevSecret, // Use prev key
 		0,
-		!c.isSenderOnInit, // Peer's direction
+		!(c.initMsgType == initSnd || c.initMsgType == initCryptoSnd), // Peer's direction
 		packetData,
 	)
 	assert.NoError(t, err)
@@ -915,7 +927,7 @@ func TestConnDecode_DataWithNextKey(t *testing.T) {
 		c.rcvKeys.pubKeyEp,
 		nextSecret, // Use next key
 		0,
-		!c.isSenderOnInit, // Peer's direction
+		!(c.initMsgType == initSnd || c.initMsgType == initCryptoSnd), // Peer's direction
 		packetData,
 	)
 	assert.NoError(t, err)

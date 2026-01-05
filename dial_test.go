@@ -56,8 +56,7 @@ func TestDialString_ValidIPv4(t *testing.T) {
 	conn, err := l.DialString("127.0.0.1:9000")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
-	assert.True(t, conn.isSenderOnInit)
-	assert.False(t, conn.isWithCryptoOnInit)
+	assert.Equal(t, initSnd, conn.initMsgType)
 }
 
 func TestDialString_ValidIPv6(t *testing.T) {
@@ -137,8 +136,7 @@ func TestDialWithCrypto_ValidKey(t *testing.T) {
 	conn, err := l.DialStringWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
-	assert.True(t, conn.isSenderOnInit)
-	assert.True(t, conn.isWithCryptoOnInit)
+	assert.Equal(t, initCryptoSnd, conn.initMsgType)
 	assert.Equal(t, prvIdBob.PublicKey(), conn.pubKeyIdRcv)
 }
 
@@ -163,7 +161,7 @@ func TestDialWithCrypto_AddrPort(t *testing.T) {
 	conn, err := l.DialWithCrypto(addr, prvIdBob.PublicKey())
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
-	assert.True(t, conn.isWithCryptoOnInit)
+	assert.Equal(t, initCryptoSnd, conn.initMsgType)
 }
 
 // =============================================================================
@@ -217,7 +215,7 @@ func TestDialStringWithCryptoString_ValidHex(t *testing.T) {
 	conn, err := l.DialStringWithCryptoString("127.0.0.1:8080", validHex)
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
-	assert.True(t, conn.isWithCryptoOnInit)
+	assert.Equal(t, initCryptoSnd, conn.initMsgType)
 }
 
 func TestDialStringWithCryptoString_ValidHexWith0xPrefix(t *testing.T) {
@@ -252,8 +250,7 @@ func TestDial_SetsCorrectState(t *testing.T) {
 	conn, err := l.DialString("127.0.0.1:9000")
 	assert.NoError(t, err)
 
-	assert.True(t, conn.isSenderOnInit, "dial should set isSenderOnInit=true")
-	assert.False(t, conn.isWithCryptoOnInit, "dial without crypto should set isWithCryptoOnInit=false")
+	assert.Equal(t, initSnd, conn.initMsgType, "dial without crypto should use initSnd")
 	assert.Equal(t, phaseCreated, conn.phase, "new connection should have phaseCreated")
 	assert.NotNil(t, conn.sndKeys.prvKeyEp, "dial should generate ephemeral key")
 	assert.NotNil(t, conn.snd, "dial should create send buffer")
@@ -270,8 +267,7 @@ func TestDialWithCrypto_SetsCorrectState(t *testing.T) {
 	conn, err := l.DialStringWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
 	assert.NoError(t, err)
 
-	assert.True(t, conn.isSenderOnInit, "dial should set isSenderOnInit=true")
-	assert.True(t, conn.isWithCryptoOnInit, "dial with crypto should set isWithCryptoOnInit=true")
+	assert.Equal(t, initCryptoSnd, conn.initMsgType, "dial with crypto should use initCryptoSnd")
 	assert.Equal(t, prvIdBob.PublicKey(), conn.pubKeyIdRcv, "dial with crypto should set pubKeyIdRcv")
 }
 

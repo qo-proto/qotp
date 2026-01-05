@@ -212,26 +212,37 @@ func (l *Listener) newConn(
 		return nil, errors.New("conn already exists")
 	}
 
+	var initMsgType cryptoMsgType
+	switch {
+	case withCrypto && isSender:
+		initMsgType = initCryptoSnd
+	case withCrypto:
+		initMsgType = initCryptoRcv
+	case isSender:
+		initMsgType = initSnd
+	default:
+		initMsgType = initRcv
+	}
+
 	conn := &conn{
 		connId:     connId,
 		streams:    newLinkedMap[uint32, *Stream](),
 		remoteAddr: remoteAddr,
 		rcvKeys: &rcvKeyState{
 			pubKeyEp: pubKeyEpRcv,
-			prvKeyEp:     prvKeyEpSnd,
+			prvKeyEp: prvKeyEpSnd,
 		},
 		sndKeys: &sndKeyState{
 			prvKeyEp: prvKeyEpSnd,
 		},
-		pubKeyIdRcv:        pubKeyIdRcv,
-		listener:           l,
-		isSenderOnInit:     isSender,
-		isWithCryptoOnInit: withCrypto,
-		snd:                newSendBuffer(sndBufferCapacity),
-		rcv:                newReceiveBuffer(rcvBufferCapacity),
-		measurements:       newMeasurements(),
-		rcvWndSize:         rcvBufferCapacity,
-		mtuProber:          newMTUProber(l.isIPv6, l.interfaceMTU),
+		pubKeyIdRcv:  pubKeyIdRcv,
+		listener:     l,
+		initMsgType:  initMsgType,
+		snd:          newSendBuffer(sndBufferCapacity),
+		rcv:          newReceiveBuffer(rcvBufferCapacity),
+		measurements: newMeasurements(),
+		rcvWndSize:   rcvBufferCapacity,
+		mtuProber:    newMTUProber(l.isIPv6, l.interfaceMTU),
 	}
 
 	// Log keys for Wireshark debugging if enabled

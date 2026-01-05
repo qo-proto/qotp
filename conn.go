@@ -46,9 +46,9 @@ type conn struct {
 	rcvKeys     *rcvKeyState
 
 	// Handshake state
-	isSenderOnInit     bool
-	isWithCryptoOnInit bool
-	phase              connPhase
+	//isSenderOnInit bool
+	initMsgType cryptoMsgType
+	phase       connPhase
 
 	// Stream and buffer management
 	streams      *linkedMap[uint32, *Stream]
@@ -91,9 +91,9 @@ func (c *conn) HasActiveStreams() bool {
 }
 
 func (c *conn) keyUpdateFlags() (isKeyUpdate, isKeyUpdateAck bool) {
-    isKeyUpdate = c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-    isKeyUpdateAck = c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
-    return
+	isKeyUpdate = c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
+	isKeyUpdateAck = c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
+	return
 }
 
 // =============================================================================
@@ -240,7 +240,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		if c.rcvKeys.next != nil {
 			secrets = append(secrets, c.rcvKeys.next)
 		}
-		message, err := decryptData(encData, c.isSenderOnInit, secrets)
+		message, err := decryptData(encData, c.initMsgType == initCryptoSnd || c.initMsgType == initSnd, secrets)
 		if err != nil {
 			return nil, err
 		}
@@ -285,7 +285,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.rcvKeys.pubKeyEp,
 			c.sndKeys.cur,
 			c.sndKeys.snCrypto,
-			c.isSenderOnInit,
+			c.initMsgType == initCryptoSnd || c.initMsgType == initSnd,
 			packetData,
 		)
 	default:
@@ -388,7 +388,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
-	} else if userData !=nil || p.isClose || p.isProbe || p.isKeyUpdate || p.isKeyUpdateAck {
+	} else if userData != nil || p.isClose || p.isProbe || p.isKeyUpdate || p.isKeyUpdateAck {
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
@@ -522,7 +522,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.phase == phaseReady || c.phase == phaseCreated {
-		
+
 		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
@@ -598,14 +598,5 @@ func (c *conn) msgType() cryptoMsgType {
 	if c.phase >= phaseReady {
 		return data
 	}
-	switch {
-	case c.isWithCryptoOnInit && c.isSenderOnInit:
-		return initCryptoSnd
-	case c.isWithCryptoOnInit:
-		return initCryptoRcv
-	case c.isSenderOnInit:
-		return initSnd
-	default:
-		return initRcv
-	}
+	return c.initMsgType
 }

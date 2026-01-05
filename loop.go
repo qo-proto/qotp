@@ -48,13 +48,13 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	msgType := cryptoMsgType(header >> 5)
 
 	// Decrypt and get/create connection
-	conn, payload, err := decodePacket(l, encData, rAddr, msgType)
+	c, payload, err := decodePacket(l, encData, rAddr, msgType)
 	if err != nil {
 		return nil, err
 	}
 
-	if nowNano > conn.lastReadTimeNano {
-		conn.lastReadTimeNano = nowNano
+	if nowNano > c.lastReadTimeNano {
+		c.lastReadTimeNano = nowNano
 	}
 
 	// Decode transport layer payload
@@ -71,7 +71,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		}
 	}
 
-	s, err := conn.processIncomingPayload(p, payload, nowNano)
+	s, err := c.processIncomingPayload(p, payload, nowNano)
 	if err != nil {
 		return nil, err
 	}
@@ -79,12 +79,12 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	// Handshake completes when:
 	// - Sender receives InitRcv/InitCryptoRcv
 	// - Receiver receives first Data message
-	if conn.phase < phaseReady {
+	if c.phase < phaseReady {
 		switch {
-		case conn.isSenderOnInit && (msgType == initRcv || msgType == initCryptoRcv):
-			conn.phase = phaseReady
-		case !conn.isSenderOnInit && msgType == data:
-			conn.phase = phaseReady
+		case (c.initMsgType == initCryptoSnd || c.initMsgType == initSnd) && (msgType == initRcv || msgType == initCryptoRcv):
+			c.phase = phaseReady
+		case !(c.initMsgType == initCryptoSnd || c.initMsgType == initSnd) && (msgType == data):
+			c.phase = phaseReady
 		}
 	}
 
