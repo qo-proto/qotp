@@ -585,11 +585,13 @@ func TestSendBuffer_ReadyToSend_KeyUpdate_NoData(t *testing.T) {
 	// Create empty stream
 	sb.getOrCreateStream(1)
 
-	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, true, false)
+	// readyToSend returns nil when no data - caller uses ensureKeyFlagsTracked
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, true, false)
+	assert.Nil(t, d)
 
-	assert.Equal(t, []byte{}, d)
+	// ensureKeyFlagsTracked does the tracking
+	offset := sb.ensureKeyFlagsTracked(1, true, false)
 	assert.Equal(t, uint64(0), offset)
-	assert.False(t, isClose)
 
 	// Verify tracked in-flight
 	assert.Equal(t, 1, sb.streams[1].inFlight.size())
@@ -603,11 +605,13 @@ func TestSendBuffer_ReadyToSend_KeyUpdateAck_NoData(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.getOrCreateStream(1)
 
-	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, true)
+	// readyToSend returns nil when no data - caller uses ensureKeyFlagsTracked
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, false, true)
+	assert.Nil(t, d)
 
-	assert.Equal(t, []byte{}, d)
+	// ensureKeyFlagsTracked does the tracking
+	offset := sb.ensureKeyFlagsTracked(1, false, true)
 	assert.Equal(t, uint64(0), offset)
-	assert.False(t, isClose)
 
 	// Verify tracked in-flight
 	assert.Equal(t, 1, sb.streams[1].inFlight.size())
@@ -683,7 +687,8 @@ func TestSendBuffer_ReadyToRetransmit_KeyUpdate_Split_LeftPreserved(t *testing.T
 func TestSendBuffer_ReadyToRetransmit_KeyUpdateNoData_Retransmits(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.getOrCreateStream(1)
-	sb.readyToSend(1, data, nil, 1000, true, false)
+	// Use ensureKeyFlagsTracked to set up in-flight KEY_UPDATE packet (as flushStream does)
+	sb.ensureKeyFlagsTracked(1, true, false)
 
 	d, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
@@ -797,7 +802,7 @@ func TestSendBuffer_NeedsReTx_ClosePacket(t *testing.T) {
 func TestSendBuffer_NeedsReTx_KeyUpdatePacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.getOrCreateStream(1)
-	sb.readyToSend(1, data, nil, 1000, true, false)
+	sb.ensureKeyFlagsTracked(1, true, false)
 
 	_, info, _ := sb.streams[1].inFlight.first()
 	assert.True(t, info.needsReTx)

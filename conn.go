@@ -525,14 +525,14 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
 		}
-		if ack != nil || c.phase == phaseCreated {
+		if ack != nil || c.phase == phaseCreated || isKeyUpdate {
 			offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
 			return c.encodeAndWrite(s, ack, nil, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 		}
 	}
 
 	// Send ACK-only if pending
-	if ack != nil {
+	if ack != nil || isKeyUpdateAck {
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}

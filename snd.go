@@ -196,20 +196,6 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		return []byte{}, closeKey.offset(), true
 	}
 
-	// Priority 4: KEY_UPDATE/KEY_UPDATE_ACK without data - needs tracking
-	if isKeyUpdate || isKeyUpdateAck {
-		key := createPacketKey(stream.bytesSentOffset, 0)
-		if !stream.inFlight.contains(key) {
-			stream.inFlight.put(key, &sendPacket{
-				isKeyUpdate:    isKeyUpdate,
-				isKeyUpdateAck: isKeyUpdateAck,
-				needsReTx:      true,
-				data:           []byte{},
-			})
-			return []byte{}, stream.bytesSentOffset, false
-		}
-	}
-
 	return nil, 0, false
 }
 
@@ -424,6 +410,7 @@ func (sb *sender) ensureKeyFlagsTracked(streamID uint32, isKeyUpdate, isKeyUpdat
                 isKeyUpdate:    isKeyUpdate,
                 isKeyUpdateAck: isKeyUpdateAck,
                 needsReTx:      true,
+                data:           []byte{},
             })
         }
     }
