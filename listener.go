@@ -230,9 +230,11 @@ func (l *Listener) newConn(
 		remoteAddr: remoteAddr,
 		rcvKeys: &rcvKeyState{
 			pubKeyEp: pubKeyEpRcv,
-			prvKeyEp: prvKeyEpSnd,
+			keyState: keyState{
+				prvKeyEp: prvKeyEpSnd,
+			},
 		},
-		sndKeys: &sndKeyState{
+		sndKeys: &keyState{
 			prvKeyEp: prvKeyEpSnd,
 		},
 		pubKeyIdRcv:  pubKeyIdRcv,

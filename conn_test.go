@@ -75,14 +75,16 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		snd:         newSendBuffer(sndBufferCapacity),
 		rcv:         newReceiveBuffer(1000),
 		streams:     newLinkedMap[uint32, *Stream](),
-		sndKeys: &sndKeyState{
+		sndKeys: &keyState{
 			cur:      sharedSecret,
 			prvKeyEp: prvEpAlice,
-			snCrypto: 0,
 		},
+		snCrypto: 0,
 		rcvKeys: &rcvKeyState{
-			cur:      sharedSecret,
-			prvKeyEp: prvEpAlice,
+			keyState: keyState{
+				cur:      sharedSecret,
+				prvKeyEp: prvEpAlice,
+			},
 			pubKeyEp: prvEpBob.PublicKey(),
 		},
 	}
@@ -242,29 +244,29 @@ func TestConnEncode_InitCryptoSnd_PayloadTooLarge(t *testing.T) {
 
 func TestConnSequenceNumber_Increment(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.sndKeys.snCrypto = 0
+	c.snCrypto = 0
 
 	p := &payloadHeader{streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1), c.sndKeys.snCrypto)
+	assert.Equal(t, uint64(1), c.snCrypto)
 }
 
 func TestConnSequenceNumber_KeyRotationTrigger(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.sndKeys.snCrypto = (1 << 46) - 1
+	c.snCrypto = (1 << 46) - 1
 	c.sndKeys.prvKeyEpNext = nil
 
 	p := &payloadHeader{streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1<<46), c.sndKeys.snCrypto)
+	assert.Equal(t, uint64(1<<46), c.snCrypto)
 	assert.NotNil(t, c.sndKeys.prvKeyEpNext, "should generate new ephemeral key at 2^46")
 }
 
 func TestConnSequenceNumber_RotationNotCompleted(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.sndKeys.snCrypto = (1 << 47) - 1
+	c.snCrypto = (1 << 47) - 1
 	c.sndKeys.next = nil // rotation not completed
 
 	p := &payloadHeader{streamId: 1}
@@ -275,14 +277,14 @@ func TestConnSequenceNumber_RotationNotCompleted(t *testing.T) {
 
 func TestConnSequenceNumber_RotationCompleted(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.sndKeys.snCrypto = (1 << 47) - 1
+	c.snCrypto = (1 << 47) - 1
 	c.sndKeys.next = bytes.Repeat([]byte{2}, 32)
 	c.sndKeys.prvKeyEpNext = prvEpBob
 
 	p := &payloadHeader{streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), c.sndKeys.snCrypto, "snCrypto should reset to 0 after rotation")
+	assert.Equal(t, uint64(0), c.snCrypto, "snCrypto should reset to 0 after rotation")
 	assert.Nil(t, c.sndKeys.next, "next should be nil after rotation")
 }
 
@@ -504,12 +506,14 @@ func TestConnFullHandshake(t *testing.T) {
 		rcv:         newReceiveBuffer(1000),
 		snd:         newSendBuffer(1000),
 		streams:     newLinkedMap[uint32, *Stream](),
-		sndKeys: &sndKeyState{
+		sndKeys: &keyState{
 			prvKeyEp: prvEpAlice,
-			snCrypto: 0,
 		},
+		snCrypto: 0,
 		rcvKeys: &rcvKeyState{
-			prvKeyEp: prvEpAlice,
+			keyState: keyState{
+				prvKeyEp: prvEpAlice,
+			},
 		},
 	}
 	lAlice.connMap.put(connAlice.connId, connAlice)

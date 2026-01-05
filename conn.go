@@ -9,17 +9,14 @@ import (
 	"sync"
 )
 
-type sndKeyState struct {
+type keyState struct {
 	prev, cur, next []byte
-	snCrypto        uint64
 	prvKeyEp        *ecdh.PrivateKey
 	prvKeyEpNext    *ecdh.PrivateKey
 }
 
 type rcvKeyState struct {
-	prev, cur, next []byte
-	prvKeyEp        *ecdh.PrivateKey
-	prvKeyEpNext    *ecdh.PrivateKey
+	keyState
 	pubKeyEp        *ecdh.PublicKey
 	pubKeyEpNext    *ecdh.PublicKey
 }
@@ -41,8 +38,9 @@ type conn struct {
 	remoteAddr netip.AddrPort
 	listener   *Listener
 
+	snCrypto    uint64
 	pubKeyIdRcv *ecdh.PublicKey // Identity
-	sndKeys     *sndKeyState
+	sndKeys     *keyState
 	rcvKeys     *rcvKeyState
 
 	// Handshake state
@@ -271,7 +269,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.pubKeyIdRcv,
 			c.listener.prvKeyId.PublicKey(),
 			c.sndKeys.prvKeyEp,
-			c.sndKeys.snCrypto,
+			c.snCrypto,
 			c.listener.mtu,
 			packetData,
 		)
@@ -284,7 +282,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.prvKeyId.PublicKey(),
 			c.rcvKeys.pubKeyEp,
 			c.sndKeys.cur,
-			c.sndKeys.snCrypto,
+			c.snCrypto,
 			c.initMsgType == initCryptoSnd || c.initMsgType == initSnd,
 			packetData,
 		)
@@ -300,9 +298,9 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 		c.phase = phaseInitSent
 	}
 
-	c.sndKeys.snCrypto++
+	c.snCrypto++
 	// At halfway: initiate rotation
-	if c.sndKeys.snCrypto == 1<<46 && c.sndKeys.prvKeyEpNext == nil {
+	if c.snCrypto == 1<<46 && c.sndKeys.prvKeyEpNext == nil {
 		newKey, err := generateKey()
 		if err != nil {
 			return nil, err
@@ -311,7 +309,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 	}
 
 	// At overflow: rotate
-	if c.sndKeys.snCrypto == 1<<47 {
+	if c.snCrypto == 1<<47 {
 		if c.sndKeys.next == nil {
 			return nil, errors.New("key rotation not completed before overflow")
 		}
@@ -320,7 +318,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 		c.sndKeys.next = nil
 		c.sndKeys.prvKeyEp = c.sndKeys.prvKeyEpNext
 		c.sndKeys.prvKeyEpNext = nil
-		c.sndKeys.snCrypto = 0
+		c.snCrypto = 0
 	}
 	return encData, nil
 }
