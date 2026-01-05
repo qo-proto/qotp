@@ -256,7 +256,7 @@ func TestDial_SetsCorrectState(t *testing.T) {
 	assert.False(t, conn.isWithCryptoOnInit, "dial without crypto should set isWithCryptoOnInit=false")
 	assert.False(t, conn.isHandshakeDoneOnRcv, "new connection should not have handshake done")
 	assert.False(t, conn.isInitSentOnSnd, "new connection should not have init sent")
-	assert.NotNil(t, conn.prvKeyEpSnd, "dial should generate ephemeral key")
+	assert.NotNil(t, conn.sndKeys.prvKeyEp, "dial should generate ephemeral key")
 	assert.NotNil(t, conn.snd, "dial should create send buffer")
 	assert.NotNil(t, conn.rcv, "dial should create receive buffer")
 	assert.NotNil(t, conn.streams, "dial should create streams map")

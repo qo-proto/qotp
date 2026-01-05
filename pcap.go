@@ -10,7 +10,7 @@ import (
 //   - Data, InitRcv, InitCryptoRcv: sharedSecret (ECDH of ephemeral keys)
 //   - InitCryptoSnd: sharedSecretId (ECDH with identity key)
 //   - InitSnd: no decryption needed (returns empty)
-func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret, sharedSecretId []byte) ([]byte, error) {
+func DecryptPcap(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecretId []byte) ([]byte, error) {
 	if len(encData) < minPacketSize {
 		return nil, fmt.Errorf("packet too small: need %d bytes, got %d", minPacketSize, len(encData))
 	}
@@ -76,7 +76,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, epoch uint64, sharedSecret
 		return nil, fmt.Errorf("packet too small for %v: need %d, got %d", msgType, minSize, len(encData))
 	}
 
-	_, _, packetData, err := chainedDecrypt(isSender, epoch, secret, encData[:headerLen], encData[headerLen:])
+	_, packetData, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}

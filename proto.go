@@ -14,21 +14,17 @@ import (
 // =============================================================================
 
 const (
-	protoVersion = 0
-	typeShift    = 4
 	minProtoSize = 8
 
-	// Type values (bits 4-7)
-	typeDataAck24    = 0b0000 // 0: DATA + ACK, 24-bit
-	typeProbe24      = 0b0001 // 1: PROBE, 24-bit
-	typeDataAck48    = 0b0010 // 2: DATA + ACK, 48-bit
-	typeDataNoAck24  = 0b0100 // 4: DATA, 24-bit
-	typeProbe48      = 0b0101 // 5: PROBE, 48-bit
-	typeDataNoAck48  = 0b0110 // 6: DATA, 48-bit
-	typeCloseAck24   = 0b1000 // 8: CLOSE + ACK, 24-bit
-	typeCloseAck48   = 0b1010 // 10: CLOSE + ACK, 48-bit
-	typeCloseNoAck24 = 0b1100 // 12: CLOSE, 24-bit
-	typeCloseNoAck48 = 0b1110 // 14: CLOSE, 48-bit
+	// Flags (bits 0-6)
+	flagHasAck       = 1 << 0
+	flagExtend       = 1 << 1 // 48-bit offsets
+	flagHasData      = 1 << 2 // stream data present
+	flagProbe        = 1 << 3
+	flagClose        = 1 << 4
+	flagKeyUpdate    = 1 << 5
+	flagKeyUpdateAck = 1 << 6
+	flagNeedsReTx    = 1 << 7
 )
 
 // =============================================================================
@@ -36,11 +32,18 @@ const (
 // =============================================================================
 
 type payloadHeader struct {
-	isClose      bool
-	isProbe      bool
-	ack          *ack
-	streamId     uint32
-	streamOffset uint64
+	hasAck          bool
+	hasData         bool
+	isProbe         bool
+	isClose         bool
+	isKeyUpdate     bool
+	isKeyUpdateAck  bool
+	keyUpdatePub    []byte // 32 bytes when isKeyUpdate
+	keyUpdatePubAck []byte // 32 bytes when isKeyUpdate
+	needsReTx       bool
+	ack             *ack
+	streamId        uint32
+	streamOffset    uint64
 }
 
 type ack struct {
@@ -112,37 +115,44 @@ func decodeRcvWindow(encoded uint8) uint64 {
 // =============================================================================
 
 func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
-	hasAck := p.ack != nil
-	isExtend := p.streamOffset > 0xFFFFFF || (hasAck && p.ack.offset > 0xFFFFFF)
-	isAckOnly := hasAck && !p.isClose && !p.isProbe && userData == nil
+	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
-	// Build type from bits
-	var ptype uint8
+	// Build flags
+	var flags uint8
+	if p.ack != nil {
+		flags |= flagHasAck
+	}
+	if isExtend {
+		flags |= flagExtend
+	}
+	if len(userData) > 0 || p.hasData {
+		flags |= flagHasData
+	}
 	if p.isProbe {
-		ptype = 0b0001
-		if isExtend {
-			ptype |= 0b0100
-		}
-	} else {
-		if p.isClose {
-			ptype |= 0b1000
-		}
-		if !hasAck {
-			ptype |= 0b0100
-		}
-		if isExtend {
-			ptype |= 0b0010
-		}
+		flags |= flagProbe
+	}
+	if p.isClose {
+		flags |= flagClose
+	}
+	if p.isKeyUpdate {
+		flags |= flagKeyUpdate
+	}
+	if p.isKeyUpdateAck {
+		flags |= flagKeyUpdateAck
 	}
 
-	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
+	if len(userData) > 0 || p.hasData || p.isKeyUpdate || p.isKeyUpdateAck || p.isClose {
+		flags |= flagNeedsReTx
+	}
+
+	overhead := calcProtoOverhead(flags)
 	encoded := make([]byte, overhead+len(userData))
 	offset := 0
 
-	encoded[offset] = protoVersion | (ptype << typeShift)
+	encoded[offset] = flags
 	offset++
 
-	if hasAck {
+	if flags&flagHasAck != 0 {
 		offset += putUint32(encoded[offset:], p.ack.streamId)
 		offset += putOffsetVarint(encoded[offset:], p.ack.offset, isExtend)
 		offset += putUint16(encoded[offset:], p.ack.len)
@@ -150,14 +160,22 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset++
 	}
 
-	if isAckOnly {
-		return encoded, offset
+	if flags&flagKeyUpdate != 0 {
+		copy(encoded[offset:], p.keyUpdatePub)
+		offset += pubKeySize
 	}
 
-	offset += putUint32(encoded[offset:], p.streamId)
-	offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
-	offset += copy(encoded[offset:], userData)
+	if flags&flagKeyUpdateAck != 0 {
+		copy(encoded[offset:], p.keyUpdatePubAck)
+		offset += pubKeySize
+	}
 
+	if flags&flagHasData != 0 || flags&flagProbe != 0 || flags&flagClose != 0 || flags&flagKeyUpdate != 0 || flags&flagKeyUpdateAck != 0 {
+		offset += putUint32(encoded[offset:], p.streamId)
+		offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
+	}
+
+	offset += copy(encoded[offset:], userData)
 	return encoded, offset
 }
 
@@ -166,86 +184,94 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 // =============================================================================
 
 func decodeProto(data []byte) (*payloadHeader, []byte, error) {
-	if len(data) < minProtoSize {
-		return nil, nil, errors.New("payload size below minimum")
+	if len(data) < 1 {
+		return nil, nil, errors.New("payload too small")
 	}
 
-	header := data[0]
-	version := header & 0x0F
-	if version != protoVersion {
-		return nil, nil, errors.New("unsupported protocol version")
-	}
+	flags := data[0]
 
-	ptype := header >> typeShift
-	isProbe := (ptype & 0b0001) != 0
-
-	var isClose, hasAck, isExtend bool
-	if isProbe {
-		isExtend = (ptype & 0b0100) != 0
-	} else {
-		isClose = (ptype & 0b1000) != 0
-		hasAck = (ptype & 0b0100) == 0
-		isExtend = (ptype & 0b0010) != 0
-	}
-
-	isAckOnly := hasAck && !isClose && !isProbe && len(data) < 18
-
-	overhead := calcProtoOverhead(hasAck, isExtend, isAckOnly)
+	isExtend := flags&flagExtend != 0
+	overhead := calcProtoOverhead(flags)
 	if len(data) < overhead {
 		return nil, nil, errors.New("payload size below minimum")
 	}
 
-	payload := &payloadHeader{isClose: isClose, isProbe: isProbe}
+	p := &payloadHeader{
+		hasAck:         flags&flagHasAck != 0,
+		hasData:        flags&flagHasData != 0,
+		isProbe:        flags&flagProbe != 0,
+		isClose:        flags&flagClose != 0,
+		isKeyUpdate:    flags&flagKeyUpdate != 0,
+		isKeyUpdateAck: flags&flagKeyUpdateAck != 0,
+		needsReTx:      flags&flagNeedsReTx != 0,
+	}
 	offset := 1
 
-	if hasAck {
-		payload.ack = &ack{
+	if p.hasAck {
+		p.ack = &ack{
 			streamId: getUint32(data[offset:]),
 		}
 		offset += 4
-		payload.ack.offset = offsetVarint(data[offset:], isExtend)
+		p.ack.offset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
-		payload.ack.len = getUint16(data[offset:])
+		p.ack.len = getUint16(data[offset:])
 		offset += 2
-		payload.ack.rcvWnd = decodeRcvWindow(data[offset])
+		p.ack.rcvWnd = decodeRcvWindow(data[offset])
 		offset++
 	}
 
-	var userData []byte
-	if !isAckOnly {
-		payload.streamId = getUint32(data[offset:])
-		offset += 4
-		payload.streamOffset = offsetVarint(data[offset:], isExtend)
-		offset += offsetSize(isExtend)
-
-		if len(data) > offset {
-			userData = data[offset:]
-		} else {
-			userData = []byte{} // PING packet
-		}
+	if p.isKeyUpdate {
+		p.keyUpdatePub = data[offset : offset+pubKeySize]
+		offset += pubKeySize
 	}
 
-	return payload, userData, nil
+	if p.isKeyUpdateAck {
+		p.keyUpdatePubAck = data[offset : offset+pubKeySize]
+		offset += pubKeySize
+	}
+
+	if p.hasData || p.isProbe || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck {
+		p.streamId = getUint32(data[offset:])
+		offset += 4
+		p.streamOffset = offsetVarint(data[offset:], isExtend)
+		offset += offsetSize(isExtend)
+	}
+
+	var userData []byte
+	if len(data) > offset {
+		userData = data[offset:]
+	}
+
+	return p, userData, nil
 }
 
 // =============================================================================
 // Overhead calculation
 // =============================================================================
 
-func calcProtoOverhead(hasAck, isExtend, isAckOnly bool) int {
-	overhead := 1 // header byte
+func calcProtoOverhead(flags uint8) int {
+	overhead := 1 // header
 
-	offsetBytes := 3 // 24-bit
+	isExtend := flags&flagExtend != 0
+	offsetBytes := 3
 	if isExtend {
-		offsetBytes = 6 // 48-bit
+		offsetBytes = 6
 	}
 
-	if !isAckOnly {
-		overhead += 4 + offsetBytes // streamID + offset
+	if flags&flagHasAck != 0 {
+		overhead += 4 + offsetBytes + 2 + 1 // streamId + offset + len + rcvWnd
 	}
 
-	if hasAck {
-		overhead += 4 + offsetBytes + 2 + 1 // streamID + offset + len + rcvWnd
+	if flags&flagKeyUpdate != 0 {
+		overhead += pubKeySize
+	}
+
+	if flags&flagKeyUpdateAck != 0 {
+		overhead += pubKeySize
+	}
+
+	if flags&flagHasData != 0 || flags&flagProbe != 0 || flags&flagClose != 0 || flags&flagKeyUpdate != 0 || flags&flagKeyUpdateAck != 0 {
+		overhead += 4 + offsetBytes // streamId + offset
 	}
 
 	return overhead

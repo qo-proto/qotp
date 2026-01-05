@@ -29,9 +29,9 @@ type Listener struct {
 	// Round-robin state for Flush()
 	currentConnID   *uint64
 	currentStreamID *uint32
-	
-    interfaceMTU int
-    isIPv6       bool
+
+	interfaceMTU int
+	isIPv6       bool
 
 	mu sync.Mutex
 }
@@ -141,16 +141,16 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		}
 		o.localConn = NewUDPNetworkConn(conn)
 	}
-	
+
 	var interfaceMTU int
-    var isIPv6 bool
-    if udpConn, ok := o.localConn.(*UDPNetworkConn); ok {
-        interfaceMTU = getInterfaceMTU(udpConn.conn)
-        isIPv6 = isIPv6Conn(udpConn.conn)
-    } else {
-        interfaceMTU = 1500
-        isIPv6 = false
-    }
+	var isIPv6 bool
+	if udpConn, ok := o.localConn.(*UDPNetworkConn); ok {
+		interfaceMTU = getInterfaceMTU(udpConn.conn)
+		isIPv6 = isIPv6Conn(udpConn.conn)
+	} else {
+		interfaceMTU = 1500
+		isIPv6 = false
+	}
 
 	l := &Listener{
 		localConn:    o.localConn,
@@ -158,8 +158,8 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		mtu:          o.mtu,
 		keyLogWriter: o.keyLogWriter,
 		connMap:      newLinkedMap[uint64, *conn](),
-        interfaceMTU: interfaceMTU,
-        isIPv6:       isIPv6,
+		interfaceMTU: interfaceMTU,
+		isIPv6:       isIPv6,
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil
@@ -213,12 +213,17 @@ func (l *Listener) newConn(
 	}
 
 	conn := &conn{
-		connId:             connId,
-		streams:            newLinkedMap[uint32, *Stream](),
-		remoteAddr:         remoteAddr,
+		connId:     connId,
+		streams:    newLinkedMap[uint32, *Stream](),
+		remoteAddr: remoteAddr,
+		rcvKeys: &rcvKeyState{
+			peerPubKeyEp: pubKeyEpRcv,
+			prvKeyEp:     prvKeyEpSnd,
+		},
+		sndKeys: &sndKeyState{
+			prvKeyEp: prvKeyEpSnd,
+		},
 		pubKeyIdRcv:        pubKeyIdRcv,
-		prvKeyEpSnd:        prvKeyEpSnd,
-		pubKeyEpRcv:        pubKeyEpRcv,
 		listener:           l,
 		isSenderOnInit:     isSender,
 		isWithCryptoOnInit: withCrypto,
@@ -226,13 +231,13 @@ func (l *Listener) newConn(
 		rcv:                newReceiveBuffer(rcvBufferCapacity),
 		measurements:       newMeasurements(),
 		rcvWndSize:         rcvBufferCapacity,
-		mtuProber: newMTUProber(l.isIPv6, l.interfaceMTU),
+		mtuProber:          newMTUProber(l.isIPv6, l.interfaceMTU),
 	}
 
 	// Log keys for Wireshark debugging if enabled
 	if l.keyLogWriter != nil {
-		if ss, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyEpRcv); err == nil {
-			if ssId, err := conn.prvKeyEpSnd.ECDH(conn.pubKeyIdRcv); err == nil {
+		if ss, err := conn.sndKeys.prvKeyEp.ECDH(conn.rcvKeys.peerPubKeyEp); err == nil {
+			if ssId, err := conn.sndKeys.prvKeyEp.ECDH(conn.pubKeyIdRcv); err == nil {
 				// =============================================================================
 				// Wireshark/pcap support
 				//

@@ -55,12 +55,15 @@ func (p packetKey) offset() uint64 {
 
 // sendPacket tracks an in-flight packet awaiting acknowledgment.
 type sendPacket struct {
-	data         []byte
-	packetSize   uint16 // Encrypted packet size (for RTT measurement)
-	sentTimeNano uint64
-	sentCount    uint   // Number of transmission attempts
-	isPing       bool
-	isClose      bool
+	data           []byte
+	packetSize     uint16 // Encrypted packet size (for RTT measurement)
+	sentTimeNano   uint64
+	sentCount      uint // Number of transmission attempts
+	isPing         bool
+	isClose        bool
+	isKeyUpdate    bool
+	isKeyUpdateAck bool
+	needsReTx      bool
 }
 
 // =============================================================================
@@ -153,7 +156,7 @@ func (sb *sender) queuePing(streamID uint32) {
 
 // readyToSend returns the next packet to send for the stream.
 // Returns nil if nothing to send. Moves data from queue to in-flight.
-func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int) (
+func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	sb.mu.Lock()
@@ -165,16 +168,17 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	}
 
 	// Priority 1: Ping request
-	if stream.pingRequested {
+	if stream.pingRequested && !(isKeyUpdate || isKeyUpdateAck) {
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.inFlight.put(key, &sendPacket{isPing: true})
+		//
+		stream.inFlight.put(key, &sendPacket{isPing: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
 		return []byte{}, 0, false
 	}
 
 	// Priority 2: Queued data
 	if len(stream.queuedData) > 0 {
-		return sb.sendQueuedData(stream, msgType, ack, mtu)
+		return sb.sendQueuedData(stream, msgType, ack, mtu, isKeyUpdate, isKeyUpdateAck)
 	}
 
 	// Priority 3: Standalone FIN (no more data, but need to send close)
@@ -188,19 +192,33 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		}
 
 		stream.closeSent = true
-		stream.inFlight.put(closeKey, &sendPacket{isClose: true})
+		stream.inFlight.put(closeKey, &sendPacket{isClose: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: true})
 		return []byte{}, closeKey.offset(), true
+	}
+
+	// Priority 4: KEY_UPDATE/KEY_UPDATE_ACK without data - needs tracking
+	if isKeyUpdate || isKeyUpdateAck {
+		key := createPacketKey(stream.bytesSentOffset, 0)
+		if !stream.inFlight.contains(key) {
+			stream.inFlight.put(key, &sendPacket{
+				isKeyUpdate:    isKeyUpdate,
+				isKeyUpdateAck: isKeyUpdateAck,
+				needsReTx:      true,
+				data:           []byte{},
+			})
+			return []byte{}, stream.bytesSentOffset, false
+		}
 	}
 
 	return nil, 0, false
 }
 
-func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int) (
+func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	maxData := 0
 	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
+		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset, isKeyUpdate, isKeyUpdateAck)
 		if overhead > mtu {
 			return nil, 0, false
 		}
@@ -220,7 +238,8 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 		}
 	}
 
-	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose})
+	needsReTx := len(data) > 0 || isClose || isKeyUpdate || isKeyUpdateAck
+	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: needsReTx})
 	stream.queuedData = stream.queuedData[length:]
 	stream.bytesSentOffset += length
 
@@ -235,44 +254,44 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 // May split packets if MTU decreased. Increments retry counter.
 func (sb *sender) readyToRetransmit(
 	streamID uint32, ack *ack, mtu int,
-	baseRTO uint64, msgType cryptoMsgType, nowNano uint64,
-) (data []byte, offset uint64, isClose bool, err error) {
+	baseRTO uint64, msgType cryptoMsgType,
+	nowNano uint64) (data []byte, offset uint64, isClose, isKeyUpdate, isKeyUpdateAck bool, err error) {
 
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		return nil, 0, false, nil
+		return nil, 0, false, false, false, nil
 	}
 
 	key, pkt, ok := stream.inFlight.first()
 	if !ok {
-		return nil, 0, false, nil
+		return nil, 0, false, false, false, nil
 	}
 
 	rtoWithBackoff, err := backoff(baseRTO, pkt.sentCount)
 	if err != nil {
-		return nil, 0, false, err
+		return nil, 0, false, false, false, err
 	}
 
 	// Not expired yet
 	if nowNano-pkt.sentTimeNano <= rtoWithBackoff {
-		return nil, 0, false, nil
+		return nil, 0, false, false, false, nil
 	}
 
 	// Ping packets: just remove, don't retransmit
-	if pkt.isPing {
+	if !pkt.needsReTx {
 		stream.inFlight.remove(key)
-		return nil, 0, false, nil
+		return nil, 0, false, false, false, nil
 	}
 
 	// Calculate max data for current MTU
 	maxData := 0
 	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset())
+		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset(), pkt.isKeyUpdate, pkt.isKeyUpdateAck)
 		if overhead > mtu {
-			return nil, 0, false, errors.New("overhead larger than MTU")
+			return nil, 0, false, false, false, errors.New("overhead larger than MTU")
 		}
 		maxData = mtu - overhead
 	}
@@ -281,7 +300,7 @@ func (sb *sender) readyToRetransmit(
 	if len(pkt.data) <= maxData {
 		pkt.sentTimeNano = nowNano
 		pkt.sentCount++
-		return pkt.data, key.offset(), pkt.isClose, nil
+		return pkt.data, key.offset(), pkt.isClose, pkt.isKeyUpdate, pkt.isKeyUpdateAck, nil
 	}
 
 	// Need to split packet (MTU decreased)
@@ -291,7 +310,7 @@ func (sb *sender) readyToRetransmit(
 func (sb *sender) splitAndRetransmit(
 	stream *transmitBuffer, key packetKey, pkt *sendPacket,
 	maxData int, nowNano uint64,
-) ([]byte, uint64, bool, error) {
+) ([]byte, uint64, bool, bool, bool, error) {
 
 	leftData := pkt.data[:maxData]
 	rightData := pkt.data[maxData:]
@@ -299,9 +318,12 @@ func (sb *sender) splitAndRetransmit(
 	// Left part: new entry
 	leftKey := createPacketKey(key.offset(), uint16(maxData))
 	stream.inFlight.put(leftKey, &sendPacket{
-		data:         leftData,
-		sentTimeNano: nowNano,
-		sentCount:    pkt.sentCount + 1,
+		data:           leftData,
+		sentTimeNano:   nowNano,
+		sentCount:      pkt.sentCount + 1,
+		isKeyUpdate:    pkt.isKeyUpdate,
+		isKeyUpdateAck: pkt.isKeyUpdateAck,
+		needsReTx:      pkt.needsReTx,
 	})
 
 	// Right part: replace original
@@ -309,7 +331,7 @@ func (sb *sender) splitAndRetransmit(
 	pkt.data = rightData
 	stream.inFlight.replace(key, rightKey, pkt)
 
-	return leftData, key.offset(), false, nil
+	return leftData, key.offset(), false, pkt.isKeyUpdate, pkt.isKeyUpdateAck, nil
 }
 
 // =============================================================================
@@ -387,6 +409,26 @@ func (sb *sender) checkStreamFullyAcked(streamID uint32) bool {
 	// Must have no in-flight data AND sent up to close offset
 	_, _, hasInFlight := stream.inFlight.first()
 	return !hasInFlight && stream.bytesSentOffset >= *stream.closeAtOffset
+}
+
+func (sb *sender) ensureKeyFlagsTracked(streamID uint32, isKeyUpdate, isKeyUpdateAck bool) uint64 {
+    sb.mu.Lock()
+    defer sb.mu.Unlock()
+    
+    stream := sb.getOrCreateStream(streamID)
+    
+    if isKeyUpdate || isKeyUpdateAck {
+        key := createPacketKey(stream.bytesSentOffset, 0)
+        if !stream.inFlight.contains(key) {
+            stream.inFlight.put(key, &sendPacket{
+                isKeyUpdate:    isKeyUpdate,
+                isKeyUpdateAck: isKeyUpdateAck,
+                needsReTx:      true,
+            })
+        }
+    }
+    
+    return stream.bytesSentOffset
 }
 
 func (sb *sender) getOffsetAcked(streamID uint32) uint64 {

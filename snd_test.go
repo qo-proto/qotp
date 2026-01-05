@@ -113,9 +113,9 @@ func TestSendBuffer_ReadyToSend_Basic(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("hello"))
 
-	data, offset, isClose := sb.readyToSend(1, data, nil, 1000)
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte("hello"), data)
+	assert.Equal(t, []byte("hello"), d)
 	assert.Equal(t, uint64(0), offset)
 	assert.False(t, isClose)
 }
@@ -124,7 +124,7 @@ func TestSendBuffer_ReadyToSend_UpdatesBytesSentOffset(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("hello"))
 
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	assert.Equal(t, uint64(5), sb.streams[1].bytesSentOffset)
 }
@@ -132,7 +132,7 @@ func TestSendBuffer_ReadyToSend_UpdatesBytesSentOffset(t *testing.T) {
 func TestSendBuffer_ReadyToSend_TracksInFlight(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("hello"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	_, info, ok := sb.streams[1].inFlight.first()
 
@@ -143,28 +143,28 @@ func TestSendBuffer_ReadyToSend_TracksInFlight(t *testing.T) {
 func TestSendBuffer_ReadyToSend_NoData(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("hello"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, _, _ := sb.readyToSend(1, data, nil, 1000)
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 }
 
 func TestSendBuffer_ReadyToSend_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	data, _, _ := sb.readyToSend(999, data, nil, 1000)
+	d, _, _ := sb.readyToSend(999, data, nil, 1000, false, false)
 
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 }
 
 func TestSendBuffer_ReadyToSend_Ping(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queuePing(1)
 
-	data, _, _ := sb.readyToSend(1, data, nil, 1000)
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte{}, data)
+	assert.Equal(t, []byte{}, d)
 	assert.Equal(t, 1, sb.streams[1].inFlight.size())
 }
 
@@ -174,12 +174,12 @@ func TestSendBuffer_ReadyToSend_PingPriority(t *testing.T) {
 	sb.queuePing(1)
 
 	// Ping should be sent first
-	data1, _, _ := sb.readyToSend(1, data, nil, 1000)
-	assert.Equal(t, []byte{}, data1)
+	d1, _, _ := sb.readyToSend(1, data, nil, 1000, false, false)
+	assert.Equal(t, []byte{}, d1)
 
 	// Then data
-	data1, _, _ = sb.readyToSend(1, data, nil, 1000)
-	assert.Equal(t, []byte("data"), data1)
+	d1, _, _ = sb.readyToSend(1, data, nil, 1000, false, false)
+	assert.Equal(t, []byte("data"), d1)
 }
 
 // =============================================================================
@@ -191,20 +191,20 @@ func TestSendBuffer_ReadyToSend_MTUSplit_First(t *testing.T) {
 	sb.queueData(1, []byte("0123456789"))
 
 	// MTU of 44 allows 5 bytes data (44 - 39 overhead)
-	data, offset, _ := sb.readyToSend(1, data, nil, 44)
+	d, offset, _ := sb.readyToSend(1, data, nil, 44, false, false)
 
-	assert.Equal(t, 5, len(data))
+	assert.Equal(t, 5, len(d))
 	assert.Equal(t, uint64(0), offset)
 }
 
 func TestSendBuffer_ReadyToSend_MTUSplit_Second(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
-	sb.readyToSend(1, data, nil, 44)
+	sb.readyToSend(1, data, nil, 44, false, false)
 
-	data, offset, _ := sb.readyToSend(1, data, nil, 44)
+	d, offset, _ := sb.readyToSend(1, data, nil, 44, false, false)
 
-	assert.Equal(t, 5, len(data))
+	assert.Equal(t, 5, len(d))
 	assert.Equal(t, uint64(5), offset)
 }
 
@@ -215,7 +215,7 @@ func TestSendBuffer_ReadyToSend_MTUSplit_Second(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
@@ -226,7 +226,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
@@ -245,9 +245,9 @@ func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_Middle(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("012345678901"))
-	sb.readyToSend(1, data, nil, 43) // 4 bytes
-	sb.readyToSend(1, data, nil, 43) // 4 bytes
-	sb.readyToSend(1, data, nil, 43) // 4 bytes
+	sb.readyToSend(1, data, nil, 43, false, false) // 4 bytes
+	sb.readyToSend(1, data, nil, 43, false, false) // 4 bytes
+	sb.readyToSend(1, data, nil, 43, false, false) // 4 bytes
 
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
 
@@ -257,9 +257,9 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Middle(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_Last(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("012345678901"))
-	sb.readyToSend(1, data, nil, 43)
-	sb.readyToSend(1, data, nil, 43)
-	sb.readyToSend(1, data, nil, 43)
+	sb.readyToSend(1, data, nil, 43, false, false)
+	sb.readyToSend(1, data, nil, 43, false, false)
+	sb.readyToSend(1, data, nil, 43, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
 
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4})
@@ -270,9 +270,9 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Last(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_First(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("012345678901"))
-	sb.readyToSend(1, data, nil, 43)
-	sb.readyToSend(1, data, nil, 43)
-	sb.readyToSend(1, data, nil, 43)
+	sb.readyToSend(1, data, nil, 43, false, false)
+	sb.readyToSend(1, data, nil, 43, false, false)
+	sb.readyToSend(1, data, nil, 43, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4})
 
@@ -288,45 +288,45 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_First(t *testing.T) {
 func TestSendBuffer_ReadyToRetransmit_NotExpired(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test1"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, _, _, err := sb.readyToRetransmit(1, nil, 1000, 100, data, 50)
+	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 100, data, 50)
 
 	assert.Nil(t, err)
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 }
 
 func TestSendBuffer_ReadyToRetransmit_Expired(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test1"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+	d, offset, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Equal(t, []byte("test1"), data)
+	assert.Equal(t, []byte("test1"), d)
 	assert.Equal(t, uint64(0), offset)
 }
 
 func TestSendBuffer_ReadyToRetransmit_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	data, _, _, err := sb.readyToRetransmit(999, nil, 1000, 50, data, 200)
+	d, _, _, _, _, err := sb.readyToRetransmit(999, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 }
 
 func TestSendBuffer_ReadyToRetransmit_EmptyInFlight(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	data, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 }
 
 // =============================================================================
@@ -336,13 +336,13 @@ func TestSendBuffer_ReadyToRetransmit_EmptyInFlight(t *testing.T) {
 func TestSendBuffer_ReadyToRetransmit_Split_Left(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	// MTU 45 = 6 bytes data after overhead
-	data, offset, isClose, err := sb.readyToRetransmit(1, nil, 45, 50, data, 200)
+	d, offset, isClose, _, _, err := sb.readyToRetransmit(1, nil, 45, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Equal(t, 6, len(data))
+	assert.Equal(t, 6, len(d))
 	assert.Equal(t, uint64(0), offset)
 	assert.False(t, isClose)
 }
@@ -350,13 +350,13 @@ func TestSendBuffer_ReadyToRetransmit_Split_Left(t *testing.T) {
 func TestSendBuffer_ReadyToRetransmit_Split_Right(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.readyToRetransmit(1, nil, 45, 50, data, 200)
 
-	data, offset, _, err := sb.readyToRetransmit(1, nil, 45, 50, data, 300)
+	d, offset, _, _, _, err := sb.readyToRetransmit(1, nil, 45, 50, data, 300)
 
 	assert.Nil(t, err)
-	assert.Equal(t, 4, len(data))
+	assert.Equal(t, 4, len(d))
 	assert.Equal(t, uint64(6), offset)
 }
 
@@ -367,12 +367,12 @@ func TestSendBuffer_ReadyToRetransmit_Split_Right(t *testing.T) {
 func TestSendBuffer_ReadyToRetransmit_PingRemoved(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queuePing(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Nil(t, data)
+	assert.Nil(t, d)
 	assert.Equal(t, 0, sb.streams[1].inFlight.size())
 }
 
@@ -394,9 +394,9 @@ func TestSendBuffer_Close_BeforeSend_DataHasCloseFlag(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.close(1)
 
-	data, offset, isClose := sb.readyToSend(1, data, nil, 1000)
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte("test"), data)
+	assert.Equal(t, []byte("test"), d)
 	assert.Equal(t, uint64(0), offset)
 	assert.True(t, isClose)
 }
@@ -404,7 +404,7 @@ func TestSendBuffer_Close_BeforeSend_DataHasCloseFlag(t *testing.T) {
 func TestSendBuffer_Close_AfterSend(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	sb.close(1)
@@ -415,13 +415,13 @@ func TestSendBuffer_Close_AfterSend(t *testing.T) {
 func TestSendBuffer_Close_AfterSend_EmptyClosePacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 	sb.close(1)
 
-	data, offset, isClose := sb.readyToSend(1, data, nil, 1000)
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte{}, data)
+	assert.Equal(t, []byte{}, d)
 	assert.Equal(t, uint64(4), offset)
 	assert.True(t, isClose)
 }
@@ -438,9 +438,9 @@ func TestSendBuffer_Close_EmptyStream_ClosePacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.close(1)
 
-	data, offset, isClose := sb.readyToSend(1, data, nil, 1000)
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte{}, data)
+	assert.Equal(t, []byte{}, d)
 	assert.Equal(t, uint64(0), offset)
 	assert.True(t, isClose)
 }
@@ -451,7 +451,7 @@ func TestSendBuffer_Close_Idempotent(t *testing.T) {
 	sb.close(1)
 	firstOffset := *sb.streams[1].closeAtOffset
 
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.close(1)
 
 	assert.Equal(t, firstOffset, *sb.streams[1].closeAtOffset)
@@ -461,21 +461,21 @@ func TestSendBuffer_Close_PartialSend_FirstPacketNoClose(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
 
-	data, _, isClose := sb.readyToSend(1, data, nil, 44)
+	d, _, isClose := sb.readyToSend(1, data, nil, 44, false, false)
 
-	assert.Equal(t, 5, len(data))
+	assert.Equal(t, 5, len(d))
 	assert.False(t, isClose)
 }
 
 func TestSendBuffer_Close_PartialSend_SecondPacketHasClose(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
-	sb.readyToSend(1, data, nil, 44)
+	sb.readyToSend(1, data, nil, 44, false, false)
 	sb.close(1)
 
-	data, offset, isClose := sb.readyToSend(1, data, nil, 44)
+	d, offset, isClose := sb.readyToSend(1, data, nil, 44, false, false)
 
-	assert.Equal(t, []byte("56789"), data)
+	assert.Equal(t, []byte("56789"), d)
 	assert.Equal(t, uint64(5), offset)
 	assert.True(t, isClose)
 }
@@ -488,12 +488,12 @@ func TestSendBuffer_Close_Retransmit_KeepsCloseFlag(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.close(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, offset, isClose, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+	d, offset, isClose, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Equal(t, []byte("test"), data)
+	assert.Equal(t, []byte("test"), d)
 	assert.Equal(t, uint64(0), offset)
 	assert.True(t, isClose)
 }
@@ -502,12 +502,12 @@ func TestSendBuffer_Close_RetransmitSplit_LeftNoClose(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
 	sb.close(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
-	data, offset, isClose, err := sb.readyToRetransmit(1, nil, 45, 50, data, 200)
+	d, offset, isClose, _, _, err := sb.readyToRetransmit(1, nil, 45, 50, data, 200)
 
 	assert.Nil(t, err)
-	assert.Equal(t, 6, len(data))
+	assert.Equal(t, 6, len(d))
 	assert.Equal(t, uint64(0), offset)
 	assert.False(t, isClose)
 }
@@ -516,15 +516,291 @@ func TestSendBuffer_Close_RetransmitSplit_RightHasClose(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
 	sb.close(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.readyToRetransmit(1, nil, 45, 50, data, 200)
 
-	data, offset, isClose, err := sb.readyToRetransmit(1, nil, 45, 50, data, 300)
+	d, offset, isClose, _, _, err := sb.readyToRetransmit(1, nil, 45, 50, data, 300)
 
 	assert.Nil(t, err)
-	assert.Equal(t, 4, len(data))
+	assert.Equal(t, 4, len(d))
 	assert.Equal(t, uint64(6), offset)
 	assert.True(t, isClose)
+}
+
+// =============================================================================
+// KEY UPDATE TESTS
+// =============================================================================
+
+func TestSendBuffer_ReadyToSend_KeyUpdate_WithData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("hello"))
+
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, true, false)
+
+	assert.Equal(t, []byte("hello"), d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+
+	// Verify key update flag is tracked
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isKeyUpdate)
+	assert.False(t, info.isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToSend_KeyUpdateAck_WithData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("hello"))
+
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, true)
+
+	assert.Equal(t, []byte("hello"), d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+
+	// Verify key update ack flag is tracked
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.False(t, info.isKeyUpdate)
+	assert.True(t, info.isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToSend_KeyUpdateBoth_WithData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("hello"))
+
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, true, true)
+
+	assert.Equal(t, []byte("hello"), d)
+
+	// Verify both flags are tracked
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isKeyUpdate)
+	assert.True(t, info.isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToSend_KeyUpdate_NoData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	// Create empty stream
+	sb.getOrCreateStream(1)
+
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, true, false)
+
+	assert.Equal(t, []byte{}, d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+
+	// Verify tracked in-flight
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isKeyUpdate)
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_ReadyToSend_KeyUpdateAck_NoData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.getOrCreateStream(1)
+
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, false, true)
+
+	assert.Equal(t, []byte{}, d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+
+	// Verify tracked in-flight
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isKeyUpdateAck)
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_ReadyToSend_PingNotSentWithKeyUpdate(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queuePing(1)
+
+	// With key update, ping is skipped and key update packet sent
+	d, _, _ := sb.readyToSend(1, data, nil, 1000, true, false)
+
+	assert.Equal(t, []byte{}, d)
+
+	// Should have one packet tracked with key update
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	_, info, _ := sb.streams[1].inFlight.first()
+	assert.True(t, info.isKeyUpdate)
+}
+
+// =============================================================================
+// KEY UPDATE RETRANSMIT TESTS
+// =============================================================================
+
+func TestSendBuffer_ReadyToRetransmit_KeyUpdate_Preserved(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test"))
+	sb.readyToSend(1, data, nil, 1000, true, false)
+
+	d, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+
+	assert.Nil(t, err)
+	assert.Equal(t, []byte("test"), d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+	assert.True(t, isKeyUpdate)
+	assert.False(t, isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToRetransmit_KeyUpdateAck_Preserved(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test"))
+	sb.readyToSend(1, data, nil, 1000, false, true)
+
+	d, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+
+	assert.Nil(t, err)
+	assert.Equal(t, []byte("test"), d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+	assert.False(t, isKeyUpdate)
+	assert.True(t, isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToRetransmit_KeyUpdate_Split_LeftPreserved(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("0123456789"))
+	sb.readyToSend(1, data, nil, 1000, true, false)
+
+	// Split at MTU 77 (overhead ~71 + 6 bytes data)
+	d, _, _, isKeyUpdate, isKeyUpdateAck, err := sb.readyToRetransmit(1, nil, 77, 50, data, 200)
+
+	assert.Nil(t, err)
+	assert.Equal(t, 6, len(d))
+	assert.True(t, isKeyUpdate)
+	assert.False(t, isKeyUpdateAck)
+}
+
+func TestSendBuffer_ReadyToRetransmit_KeyUpdateNoData_Retransmits(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.getOrCreateStream(1)
+	sb.readyToSend(1, data, nil, 1000, true, false)
+
+	d, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
+
+	assert.Nil(t, err)
+	assert.Equal(t, []byte{}, d)
+	assert.Equal(t, uint64(0), offset)
+	assert.False(t, isClose)
+	assert.True(t, isKeyUpdate)
+	assert.False(t, isKeyUpdateAck)
+}
+
+// =============================================================================
+// ENSURE KEY FLAGS TRACKED TESTS
+// =============================================================================
+
+func TestSendBuffer_EnsureKeyFlagsTracked_KeyUpdate(t *testing.T) {
+	sb := newSendBuffer(1000)
+
+	offset := sb.ensureKeyFlagsTracked(1, true, false)
+
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isKeyUpdate)
+	assert.False(t, info.isKeyUpdateAck)
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_EnsureKeyFlagsTracked_KeyUpdateAck(t *testing.T) {
+	sb := newSendBuffer(1000)
+
+	offset := sb.ensureKeyFlagsTracked(1, false, true)
+
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.False(t, info.isKeyUpdate)
+	assert.True(t, info.isKeyUpdateAck)
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_EnsureKeyFlagsTracked_NoFlags(t *testing.T) {
+	sb := newSendBuffer(1000)
+
+	offset := sb.ensureKeyFlagsTracked(1, false, false)
+
+	assert.Equal(t, uint64(0), offset)
+	// No packet should be tracked
+	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+}
+
+func TestSendBuffer_EnsureKeyFlagsTracked_AlreadyTracked(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.ensureKeyFlagsTracked(1, true, false)
+
+	// Call again - should not add duplicate
+	offset := sb.ensureKeyFlagsTracked(1, true, false)
+
+	assert.Equal(t, uint64(0), offset)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+}
+
+func TestSendBuffer_EnsureKeyFlagsTracked_WithExistingData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("hello"))
+	sb.readyToSend(1, data, nil, 1000, false, false)
+
+	offset := sb.ensureKeyFlagsTracked(1, true, false)
+
+	// Should use bytesSentOffset (5)
+	assert.Equal(t, uint64(5), offset)
+	// Now 2 packets in flight
+	assert.Equal(t, 2, sb.streams[1].inFlight.size())
+}
+
+// =============================================================================
+// NEEDS RETX TESTS
+// =============================================================================
+
+func TestSendBuffer_NeedsReTx_DataPacket(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test"))
+	sb.readyToSend(1, data, nil, 1000, false, false)
+
+	_, info, _ := sb.streams[1].inFlight.first()
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_NeedsReTx_PingPacket(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queuePing(1)
+	sb.readyToSend(1, data, nil, 1000, false, false)
+
+	_, info, _ := sb.streams[1].inFlight.first()
+	assert.False(t, info.needsReTx)
+}
+
+func TestSendBuffer_NeedsReTx_ClosePacket(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.close(1)
+	sb.readyToSend(1, data, nil, 1000, false, false)
+
+	_, info, _ := sb.streams[1].inFlight.first()
+	assert.True(t, info.needsReTx)
+}
+
+func TestSendBuffer_NeedsReTx_KeyUpdatePacket(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.getOrCreateStream(1)
+	sb.readyToSend(1, data, nil, 1000, true, false)
+
+	_, info, _ := sb.streams[1].inFlight.first()
+	assert.True(t, info.needsReTx)
 }
 
 // =============================================================================
@@ -556,7 +832,7 @@ func TestSendBuffer_CheckStreamFullyAcked_SentButNotAcked(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.close(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	assert.False(t, sb.checkStreamFullyAcked(1))
 }
@@ -565,7 +841,7 @@ func TestSendBuffer_CheckStreamFullyAcked_FullyAcked(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.close(1)
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.True(t, sb.checkStreamFullyAcked(1))
@@ -608,8 +884,8 @@ func TestSendBuffer_GetOffsetAcked_NoStream(t *testing.T) {
 func TestSendBuffer_GetOffsetAcked_NoAcks(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("01234567"))
-	sb.readyToSend(1, data, nil, 44)
-	sb.readyToSend(1, data, nil, 44)
+	sb.readyToSend(1, data, nil, 44, false, false)
+	sb.readyToSend(1, data, nil, 44, false, false)
 
 	assert.Equal(t, uint64(0), sb.getOffsetAcked(1))
 }
@@ -617,8 +893,8 @@ func TestSendBuffer_GetOffsetAcked_NoAcks(t *testing.T) {
 func TestSendBuffer_GetOffsetAcked_PartialAck(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("01234567"))
-	sb.readyToSend(1, data, nil, 44)
-	sb.readyToSend(1, data, nil, 44)
+	sb.readyToSend(1, data, nil, 44, false, false)
+	sb.readyToSend(1, data, nil, 44, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5})
 
 	assert.Equal(t, uint64(5), sb.getOffsetAcked(1))
@@ -627,8 +903,8 @@ func TestSendBuffer_GetOffsetAcked_PartialAck(t *testing.T) {
 func TestSendBuffer_GetOffsetAcked_FullAck(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("01234567"))
-	sb.readyToSend(1, data, nil, 44)
-	sb.readyToSend(1, data, nil, 44)
+	sb.readyToSend(1, data, nil, 44, false, false)
+	sb.readyToSend(1, data, nil, 44, false, false)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5})
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 5, len: 3})
 
@@ -657,13 +933,13 @@ func TestSendBuffer_MultipleStreams_ReadyToSend(t *testing.T) {
 	sb.queueData(2, []byte("stream2"))
 	sb.queueData(3, []byte("stream3"))
 
-	data1, _, _ := sb.readyToSend(1, data, nil, 1000)
-	data2, _, _ := sb.readyToSend(2, data, nil, 1000)
-	data3, _, _ := sb.readyToSend(3, data, nil, 1000)
+	d1, _, _ := sb.readyToSend(1, data, nil, 1000, false, false)
+	d2, _, _ := sb.readyToSend(2, data, nil, 1000, false, false)
+	d3, _, _ := sb.readyToSend(3, data, nil, 1000, false, false)
 
-	assert.Equal(t, []byte("stream1"), data1)
-	assert.Equal(t, []byte("stream2"), data2)
-	assert.Equal(t, []byte("stream3"), data3)
+	assert.Equal(t, []byte("stream1"), d1)
+	assert.Equal(t, []byte("stream2"), d2)
+	assert.Equal(t, []byte("stream3"), d3)
 }
 
 func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
@@ -671,9 +947,9 @@ func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
 	sb.queueData(1, []byte("stream1"))
 	sb.queueData(2, []byte("stream2"))
 	sb.queueData(3, []byte("stream3"))
-	sb.readyToSend(1, data, nil, 1000)
-	sb.readyToSend(2, data, nil, 1000)
-	sb.readyToSend(3, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
+	sb.readyToSend(2, data, nil, 1000, false, false)
+	sb.readyToSend(3, data, nil, 1000, false, false)
 
 	sb.acknowledgeRange(&ack{streamId: 2, offset: 0, len: 7})
 
@@ -689,7 +965,7 @@ func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
 func TestSendBuffer_UpdatePacketSize(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	sb.updatePacketSize(1, 0, 4, 50, 12345)
 
@@ -709,7 +985,7 @@ func TestSendBuffer_UpdatePacketSize_NonexistentStream(t *testing.T) {
 func TestSendBuffer_UpdatePacketSize_NonexistentPacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 
 	// Wrong offset - should not panic
 	sb.updatePacketSize(1, 100, 4, 50, 12345)
@@ -718,7 +994,7 @@ func TestSendBuffer_UpdatePacketSize_NonexistentPacket(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
-	sb.readyToSend(1, data, nil, 1000)
+	sb.readyToSend(1, data, nil, 1000, false, false)
 	sb.updatePacketSize(1, 0, 4, 50, 12345)
 
 	status, sentTime, packetSize := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})

@@ -37,35 +37,46 @@ var (
 	seed2 = [32]byte{2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
 	seed3 = [32]byte{3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
 	seed4 = [32]byte{4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	seed5 = [32]byte{5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3}
 
 	prvIdAlice, _ = ecdh.X25519().NewPrivateKey(seed1[:])
 	prvIdBob, _   = ecdh.X25519().NewPrivateKey(seed2[:])
 	prvEpAlice, _ = ecdh.X25519().NewPrivateKey(seed3[:])
 	prvEpBob, _   = ecdh.X25519().NewPrivateKey(seed4[:])
+	prvEpNew, _   = ecdh.X25519().NewPrivateKey(seed5[:])
 )
 
 func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
+	sharedSecret := bytes.Repeat([]byte{1}, 32)
+
 	c := &conn{
 		isSenderOnInit:       isSender,
 		isWithCryptoOnInit:   withCrypto,
 		isHandshakeDoneOnRcv: handshakeDone,
-		snCrypto:             0,
 		pubKeyIdRcv:          prvIdBob.PublicKey(),
-		prvKeyEpSnd:          prvEpAlice,
 		listener:             &Listener{prvKeyId: prvIdAlice, mtu: defaultMTU},
 		snd:                  newSendBuffer(sndBufferCapacity),
 		rcv:                  newReceiveBuffer(1000),
 		streams:              newLinkedMap[uint32, *Stream](),
-		sharedSecret:         bytes.Repeat([]byte{1}, 32),
+		sndKeys: &sndKeyState{
+			cur:      sharedSecret,
+			prvKeyEp: prvEpAlice,
+			snCrypto: 0,
+		},
+		rcvKeys: &rcvKeyState{
+			cur:          sharedSecret,
+			prvKeyEp:     prvEpAlice,
+			peerPubKeyEp: prvEpBob.PublicKey(),
+		},
 	}
 
 	if !isSender {
 		c.pubKeyIdRcv = prvIdAlice.PublicKey()
-		c.pubKeyEpRcv = prvEpAlice.PublicKey()
+		c.rcvKeys.peerPubKeyEp = prvEpAlice.PublicKey()
 	}
 
 	if handshakeDone {
-		c.pubKeyEpRcv = prvEpBob.PublicKey()
+		c.rcvKeys.peerPubKeyEp = prvEpBob.PublicKey()
 	}
 
 	return c
@@ -141,7 +152,7 @@ func TestConnEncode_StreamClosed(t *testing.T) {
 	stream := c.Stream(1)
 	stream.Close()
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	output, err := c.encode(p, []byte("test data"), c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
@@ -151,7 +162,7 @@ func TestConnEncode_AllStreamsClosed(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.closeAllStreams()
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	output, err := c.encode(p, []byte("test data"), c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
@@ -160,7 +171,7 @@ func TestConnEncode_AllStreamsClosed(t *testing.T) {
 func TestConnEncode_UnknownMsgType(t *testing.T) {
 	c := createTestConn(true, false, true)
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	_, err := c.encode(p, []byte("test"), cryptoMsgType(99))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown message type")
@@ -169,7 +180,8 @@ func TestConnEncode_UnknownMsgType(t *testing.T) {
 func TestConnEncode_EmptyPayload(t *testing.T) {
 	c := createTestConn(true, false, true)
 
-	p := &payloadHeader{}
+	// hasData ensures minimum proto size (8 bytes) for crypto layer
+	p := &payloadHeader{hasData: true, streamId: 1}
 	output, err := c.encode(p, []byte{}, c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
@@ -178,7 +190,8 @@ func TestConnEncode_EmptyPayload(t *testing.T) {
 func TestConnEncode_NilPayload(t *testing.T) {
 	c := createTestConn(true, false, true)
 
-	p := &payloadHeader{}
+	// hasData ensures minimum proto size (8 bytes) for crypto layer
+	p := &payloadHeader{hasData: true, streamId: 1}
 	output, err := c.encode(p, nil, c.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
@@ -212,54 +225,178 @@ func TestConnEncode_InitCryptoSnd_PayloadTooLarge(t *testing.T) {
 
 func TestConnSequenceNumber_Increment(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.snCrypto = 0
+	c.sndKeys.snCrypto = 0
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1), c.snCrypto)
+	assert.Equal(t, uint64(1), c.sndKeys.snCrypto)
 }
 
-func TestConnSequenceNumber_Rollover(t *testing.T) {
+func TestConnSequenceNumber_KeyRotationTrigger(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.snCrypto = (1 << 48) - 2
-	c.epochCryptoSnd = 0
+	c.sndKeys.snCrypto = (1 << 46) - 1
+	c.sndKeys.prvKeyEpNext = nil
 
-	p := &payloadHeader{}
-
-	// First encode: snCrypto goes to max
+	p := &payloadHeader{hasData: true, streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64((1<<48)-1), c.snCrypto)
-
-	// Second encode: rollover to 0, epoch increments
-	_, err = c.encode(p, []byte("test"), data)
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), c.snCrypto)
-	assert.Equal(t, uint64(1), c.epochCryptoSnd)
+	assert.Equal(t, uint64(1<<46), c.sndKeys.snCrypto)
+	assert.NotNil(t, c.sndKeys.prvKeyEpNext, "should generate new ephemeral key at 2^46")
 }
 
-func TestConnSequenceNumber_Exhaustion(t *testing.T) {
+func TestConnSequenceNumber_RotationNotCompleted(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.snCrypto = (1 << 48) - 1
-	c.epochCryptoSnd = (1 << 47) - 1
+	c.sndKeys.snCrypto = (1 << 47) - 1
+	c.sndKeys.next = nil // rotation not completed
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "exhausted")
+	assert.Contains(t, err.Error(), "key rotation not completed")
 }
 
-func TestConnSequenceNumber_MultipleRollovers(t *testing.T) {
+func TestConnSequenceNumber_RotationCompleted(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.snCrypto = (1 << 48) - 1
-	c.epochCryptoSnd = 5
+	c.sndKeys.snCrypto = (1 << 47) - 1
+	c.sndKeys.next = bytes.Repeat([]byte{2}, 32)
+	c.sndKeys.prvKeyEpNext = prvEpBob
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 1}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), c.snCrypto)
-	assert.Equal(t, uint64(6), c.epochCryptoSnd)
+	assert.Equal(t, uint64(0), c.sndKeys.snCrypto, "snCrypto should reset to 0 after rotation")
+	assert.Nil(t, c.sndKeys.next, "next should be nil after rotation")
+}
+
+// =============================================================================
+// KEY ROTATION TESTS
+// =============================================================================
+
+func TestConnRotateSndKeys(t *testing.T) {
+	c := createTestConn(true, false, true)
+	oldCur := c.sndKeys.cur
+	newNext := bytes.Repeat([]byte{2}, 32)
+	newPrvKeyEp := prvEpBob
+
+	c.sndKeys.next = newNext
+	c.sndKeys.prvKeyEpNext = newPrvKeyEp
+	c.sndKeys.snCrypto = 100
+
+	c.rotateSndKeys()
+
+	assert.Equal(t, oldCur, c.sndKeys.prev)
+	assert.Equal(t, newNext, c.sndKeys.cur)
+	assert.Nil(t, c.sndKeys.next)
+	assert.Equal(t, newPrvKeyEp, c.sndKeys.prvKeyEp)
+	assert.Nil(t, c.sndKeys.prvKeyEpNext)
+	assert.Equal(t, uint64(0), c.sndKeys.snCrypto)
+}
+
+func TestConnHandlePeerKeyUpdate_NewKeyUpdate(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcvKeys.next = nil
+	c.rcvKeys.prvKeyEpNext = nil
+	c.rcvKeys.peerPubKeyEpNext = nil
+
+	newPeerPubKey := prvEpNew.PublicKey().Bytes() // Must be different from current peerPubKeyEp
+	err := c.handlePeerKeyUpdate(newPeerPubKey)
+	assert.NoError(t, err)
+
+	assert.NotNil(t, c.rcvKeys.prvKeyEpNext)
+	assert.NotNil(t, c.rcvKeys.peerPubKeyEpNext)
+	assert.NotNil(t, c.rcvKeys.next)
+	assert.True(t, c.pendingKeyUpdateAck)
+}
+
+func TestConnHandlePeerKeyUpdate_Retransmit(t *testing.T) {
+	c := createTestConn(false, false, true)
+
+	// First KEY_UPDATE with a new key (different from current peerPubKeyEp)
+	newPeerPubKey := prvEpNew.PublicKey().Bytes()
+	err := c.handlePeerKeyUpdate(newPeerPubKey)
+	assert.NoError(t, err)
+
+	savedPrvKeyEpNext := c.rcvKeys.prvKeyEpNext
+	savedNext := c.rcvKeys.next
+
+	// Retransmit same KEY_UPDATE
+	c.pendingKeyUpdateAck = false
+	err = c.handlePeerKeyUpdate(newPeerPubKey)
+	assert.NoError(t, err)
+
+	// Should just re-set pendingKeyUpdateAck, not regenerate keys
+	assert.Equal(t, savedPrvKeyEpNext, c.rcvKeys.prvKeyEpNext)
+	assert.Equal(t, savedNext, c.rcvKeys.next)
+	assert.True(t, c.pendingKeyUpdateAck)
+}
+
+func TestConnHandlePeerKeyUpdate_NewRoundRotates(t *testing.T) {
+	c := createTestConn(false, false, true)
+
+	// First KEY_UPDATE with prvEpNew (different from current peerPubKeyEp which is prvEpBob)
+	firstPeerPubKey := prvEpNew.PublicKey().Bytes()
+	err := c.handlePeerKeyUpdate(firstPeerPubKey)
+	assert.NoError(t, err)
+
+	oldCur := c.rcvKeys.cur
+	oldNext := c.rcvKeys.next
+
+	// Second KEY_UPDATE with different key (new round)
+	secondPeerKey, _ := generateKey()
+	err = c.handlePeerKeyUpdate(secondPeerKey.PublicKey().Bytes())
+	assert.NoError(t, err)
+
+	// Should have rotated
+	assert.Equal(t, oldCur, c.rcvKeys.prev)
+	assert.Equal(t, oldNext, c.rcvKeys.cur)
+}
+
+func TestConnHandlePeerKeyUpdate_IgnorePreviousRound(t *testing.T) {
+	c := createTestConn(false, false, true)
+
+	// Set peerPubKeyEp to simulate we've already processed and rotated past this key
+	c.rcvKeys.peerPubKeyEp = prvEpBob.PublicKey()
+
+	// Receive delayed KEY_UPDATE from previous round
+	err := c.handlePeerKeyUpdate(prvEpBob.PublicKey().Bytes())
+	assert.NoError(t, err)
+
+	// Should be ignored - no state changes
+	assert.Nil(t, c.rcvKeys.next)
+	assert.False(t, c.pendingKeyUpdateAck)
+}
+
+func TestConnHandleKeyUpdateAck_Basic(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.sndKeys.prvKeyEpNext = prvEpBob
+	c.sndKeys.next = nil
+
+	peerNewPubKey := prvEpAlice.PublicKey().Bytes()
+	err := c.handleKeyUpdateAck(peerNewPubKey)
+	assert.NoError(t, err)
+
+	assert.NotNil(t, c.sndKeys.next)
+}
+
+func TestConnHandleKeyUpdateAck_Retransmit(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.sndKeys.prvKeyEpNext = prvEpBob
+	c.sndKeys.next = bytes.Repeat([]byte{9}, 32) // Already processed
+
+	// Retransmit should be silently ignored
+	err := c.handleKeyUpdateAck(prvEpAlice.PublicKey().Bytes())
+	assert.NoError(t, err)
+	assert.Equal(t, bytes.Repeat([]byte{9}, 32), c.sndKeys.next) // Unchanged
+}
+
+func TestConnHandleKeyUpdateAck_Unexpected(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.sndKeys.prvKeyEpNext = nil // No pending KEY_UPDATE
+
+	// Should be silently ignored
+	err := c.handleKeyUpdateAck(prvEpAlice.PublicKey().Bytes())
+	assert.NoError(t, err)
 }
 
 // =============================================================================
@@ -279,7 +416,7 @@ func TestConnEncodeDecodeRoundtrip_EmptyPayload(t *testing.T) {
 
 	testData := createTestData(0)
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -310,7 +447,7 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	// 1295 bytes is max payload for InitCryptoSnd
 	testData := createTestData(1295)
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -339,7 +476,7 @@ func TestConnEncodeDecodeRoundtrip_SingleByte(t *testing.T) {
 
 	testData := []byte{0xFF}
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
 	assert.NoError(t, err)
 
@@ -366,12 +503,17 @@ func TestConnFullHandshake(t *testing.T) {
 	connAlice := &conn{
 		connId:         getUint64(prvEpAlice.PublicKey().Bytes()),
 		isSenderOnInit: true,
-		snCrypto:       0,
-		prvKeyEpSnd:    prvEpAlice,
 		listener:       lAlice,
 		rcv:            newReceiveBuffer(1000),
 		snd:            newSendBuffer(1000),
 		streams:        newLinkedMap[uint32, *Stream](),
+		sndKeys: &sndKeyState{
+			prvKeyEp: prvEpAlice,
+			snCrypto: 0,
+		},
+		rcvKeys: &rcvKeyState{
+			prvKeyEp: prvEpAlice,
+		},
 	}
 	lAlice.connMap.put(connAlice.connId, connAlice)
 
@@ -389,7 +531,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	// Step 3: Bob responds with InitRcv
 	testData := []byte("handshake response")
-	p = &payloadHeader{}
+	p = &payloadHeader{hasData: true, streamId: 0}
 	encodedR0, err := connBob.encode(p, testData, connBob.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encodedR0)
@@ -411,17 +553,19 @@ func TestConnFullHandshake(t *testing.T) {
 
 	connAlice.isHandshakeDoneOnRcv = true
 	connAlice.pubKeyIdRcv = prvIdBob.PublicKey()
-	connAlice.pubKeyEpRcv = prvEpBob.PublicKey()
-	connAlice.sharedSecret = seed1[:]
+	connAlice.rcvKeys.peerPubKeyEp = prvEpBob.PublicKey()
+	connAlice.sndKeys.cur = seed1[:]
+	connAlice.rcvKeys.cur = seed1[:]
 	lAlice.connMap.put(connId, connAlice)
 
 	connBob.isHandshakeDoneOnRcv = true
-	connBob.sharedSecret = seed1[:]
+	connBob.sndKeys.cur = seed1[:]
+	connBob.rcvKeys.cur = seed1[:]
 	lBob.connMap.put(connId, connBob)
 
 	// Step 6: Alice sends Data message
 	dataMsg := []byte("data message")
-	p = &payloadHeader{}
+	p = &payloadHeader{hasData: true, streamId: 0}
 	encoded, err = connAlice.encode(p, dataMsg, connAlice.msgType())
 	assert.NoError(t, err)
 	assert.NotNil(t, encoded)
@@ -480,7 +624,7 @@ func TestConnDecode_ConnectionNotFound(t *testing.T) {
 	// Create a Data packet for a connection that doesn't exist
 	c := createTestConn(true, false, true)
 	c.connId = 12345
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	encoded, err := c.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
 
@@ -493,13 +637,21 @@ func TestConnDecode_ConnectionNotFound(t *testing.T) {
 func TestConnDecode_CorruptedMac(t *testing.T) {
 	lAlice, lBob := createTestListeners()
 
-	connAlice := createTestConn(true, true, false)
+	// Use data message type (requires handshake done)
+	connAlice := createTestConn(true, false, true)
 	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
 	lAlice.connMap.put(connId, connAlice)
 	connAlice.connId = connId
 
-	p := &payloadHeader{}
-	encoded, err := connAlice.encode(p, []byte("test"), connAlice.msgType())
+	// Create matching connection on Bob's side
+	connBob := createTestConn(false, false, true)
+	connBob.connId = connId
+	connBob.sndKeys.cur = connAlice.sndKeys.cur
+	connBob.rcvKeys.cur = connAlice.sndKeys.cur
+	lBob.connMap.put(connId, connBob)
+
+	p := &payloadHeader{hasData: true, streamId: 0}
+	encoded, err := connAlice.encode(p, []byte("test"), data)
 	assert.NoError(t, err)
 
 	// Corrupt the last byte (part of MAC)
@@ -578,6 +730,7 @@ func TestConnProcessIncomingPayload_EmptyPing(t *testing.T) {
 	p := &payloadHeader{
 		streamId:     1,
 		streamOffset: 0,
+		hasData:      true,
 		ack:          nil,
 	}
 
@@ -604,6 +757,43 @@ func TestConnProcessIncomingPayload_FinishedStream(t *testing.T) {
 	s, err := c.processIncomingPayload(p, []byte("late data"), 0)
 	assert.NoError(t, err)
 	assert.Nil(t, s, "should return nil for finished stream")
+}
+
+func TestConnProcessIncomingPayload_KeyUpdate(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = newReceiveBuffer(1000)
+
+	p := &payloadHeader{
+		streamId:     1,
+		streamOffset: 0,
+		isKeyUpdate:  true,
+		keyUpdatePub: prvEpNew.PublicKey().Bytes(), // Must be different from current peerPubKeyEp
+	}
+
+	s, err := c.processIncomingPayload(p, []byte{}, 0)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.True(t, c.pendingKeyUpdateAck)
+	assert.NotNil(t, c.rcvKeys.next)
+}
+
+func TestConnProcessIncomingPayload_KeyUpdateAck(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.rcv = newReceiveBuffer(1000)
+	c.sndKeys.prvKeyEpNext = prvEpBob
+	c.sndKeys.next = nil
+
+	p := &payloadHeader{
+		streamId:        1,
+		streamOffset:    0,
+		isKeyUpdateAck:  true,
+		keyUpdatePubAck: prvEpAlice.PublicKey().Bytes(),
+	}
+
+	s, err := c.processIncomingPayload(p, []byte{}, 0)
+	assert.NoError(t, err)
+	assert.NotNil(t, s)
+	assert.NotNil(t, c.sndKeys.next)
 }
 
 // =============================================================================
@@ -715,9 +905,9 @@ func TestConnCleanupStream(t *testing.T) {
 
 func TestConnEncode_NilSharedSecretForData(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.sharedSecret = nil
+	c.sndKeys.cur = nil
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	_, err := c.encode(p, []byte("test"), data)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
@@ -725,9 +915,9 @@ func TestConnEncode_NilSharedSecretForData(t *testing.T) {
 
 func TestConnEncode_NilPubKeyEpRcvForInitRcv(t *testing.T) {
 	c := createTestConn(false, false, false)
-	c.pubKeyEpRcv = nil
+	c.rcvKeys.peerPubKeyEp = nil
 
-	p := &payloadHeader{}
+	p := &payloadHeader{hasData: true, streamId: 0}
 	_, err := c.encode(p, []byte("test"), initRcv)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
@@ -763,4 +953,74 @@ func TestConnDecode_Data_TooSmall(t *testing.T) {
 
 	_, err := c.decode(smallPacket, data)
 	assert.Error(t, err)
+}
+
+// =============================================================================
+// DECODE WITH MULTIPLE KEYS TESTS
+// =============================================================================
+
+func TestConnDecode_DataWithPrevKey(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	// Setup: cur key is different from prev
+	prevSecret := bytes.Repeat([]byte{1}, 32)
+	curSecret := bytes.Repeat([]byte{2}, 32)
+
+	c.rcvKeys.prev = prevSecret
+	c.rcvKeys.cur = curSecret
+
+	// Encrypt with prev key (simulate packet from peer, so flip isSender)
+	p := &payloadHeader{streamId: 1, streamOffset: 0}
+	packetData, _ := encodeProto(p, []byte("test"))
+
+	encData, err := encryptPacket(
+		data,
+		c.connId,
+		c.sndKeys.prvKeyEp,
+		c.listener.prvKeyId.PublicKey(),
+		c.rcvKeys.peerPubKeyEp,
+		prevSecret, // Use prev key
+		0,
+		!c.isSenderOnInit, // Peer's direction
+		packetData,
+	)
+	assert.NoError(t, err)
+
+	// Should be able to decode with prev key
+	payload, err := c.decode(encData, data)
+	assert.NoError(t, err)
+	assert.NotNil(t, payload)
+}
+
+func TestConnDecode_DataWithNextKey(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	// Setup: next key exists
+	curSecret := bytes.Repeat([]byte{1}, 32)
+	nextSecret := bytes.Repeat([]byte{2}, 32)
+
+	c.rcvKeys.cur = curSecret
+	c.rcvKeys.next = nextSecret
+
+	// Encrypt with next key (simulate packet from peer, so flip isSender)
+	p := &payloadHeader{streamId: 1, streamOffset: 0}
+	packetData, _ := encodeProto(p, []byte("test"))
+
+	encData, err := encryptPacket(
+		data,
+		c.connId,
+		c.sndKeys.prvKeyEp,
+		c.listener.prvKeyId.PublicKey(),
+		c.rcvKeys.peerPubKeyEp,
+		nextSecret, // Use next key
+		0,
+		!c.isSenderOnInit, // Peer's direction
+		packetData,
+	)
+	assert.NoError(t, err)
+
+	// Should be able to decode with next key
+	payload, err := c.decode(encData, data)
+	assert.NoError(t, err)
+	assert.NotNil(t, payload)
 }

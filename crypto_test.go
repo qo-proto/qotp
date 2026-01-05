@@ -37,14 +37,13 @@ func TestCryptoChainedEncryptDecrypt_ShortData(t *testing.T) {
 	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
-	buf, err := chainedEncrypt(1234567890, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(1234567890, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, buf)
 
-	sn, epoch, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(1234567890), sn)
-	assert.Equal(t, uint64(0), epoch)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -53,13 +52,12 @@ func TestCryptoChainedEncryptDecrypt_LongData(t *testing.T) {
 	data := randomBytes(1000)
 	aad := randomBytes(100)
 
-	buf, err := chainedEncrypt(987654321, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(987654321, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, epoch, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(987654321), sn)
-	assert.Equal(t, uint64(0), epoch)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -68,10 +66,10 @@ func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
 	data := randomBytes(minProtoSize)
 	aad := []byte{}
 
-	buf, err := chainedEncrypt(1, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(1, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:0], buf)
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:0], buf)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(1), sn)
 	assert.Equal(t, data, decrypted)
@@ -83,10 +81,10 @@ func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
 	aad := []byte("AAD")
 	maxSn := uint64(0xffffffffffff) // 48-bit max
 
-	buf, err := chainedEncrypt(maxSn, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(maxSn, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, maxSn, sn)
 	assert.Equal(t, data, decrypted)
@@ -97,76 +95,13 @@ func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
 	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
-	buf, err := chainedEncrypt(0, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(0, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, _, decrypted, err := chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(0), sn)
 	assert.Equal(t, data, decrypted)
-}
-
-func TestCryptoChainedEncryptDecrypt_WithEpoch(t *testing.T) {
-	sharedSecret := randomBytes(32)
-	data := randomBytes(minProtoSize)
-	aad := []byte("AAD")
-
-	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
-	assert.NoError(t, err)
-
-	sn, epoch, decrypted, err := chainedDecrypt(false, 5, sharedSecret, buf[:len(aad)], buf[len(aad):])
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
-	assert.Equal(t, uint64(5), epoch)
-	assert.Equal(t, data, decrypted)
-}
-
-func TestCryptoChainedDecrypt_EpochWindowMinus1(t *testing.T) {
-	sharedSecret := randomBytes(32)
-	data := randomBytes(minProtoSize)
-	aad := []byte("AAD")
-
-	// Encrypt with epoch 5
-	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
-	assert.NoError(t, err)
-
-	// Decrypt expecting epoch 6 - should still work (tries epoch-1)
-	sn, epoch, decrypted, err := chainedDecrypt(false, 6, sharedSecret, buf[:len(aad)], buf[len(aad):])
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
-	assert.Equal(t, uint64(5), epoch)
-	assert.Equal(t, data, decrypted)
-}
-
-func TestCryptoChainedDecrypt_EpochWindowPlus1(t *testing.T) {
-	sharedSecret := randomBytes(32)
-	data := randomBytes(minProtoSize)
-	aad := []byte("AAD")
-
-	// Encrypt with epoch 5
-	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
-	assert.NoError(t, err)
-
-	// Decrypt expecting epoch 4 - should still work (tries epoch+1)
-	sn, epoch, decrypted, err := chainedDecrypt(false, 4, sharedSecret, buf[:len(aad)], buf[len(aad):])
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
-	assert.Equal(t, uint64(5), epoch)
-	assert.Equal(t, data, decrypted)
-}
-
-func TestCryptoChainedDecrypt_EpochTooFar(t *testing.T) {
-	sharedSecret := randomBytes(32)
-	data := randomBytes(minProtoSize)
-	aad := []byte("AAD")
-
-	// Encrypt with epoch 5
-	buf, err := chainedEncrypt(100, 5, true, sharedSecret, aad, data)
-	assert.NoError(t, err)
-
-	// Decrypt expecting epoch 10 - should fail (only tries ±1)
-	_, _, _, err = chainedDecrypt(false, 10, sharedSecret, buf[:len(aad)], buf[len(aad):])
-	assert.Error(t, err)
 }
 
 func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
@@ -175,10 +110,10 @@ func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
 	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
-	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(100, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	_, _, _, err = chainedDecrypt(false, 0, wrongSecret, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(false, [][]byte{wrongSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -188,11 +123,11 @@ func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
 	aad := []byte("AAD")
 
 	// Encrypt as sender (isSender=true)
-	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(100, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
 	// Decrypt as sender instead of receiver - should fail due to direction bit
-	_, _, _, err = chainedDecrypt(true, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(true, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -201,13 +136,79 @@ func TestCryptoChainedDecrypt_CorruptedMAC(t *testing.T) {
 	data := randomBytes(minProtoSize)
 	aad := []byte("AAD")
 
-	buf, err := chainedEncrypt(100, 0, true, sharedSecret, aad, data)
+	buf, err := chainedEncrypt(100, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
 	// Corrupt the last byte (MAC)
 	buf[len(buf)-1] ^= 0xFF
 
-	_, _, _, err = chainedDecrypt(false, 0, sharedSecret, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	assert.Error(t, err)
+}
+
+// =============================================================================
+// MULTI-KEY DECRYPTION TESTS (Key Rotation Support)
+// =============================================================================
+
+func TestCryptoChainedDecrypt_MultipleSecrets_FirstMatches(t *testing.T) {
+	secret1 := randomBytes(32)
+	secret2 := randomBytes(32)
+	secret3 := randomBytes(32)
+	data := randomBytes(minProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, true, secret1, aad, data)
+	assert.NoError(t, err)
+
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, data, decrypted)
+}
+
+func TestCryptoChainedDecrypt_MultipleSecrets_SecondMatches(t *testing.T) {
+	secret1 := randomBytes(32)
+	secret2 := randomBytes(32)
+	secret3 := randomBytes(32)
+	data := randomBytes(minProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, true, secret2, aad, data)
+	assert.NoError(t, err)
+
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, data, decrypted)
+}
+
+func TestCryptoChainedDecrypt_MultipleSecrets_ThirdMatches(t *testing.T) {
+	secret1 := randomBytes(32)
+	secret2 := randomBytes(32)
+	secret3 := randomBytes(32)
+	data := randomBytes(minProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, true, secret3, aad, data)
+	assert.NoError(t, err)
+
+	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100), sn)
+	assert.Equal(t, data, decrypted)
+}
+
+func TestCryptoChainedDecrypt_MultipleSecrets_NoneMatch(t *testing.T) {
+	secret1 := randomBytes(32)
+	secret2 := randomBytes(32)
+	secretActual := randomBytes(32)
+	data := randomBytes(minProtoSize)
+	aad := []byte("AAD")
+
+	buf, err := chainedEncrypt(100, true, secretActual, aad, data)
+	assert.NoError(t, err)
+
+	_, _, err = chainedDecrypt(false, [][]byte{secret1, secret2}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -276,7 +277,6 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 		alicePrvKeyEp.PublicKey(),
 		nil,
 		0,
-		0,
 		false,
 		rawData,
 	)
@@ -303,7 +303,6 @@ func TestCryptoInitRcv_NilKeys(t *testing.T) {
 		nil, // pubKeyIdSnd
 		alicePrvKeyEp.PublicKey(),
 		nil,
-		0,
 		0,
 		false,
 		[]byte("test1234"),
@@ -332,7 +331,6 @@ func TestCryptoInitRcv_MinPayload(t *testing.T) {
 		bobPrvKeyId.PublicKey(),
 		alicePrvKeyEp.PublicKey(),
 		nil,
-		0,
 		0,
 		false,
 		payload,
@@ -459,7 +457,6 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 		alicePrvKeyEp.PublicKey(),
 		nil,
 		0,
-		0,
 		false,
 		payload,
 	)
@@ -482,7 +479,6 @@ func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
 		nil,
 		nil, // pubKeyEpRcv
 		nil,
-		0,
 		0,
 		false,
 		[]byte("test1234"),
@@ -514,14 +510,13 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 		nil,
 		sharedSecret,
 		0,
-		0,
 		true,
 		payload,
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, encData)
 
-	msg, err := decryptData(encData, false, 0, sharedSecret)
+	msg, err := decryptData(encData, false, [][]byte{sharedSecret})
 	assert.NoError(t, err)
 	assert.Equal(t, payload, msg.payloadRaw)
 }
@@ -535,7 +530,6 @@ func TestCryptoData_NilSharedSecret(t *testing.T) {
 		nil,
 		nil, // sharedSecret
 		0,
-		0,
 		true,
 		[]byte("test1234"),
 	)
@@ -543,35 +537,62 @@ func TestCryptoData_NilSharedSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "nil")
 }
 
-func TestCryptoData_WithEpoch(t *testing.T) {
-	sharedSecret := randomBytes(32)
+func TestCryptoData_MultipleSharedSecrets(t *testing.T) {
+	oldSecret := randomBytes(32)
+	currentSecret := randomBytes(32)
+	nextSecret := randomBytes(32)
 	payload := []byte("test data")
 
+	// Encrypt with current secret
 	encData, err := encryptPacket(
 		data,
 		12345,
 		nil,
 		nil,
 		nil,
-		sharedSecret,
+		currentSecret,
 		100,
-		5,
 		true,
 		payload,
 	)
 	assert.NoError(t, err)
 
-	msg, err := decryptData(encData, false, 5, sharedSecret)
+	// Decrypt trying all three secrets (simulating key rotation)
+	msg, err := decryptData(encData, false, [][]byte{oldSecret, currentSecret, nextSecret})
 	assert.NoError(t, err)
 	assert.Equal(t, payload, msg.payloadRaw)
-	assert.Equal(t, uint64(5), msg.currentEpochCrypt)
+}
+
+func TestCryptoData_DecryptWithPreviousKey(t *testing.T) {
+	prevSecret := randomBytes(32)
+	curSecret := randomBytes(32)
+	payload := []byte("delayed packet")
+
+	// Encrypt with previous secret (simulating delayed packet)
+	encData, err := encryptPacket(
+		data,
+		12345,
+		nil,
+		nil,
+		nil,
+		prevSecret,
+		50,
+		true,
+		payload,
+	)
+	assert.NoError(t, err)
+
+	// Decrypt with current and previous secrets
+	msg, err := decryptData(encData, false, [][]byte{curSecret, prevSecret})
+	assert.NoError(t, err)
+	assert.Equal(t, payload, msg.payloadRaw)
 }
 
 func TestCryptoDecryptData_TooSmall(t *testing.T) {
 	sharedSecret := randomBytes(32)
 	buffer := make([]byte, minDataSizeHdr+footerDataSize-1)
 
-	_, err := decryptData(buffer, false, 0, sharedSecret)
+	_, err := decryptData(buffer, false, [][]byte{sharedSecret})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum")
 }
@@ -589,13 +610,12 @@ func TestCryptoDecryptData_WrongSecret(t *testing.T) {
 		nil,
 		sharedSecret,
 		0,
-		0,
 		true,
 		payload,
 	)
 	assert.NoError(t, err)
 
-	_, err = decryptData(encData, false, 0, wrongSecret)
+	_, err = decryptData(encData, false, [][]byte{wrongSecret})
 	assert.Error(t, err)
 }
 
@@ -611,7 +631,6 @@ func TestCryptoEncryptPacket_UnsupportedMsgType(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		0,
 		0,
 		false,
 		[]byte("test1234"),
@@ -647,7 +666,6 @@ func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
 		bobPrvKeyId.PublicKey(),
 		pubKeyEpSnd,
 		nil,
-		0,
 		0,
 		false,
 		rawData,
@@ -693,7 +711,6 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 		pubKeyEpSnd,
 		nil,
 		0,
-		0,
 		false,
 		responsePayload,
 	)
@@ -710,44 +727,70 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 // =============================================================================
 
 func TestCryptoOverhead_InitSnd(t *testing.T) {
-	assert.Equal(t, -1, calcCryptoOverheadWithData(initSnd, nil, 100))
+	assert.Equal(t, -1, calcCryptoOverheadWithData(initSnd, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitRcv(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + minInitRcvSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(initRcv, nil, 100))
+	var flags uint8 = flagHasData
+	expected := calcProtoOverhead(flags) + minInitRcvSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoSnd(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoSnd, nil, 100))
+	var flags uint8 = flagHasData
+	expected := calcProtoOverhead(flags) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoSnd, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoRcv(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + minInitCryptoRcvSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoRcv, nil, 100))
+	var flags uint8 = flagHasData
+	expected := calcProtoOverhead(flags) + minInitCryptoRcvSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_Data(t *testing.T) {
-	expected := calcProtoOverhead(false, false, false) + minDataSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100))
+	var flags uint8 = flagHasData
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	expected := calcProtoOverhead(true, false, false) + minDataSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100))
+	var flags uint8 = flagHasData | flagHasAck
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeAckOffset(t *testing.T) {
 	ack := &ack{offset: 0xFFFFFF + 1}
-	expected := calcProtoOverhead(true, true, false) + minDataSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100))
+	var flags uint8 = flagHasData | flagHasAck | flagExtend
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
-	expected := calcProtoOverhead(false, true, false) + minDataSizeHdr + footerDataSize
-	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1))
+	var flags uint8 = flagHasData | flagExtend
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1, false, false))
+}
+
+func TestCryptoOverhead_DataWithKeyUpdate(t *testing.T) {
+	var flags uint8 = flagHasData | flagKeyUpdate
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, true, false))
+}
+
+func TestCryptoOverhead_DataWithKeyUpdateAck(t *testing.T) {
+	var flags uint8 = flagHasData | flagKeyUpdateAck
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, true))
+}
+
+func TestCryptoOverhead_DataWithKeyUpdateAndAck(t *testing.T) {
+	ack := &ack{offset: 1000}
+	var flags uint8 = flagHasData | flagHasAck | flagKeyUpdate
+	expected := calcProtoOverhead(flags) + minDataSizeHdr + footerDataSize
+	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, true, false))
 }
 
 // =============================================================================

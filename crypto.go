@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
@@ -49,9 +50,8 @@ const (
 
 // msg represents a decrypted QOTP message.
 type msg struct {
-	snConn            uint64
-	currentEpochCrypt uint64
-	payloadRaw        []byte
+	snConn     uint64
+	payloadRaw []byte
 }
 
 // =============================================================================
@@ -104,7 +104,7 @@ func encryptInitCryptoSnd(
 	if err != nil {
 		return 0, nil, err
 	}
-	encData, err = chainedEncrypt(snCrypto, 0, true, secret, header, padded)
+	encData, err = chainedEncrypt(snCrypto, true, secret, header, padded)
 	return getUint64(header[headerSize:]), encData, err
 }
 
@@ -118,12 +118,12 @@ func encryptPacket(
 	pubKeyIdSnd *ecdh.PublicKey,
 	pubKeyEpRcv *ecdh.PublicKey,
 	sharedSecret []byte,
-	snCrypto, epochCrypto uint64,
+	snCrypto uint64,
 	isSender bool,
 	packetData []byte,
 ) ([]byte, error) {
 	var header []byte
-	var secret []byte
+	var err error
 
 	switch msgType {
 	case initRcv:
@@ -135,12 +135,7 @@ func encryptPacket(
 		putUint64(header[headerSize:], connId)
 		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
 		copy(header[headerSize+connIdSize+pubKeySize:], pubKeyIdSnd.Bytes())
-		var err error
-		secret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
-		if err != nil {
-			return nil, err
-		}
-
+		sharedSecret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
 	case initCryptoRcv:
 		if pubKeyEpRcv == nil || prvKeyEpSnd == nil {
 			return nil, errors.New("handshake keys cannot be nil")
@@ -149,12 +144,7 @@ func encryptPacket(
 		header[0] = (uint8(initCryptoRcv) << 5) | cryptoVersion
 		putUint64(header[headerSize:], connId)
 		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
-		var err error
-		secret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
-		if err != nil {
-			return nil, err
-		}
-
+		sharedSecret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
 	case data:
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret cannot be nil")
@@ -162,16 +152,18 @@ func encryptPacket(
 		header = make([]byte, headerSize+connIdSize)
 		header[0] = (uint8(data) << 5) | cryptoVersion
 		putUint64(header[headerSize:], connId)
-		secret = sharedSecret
 		// Data messages use epochCrypto; init messages always use epoch 0
-		return chainedEncrypt(snCrypto, epochCrypto, isSender, secret, header, packetData)
-
+		return chainedEncrypt(snCrypto, isSender, sharedSecret, header, packetData)
 	default:
 		return nil, errors.New("unsupported message type")
 	}
 
+	if err != nil {
+		return nil, err
+	}
+
 	// Init messages always use epoch 0 and isSender=false for nonce direction
-	return chainedEncrypt(snCrypto, 0, false, secret, header, packetData)
+	return chainedEncrypt(snCrypto, false, sharedSecret, header, packetData)
 }
 
 // chainedEncrypt implements double encryption:
@@ -180,10 +172,9 @@ func encryptPacket(
 //
 // Nonce structure (12 bytes): [epoch (6 bytes)][snCrypto (6 bytes)]
 // Bit 0 of epoch: 1=sender, 0=receiver (prevents nonce collision)
-func chainedEncrypt(snCrypt, epochConn uint64, isSender bool, sharedSecret, header, packetData []byte) ([]byte, error) {
+func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, packetData []byte) ([]byte, error) {
 	// Build deterministic nonce
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
-	putUint48(nonceDet, epochConn)
 	putUint48(nonceDet[6:], snCrypt)
 
 	// Set direction bit to prevent nonce collision between peers
@@ -261,12 +252,12 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := headerSize + connIdSize + (2 * pubKeySize)
-	snConn, epochCrypt, packetData, err := chainedDecrypt(true, 0, sharedSecret, encData[:headerLen], encData[headerLen:])
+	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn}, nil
 }
 
 // decryptInitCryptoSnd decrypts a 0-RTT initiation packet.
@@ -286,13 +277,13 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int)
 		return nil, nil, nil, err
 	}
 
-	secret, err := prvKeyIdRcv.ECDH(pubKeyEpSnd)
+	noPFsharedSecret, err := prvKeyIdRcv.ECDH(pubKeyEpSnd)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	headerLen := headerSize + (2 * pubKeySize)
-	snConn, epochCrypt, packetData, err := chainedDecrypt(false, 0, secret, encData[:headerLen], encData[headerLen:])
+	snConn, packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -301,7 +292,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int)
 	fillerLen := getUint16(packetData)
 	actualData := packetData[2+int(fillerLen):]
 
-	return pubKeyIdSnd, pubKeyEpSnd, &msg{payloadRaw: actualData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return pubKeyIdSnd, pubKeyEpSnd, &msg{payloadRaw: actualData, snConn: snConn}, nil
 }
 
 // decryptInitCryptoRcv decrypts a 0-RTT response packet.
@@ -323,65 +314,58 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := headerSize + connIdSize + pubKeySize
-	snConn, epochCrypt, packetData, err := chainedDecrypt(true, 0, sharedSecret, encData[:headerLen], encData[headerLen:])
+	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: epochCrypt}, nil
+	return sharedSecret, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn}, nil
 }
 
 // decryptData decrypts a regular Data packet using the established shared secret.
-func decryptData(encData []byte, isSender bool, epochCrypt uint64, sharedSecret []byte) (*msg, error) {
+func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) (*msg, error) {
 	if len(encData) < minDataSizeHdr+footerDataSize {
 		return nil, errors.New("size is below minimum")
 	}
 
 	headerLen := headerSize + connIdSize
-	snConn, currentEpoch, packetData, err := chainedDecrypt(isSender, epochCrypt, sharedSecret, encData[:headerLen], encData[headerLen:])
+	snConn, packetData, err := chainedDecrypt(isSender, sharedSecret, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, err
 	}
 
-	return &msg{payloadRaw: packetData, snConn: snConn, currentEpochCrypt: currentEpoch}, nil
+	return &msg{payloadRaw: packetData, snConn: snConn}, nil
 }
 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
 // Tries current epoch ±1 to handle packets arriving during epoch rollover.
-func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encData []byte) (
-	snConn, currentEpochCrypt uint64, packetData []byte, err error) {
+func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) (
+	snConn uint64, packetData []byte, err error) {
 
-	// Extract encrypted sequence number and ciphertext
 	encSn := encData[:snSize]
 	encData = encData[snSize:]
 	nonceRand := encData[:24]
 
-	// Decrypt sequence number (no MAC verification - MAC is on payload)
-	snConnBytes := make([]byte, snSize)
-	snConnBytes, err = decryptSnWithoutMAC(sharedSecret, nonceRand, encSn, snConnBytes)
-	if err != nil {
-		return 0, 0, nil, err
-	}
-	snConn = getUint48(snConnBytes)
+	for _, sharedSecret := range sharedSecrets {
+		var aErr error
+		snConnBytes := make([]byte, snSize)
+		snConnBytes, aErr = decryptSnWithoutMAC(sharedSecret, nonceRand, encSn, snConnBytes)
+		if aErr != nil {
+			err = aErr
+			continue // try next secret instead of returning
+		}
+		snConn = getUint48(snConnBytes)
 
-	aead, err := chacha20poly1305.New(sharedSecret)
-	if err != nil {
-		return 0, 0, nil, err
-	}
+		var aead cipher.AEAD
+		aead, aErr = chacha20poly1305.New(sharedSecret)
+		if aErr != nil {
+			err = aErr
+			continue
+		}
 
-	nonceDet := make([]byte, chacha20poly1305.NonceSize)
-	putUint48(nonceDet[6:], snConn)
+		nonceDet := make([]byte, chacha20poly1305.NonceSize)
+		putUint48(nonceDet[6:], snConn)
 
-	// Try current epoch, then ±1 to handle reordering near epoch boundaries
-	epochs := []uint64{epochCrypt}
-	if epochCrypt > 0 {
-		epochs = append(epochs, epochCrypt-1)
-	}
-	epochs = append(epochs, epochCrypt+1)
-
-	for _, epoch := range epochs {
-		putUint48(nonceDet, epoch)
-		// Receiver uses opposite direction bit from sender
 		if isSender {
 			nonceDet[0] &^= 0x80
 		} else {
@@ -390,10 +374,10 @@ func chainedDecrypt(isSender bool, epochCrypt uint64, sharedSecret, header, encD
 
 		packetData, err = aead.Open(nil, nonceDet, encData, header)
 		if err == nil {
-			return snConn, epoch, packetData, nil
+			return snConn, packetData, nil
 		}
 	}
-	return 0, 0, nil, err
+	return 0, nil, errors.New("no matching secret found")
 }
 
 // =============================================================================
@@ -426,10 +410,23 @@ func generateKey() (*ecdh.PrivateKey, error) {
 
 // calcCryptoOverheadWithData returns the crypto layer overhead for a given message type.
 // Returns -1 for InitSnd (no payload allowed).
-func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) int {
-	hasAck := ack != nil
-	needsExtension := (hasAck && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF
-	overhead := calcProtoOverhead(hasAck, needsExtension, false)
+func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, isKeyUpdate, isKeyUpdateAck bool) int {
+	var flags uint8
+	if ack != nil {
+		flags |= flagHasAck
+	}
+	if (ack != nil && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF {
+		flags |= flagExtend
+	}
+	flags |= flagHasData // we're calculating for data
+	if isKeyUpdate {
+		flags |= flagKeyUpdate
+	}
+	if isKeyUpdateAck {
+		flags |= flagKeyUpdateAck
+	}
+
+	overhead := calcProtoOverhead(flags)
 
 	switch msgType {
 	case initRcv:
@@ -440,7 +437,7 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) 
 		return overhead + minInitCryptoRcvSizeHdr + footerDataSize
 	case data:
 		return overhead + minDataSizeHdr + footerDataSize
-	default: // InitSnd cannot carry payload
+	default:
 		return -1
 	}
 }
