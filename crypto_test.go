@@ -675,18 +675,18 @@ func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
 }
 
 func TestCryptoOverhead_DataWithKeyUpdate(t *testing.T) {
-	expected := calcProtoOverheadWithStream(flagKeyUpdate, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(pktKeyUpdate<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, true, false))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAck(t *testing.T) {
-	expected := calcProtoOverheadWithStream(flagKeyUpdateAck, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(pktKeyUpdateAck<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, true))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAndAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	expected := calcProtoOverheadWithStream(flagHasAck|flagKeyUpdate, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverheadWithStream(flagHasAck|pktKeyUpdate<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, true, false))
 }
 

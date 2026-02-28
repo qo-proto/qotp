@@ -418,12 +418,8 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, 
 	if (ack != nil && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF {
 		flags |= flagExtend
 	}
-	if isKeyUpdate {
-		flags |= flagKeyUpdate
-	}
-	if isKeyUpdateAck {
-		flags |= flagKeyUpdateAck
-	}
+	pktType := encodePktType(false, false, isKeyUpdate, isKeyUpdateAck)
+	flags |= pktType << pktTypeShift
 
 	overhead := calcProtoOverheadWithStream(flags, true)
 
