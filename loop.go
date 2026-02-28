@@ -162,14 +162,14 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 // Loop runs the event loop until context is cancelled or error occurs.
 // Callback is invoked after each Listen(), even if stream is nil (allows periodic work).
 func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, s *Stream) error) error {
-	waitNextNano := MinDeadLine
-
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
 		}
+
+		waitNextNano := l.Flush(uint64(time.Now().UnixNano()))
 
 		s, err := l.Listen(waitNextNano, uint64(time.Now().UnixNano()))
 		if err != nil {
@@ -179,7 +179,5 @@ func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, 
 		if err := callback(ctx, s); err != nil {
 			return err
 		}
-
-		waitNextNano = l.Flush(uint64(time.Now().UnixNano()))
 	}
 }
