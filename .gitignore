@@ -5,3 +5,4 @@ testdata
 examples/example?/example?
 experiments/bench_*/bench_*
 experiments/results/
+bench_*
