@@ -370,14 +370,14 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackStatus, sentTimeNano, packetSize := c.snd.acknowledgeRange(p.ack)
+		ackStatus, sentTimeNano, deliveredAtSend := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
 		switch ackStatus {
 		case ackStatusOk:
 			c.dataInFlight -= int(p.ack.len)
 			if nowNano > sentTimeNano {
-				c.updateMeasurements(nowNano-sentTimeNano, packetSize, nowNano)
+				c.updateMeasurements(nowNano-sentTimeNano, p.ack.len, deliveredAtSend, nowNano)
 			}
 			if c.consecutiveLosses > 0 {
 				c.consecutiveLosses = 0
@@ -639,7 +639,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	if data != nil {
-		c.snd.updatePacketSize(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano)
+		c.snd.updatePacketSize(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano, c.totalDelivered)
 	}
 
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)

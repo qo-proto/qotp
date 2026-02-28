@@ -1023,19 +1023,20 @@ func TestSendBuffer_UpdatePacketSize(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
 
-	sb.updatePacketSize(1, 0, 4, 50, 12345)
+	sb.updatePacketSize(1, 0, 4, 50, 12345, 5000)
 
 	_, info, ok := sb.streams[1].inFlight.first()
 	assert.True(t, ok)
 	assert.Equal(t, uint16(50), info.packetSize)
 	assert.Equal(t, uint64(12345), info.sentTimeNano)
+	assert.Equal(t, uint64(5000), info.deliveredAtSend)
 }
 
 func TestSendBuffer_UpdatePacketSize_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
 	// Should not panic
-	sb.updatePacketSize(999, 0, 4, 50, 12345)
+	sb.updatePacketSize(999, 0, 4, 50, 12345, 0)
 }
 
 func TestSendBuffer_UpdatePacketSize_NonexistentPacket(t *testing.T) {
@@ -1044,20 +1045,20 @@ func TestSendBuffer_UpdatePacketSize_NonexistentPacket(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
 
 	// Wrong offset - should not panic
-	sb.updatePacketSize(1, 100, 4, 50, 12345)
+	sb.updatePacketSize(1, 100, 4, 50, 12345, 0)
 }
 
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
-	sb.updatePacketSize(1, 0, 4, 50, 12345)
+	sb.updatePacketSize(1, 0, 4, 50, 12345, 5000)
 
-	status, sentTime, packetSize := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, sentTime, deliveredAtSend := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, uint64(12345), sentTime)
-	assert.Equal(t, uint16(50), packetSize)
+	assert.Equal(t, uint64(5000), deliveredAtSend)
 }
 
 // =============================================================================

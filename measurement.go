@@ -87,6 +87,9 @@ type measurements struct {
 	pacingGainPct     uint64 // Current pacing multiplier
 	cwnd              uint64 // Congestion window (bytes)
 
+	// Delivery rate tracking
+	totalDelivered uint64 // cumulative bytes ACK'd
+
 	// MTU and limits
 	negotiatedMTU int    // original negotiated value (for restoring after fallback)
 	minCwnd       uint64 // Minimum congestion window (minCwndPackets * mtu)
@@ -121,7 +124,7 @@ func (m *measurements) updateMTU(mtu int) {
 // RTT and bandwidth updates
 // =============================================================================
 
-func (m *measurements) updateMeasurements(rttNano uint64, packetSize uint16, nowNano uint64) {
+func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, deliveredAtSend uint64, nowNano uint64) {
 	if rttNano == 0 || nowNano == 0 {
 		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
@@ -131,10 +134,11 @@ func (m *measurements) updateMeasurements(rttNano uint64, packetSize uint16, now
 		return
 	}
 
+	m.totalDelivered += uint64(ackLen)
 	m.updateRTT(rttNano)
 	m.updateMinRTT(rttNano, nowNano)
-	m.updateBandwidth(packetSize)
-	m.updateBBRState(packetSize, nowNano)
+	m.updateBandwidth(deliveredAtSend, rttNano)
+	m.updateBBRState(ackLen, nowNano)
 }
 
 // updateRTT implements RFC 6298 smoothed RTT calculation
@@ -167,12 +171,14 @@ func (m *measurements) updateMinRTT(rttNano, nowNano uint64) {
 	}
 }
 
-func (m *measurements) updateBandwidth(packetSize uint16) {
-	if m.rttMinNano == 0 {
+func (m *measurements) updateBandwidth(deliveredAtSend uint64, rttNano uint64) {
+	if rttNano == 0 || m.totalDelivered <= deliveredAtSend {
 		return
 	}
 
-	bwCurrent := (uint64(packetSize) * secondNano) / m.rttMinNano
+	delivered := m.totalDelivered - deliveredAtSend
+	bwCurrent := (delivered * secondNano) / rttNano
+
 	if bwCurrent > m.bwMax {
 		m.bwMax = bwCurrent
 		m.bwDec = 0
@@ -181,24 +187,24 @@ func (m *measurements) updateBandwidth(packetSize uint16) {
 	}
 }
 
-func (m *measurements) updateBBRState(packetSize uint16, nowNano uint64) {
+func (m *measurements) updateBBRState(ackLen uint16, nowNano uint64) {
 	if m.lastProbeTimeNano == 0 {
 		m.lastProbeTimeNano = nowNano
 	}
 
 	if m.isStartup {
-		m.updateStartup(packetSize)
+		m.updateStartup(ackLen)
 	} else {
 		m.updateNormal(nowNano)
 	}
 }
 
-func (m *measurements) updateStartup(packetSize uint16) {
+func (m *measurements) updateStartup(ackLen uint16) {
 	if m.bwDec >= bwDecThreshold {
 		m.isStartup = false
 		m.pacingGainPct = normalGain
 	}
-	m.cwnd += uint64(packetSize) * m.pacingGainPct / 100
+	m.cwnd += uint64(ackLen) * m.pacingGainPct / 100
 }
 
 func (m *measurements) updateNormal(nowNano uint64) {

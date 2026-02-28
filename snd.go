@@ -55,15 +55,16 @@ func (p packetKey) offset() uint64 {
 
 // sendPacket tracks an in-flight packet awaiting acknowledgment.
 type sendPacket struct {
-	data           []byte
-	packetSize     uint16 // Encrypted packet size (for RTT measurement)
-	sentTimeNano   uint64
-	sentCount      uint // Number of transmission attempts
-	isPing         bool
-	isClose        bool
-	isKeyUpdate    bool
-	isKeyUpdateAck bool
-	needsReTx      bool
+	data             []byte
+	packetSize       uint16 // Encrypted packet size (for RTT measurement)
+	sentTimeNano     uint64
+	deliveredAtSend  uint64 // totalDelivered snapshot when packet was sent
+	sentCount        uint   // Number of transmission attempts
+	isPing           bool
+	isClose          bool
+	isKeyUpdate      bool
+	isKeyUpdateAck   bool
+	needsReTx        bool
 }
 
 // =============================================================================
@@ -325,8 +326,8 @@ func (sb *sender) splitAndRetransmit(
 // =============================================================================
 
 // acknowledgeRange processes an ACK for a sent packet.
-// Returns timing info for RTT measurement.
-func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uint64, packetSize uint16) {
+// Returns timing info for RTT and delivery rate measurement.
+func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uint64, deliveredAtSend uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -342,11 +343,11 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uin
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt.sentTimeNano, pkt.packetSize
+	return ackStatusOk, pkt.sentTimeNano, pkt.deliveredAtSend
 }
 
-// updatePacketSize records encrypted size after packet is built (for RTT measurement).
-func (sb *sender) updatePacketSize(streamID uint32, offset uint64, length, packetSize uint16, nowNano uint64) {
+// updatePacketSize records encrypted size and delivery snapshot after packet is built.
+func (sb *sender) updatePacketSize(streamID uint32, offset uint64, length, packetSize uint16, nowNano uint64, deliveredAtSend uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -359,6 +360,7 @@ func (sb *sender) updatePacketSize(streamID uint32, offset uint64, length, packe
 	if pkt, ok := stream.inFlight.get(key); ok {
 		pkt.packetSize = packetSize
 		pkt.sentTimeNano = nowNano
+		pkt.deliveredAtSend = deliveredAtSend
 	}
 }
 
