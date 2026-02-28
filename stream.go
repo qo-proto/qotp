@@ -16,6 +16,7 @@ import (
 type Stream struct {
 	streamID  uint32
 	conn      *conn
+	reliable  bool // Retransmit lost data (default true)
 	rcvClosed bool // Receive direction closed (received FIN)
 	sndClosed bool // Send direction closed (sent FIN and ACKed)
 	mu        sync.Mutex
@@ -107,6 +108,18 @@ func (s *Stream) SndClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sndClosed
+}
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+// SetReliable controls whether lost data packets are retransmitted.
+// Default is true. Set to false for real-time streams where
+// retransmitting stale data is worse than dropping it.
+// Control packets (close, key updates) are always retransmitted.
+func (s *Stream) SetReliable(reliable bool) {
+	s.reliable = reliable
 }
 
 // =============================================================================

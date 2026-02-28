@@ -156,7 +156,7 @@ func (sb *sender) queuePing(streamID uint32) {
 
 // readyToSend returns the next packet to send for the stream.
 // Returns nil if nothing to send. Moves data from queue to in-flight.
-func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck bool) (
+func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck, reliable bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	sb.mu.Lock()
@@ -171,14 +171,13 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	if stream.pingRequested {
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		//
 		stream.inFlight.put(key, &sendPacket{isPing: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
 		return []byte{}, 0, false
 	}
 
 	// Priority 2: Queued data
 	if len(stream.queuedData) > 0 {
-		return sb.sendQueuedData(stream, msgType, ack, mtu, isKeyUpdate, isKeyUpdateAck)
+		return sb.sendQueuedData(stream, msgType, ack, mtu, isKeyUpdate, isKeyUpdateAck, reliable)
 	}
 
 	// Priority 3: Standalone FIN (no more data, but need to send close)
@@ -199,7 +198,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	return nil, 0, false
 }
 
-func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck bool) (
+func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck, reliable bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	maxData := 0
@@ -224,7 +223,8 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 		}
 	}
 
-	needsReTx := len(data) > 0 || isClose || isKeyUpdate || isKeyUpdateAck
+	// Control packets (close, key updates) always retransmit; data follows stream setting
+	needsReTx := isClose || isKeyUpdate || isKeyUpdateAck || (len(data) > 0 && reliable)
 	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: needsReTx})
 	stream.queuedData = stream.queuedData[length:]
 	stream.bytesSentOffset += length

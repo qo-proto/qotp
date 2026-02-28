@@ -142,7 +142,7 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 	if v, exists := c.streams.get(streamID); exists {
 		return v
 	}
-	s := &Stream{streamID: streamID, conn: c}
+	s := &Stream{streamID: streamID, conn: c, reliable: true}
 	c.streams.put(streamID, s)
 	return s
 }
@@ -521,7 +521,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.phase == phaseReady || c.phase == phaseCreated {
 
-		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck)
+		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck, s.reliable)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
 		}
@@ -543,6 +543,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose, isKeyUpdate, isKeyUpdateAck bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
 	p := &payloadHeader{
 		isClose:      isClose,
+		needsReTx:    s.reliable || isClose || isKeyUpdate || isKeyUpdateAck,
 		ack:          ack,
 		streamId:     s.streamID,
 		streamOffset: offset,
