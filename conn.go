@@ -511,7 +511,7 @@ func (c *conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
 
 // flushStream sends the next packet for this stream.
 // Returns (bytesSent, nextWakeupNano, error).
-// bytesSent=0 with nextWakeupNano>0 means blocked by pacing/cwnd/rwnd.
+// bytesSent=0 with nextWakeupNano>0 means blocked by pacing/rwnd.
 func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	ack := c.rcv.getSndAck()
 	if ack != nil {
@@ -520,17 +520,13 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
-	isBlockedByCwnd := c.dataInFlight >= int(c.cwnd)
 	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
 	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
 
-	// Pacing and congestion window block everything (including retransmits)
-	if isBlockedByPacing || isBlockedByCwnd {
+	// Pacing blocks everything (including retransmits)
+	if isBlockedByPacing {
 		if ack == nil {
-			if isBlockedByPacing {
-				return 0, c.nextWriteTime - nowNano, nil
-			}
-			return 0, MinDeadLine, nil
+			return 0, c.nextWriteTime - nowNano, nil
 		}
 		// Blocked but have ACK to send
 		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)

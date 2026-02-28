@@ -125,7 +125,7 @@ SRV_PID=$!
 sleep 0.5
 
 # Run client in client namespace
-ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" -addr=10.0.0.1 -size="$SIZE" -out="$OUT_DIR/combined.csv" 2>/dev/null
+ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" -addr=10.0.0.1 -size="$SIZE" -out="$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
 column -t -s, "$OUT_DIR/combined.csv"
 msg ""
 msg_ok "CSV written to $OUT_DIR/combined.csv"

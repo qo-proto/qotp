@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +31,8 @@ func main() {
 	sizeMB := flag.Int("size", 32, "data size in MB")
 	out := flag.String("out", "", "csv output file (default: stdout)")
 	flag.Parse()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 
 	data := make([]byte, *sizeMB*1024*1024)
 	rand.Read(data)
