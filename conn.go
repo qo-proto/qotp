@@ -61,7 +61,10 @@ type conn struct {
 	// Activity tracking
 	lastReadTimeNano uint64
 
-	mtuProber *mtuProber
+	// MTU negotiation
+	mtu               int  // negotiated max UDP payload (starts conservative, updated after handshake)
+	mtuSent           bool // whether we've sent our maxPayload to the peer
+	consecutiveLosses int
 
 	measurements
 	mu sync.Mutex
@@ -129,6 +132,21 @@ func (c *conn) cleanupStream(streamID uint32) {
 	c.rcv.removeStream(streamID)
 }
 
+// negotiateMTU sets the connection's MTU to min(remoteMaxPayload, localMaxPayload).
+func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
+	remote := int(remoteMaxPayload)
+	local := c.listener.maxPayload
+	negotiated := local
+	if remote < negotiated {
+		negotiated = remote
+	}
+	if negotiated < conservativeMTU {
+		negotiated = conservativeMTU
+	}
+	c.mtu = negotiated
+	c.updateMTU(negotiated)
+}
+
 // =============================================================================
 // Stream management
 // =============================================================================
@@ -171,7 +189,7 @@ func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cry
 func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
 	switch msgType {
 	case initSnd:
-		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.mtu)
+		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.maxPayload)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
 		}
@@ -188,7 +206,7 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 		return conn, []byte{}, nil
 
 	case initCryptoSnd:
-		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.mtu)
+		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.maxPayload)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
 		}
@@ -261,7 +279,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 		_, encData, err = encryptInitSnd(
 			c.listener.prvKeyId.PublicKey(),
 			c.sndKeys.prvKeyEp.PublicKey(),
-			c.listener.mtu,
+			c.listener.maxPayload,
 		)
 	case initCryptoSnd:
 		packetData, _ := encodeProto(p, userData)
@@ -270,7 +288,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.prvKeyId.PublicKey(),
 			c.sndKeys.prvKeyEp,
 			c.snCrypto,
-			c.listener.mtu,
+			c.listener.maxPayload,
 			packetData,
 		)
 	case initRcv, initCryptoRcv, data:
@@ -361,6 +379,12 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			if nowNano > sentTimeNano {
 				c.updateMeasurements(nowNano-sentTimeNano, packetSize, nowNano)
 			}
+			if c.consecutiveLosses > 0 {
+				c.consecutiveLosses = 0
+				if c.mtu < c.negotiatedMTU {
+					c.mtu = c.negotiatedMTU
+				}
+			}
 			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed && c.snd.checkStreamFullyAcked(p.ack.streamId) {
 				ackStream.sndClosed = true
 			}
@@ -383,10 +407,15 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		return nil, nil
 	}
 
+	// Handle MTU update from peer
+	if p.isMtuUpdate && p.mtuUpdateValue > 0 {
+		c.negotiateMTU(p.mtuUpdateValue)
+	}
+
 	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
-	} else if userData != nil || p.isClose || p.isProbe || p.isKeyUpdate || p.isKeyUpdateAck {
+	} else if userData != nil || p.isClose || p.isMtuUpdate || p.isKeyUpdate || p.isKeyUpdateAck {
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
@@ -492,7 +521,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
 	isBlockedByCwnd := c.dataInFlight >= int(c.cwnd)
-	isBlockedByRwnd := c.dataInFlight+int(c.listener.mtu) > int(c.rcvWndSize)
+	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
 	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
 
 	if isBlockedByPacing || isBlockedByCwnd || isBlockedByRwnd {
@@ -507,21 +536,33 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 
-	// Try retransmission first (oldest unacked packet)
+	// Reserve space for pktMtuUpdate if it will be injected.
+	// The exact injection depends on close/keyUpdate flags (determined below),
+	// but reserving space pessimistically is correct — at worst the packet is 2 bytes smaller.
 	msgType := c.msgType()
-	splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := c.snd.readyToRetransmit(s.streamID, ack, c.listener.mtu, c.rtoNano(), msgType, nowNano)
+	effectiveMtu := c.mtu
+	if c.willInjectMtu(msgType) {
+		effectiveMtu -= 2
+	}
+
+	// Try retransmission first (oldest unacked packet)
+	splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := c.snd.readyToRetransmit(s.streamID, ack, effectiveMtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
 	if splitData != nil {
 		c.onPacketLoss()
+		c.consecutiveLosses++
+		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
+			c.mtu = conservativeMTU
+		}
 		return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.phase == phaseReady || c.phase == phaseCreated {
 
-		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, c.listener.mtu, isKeyUpdate, isKeyUpdateAck, s.reliable)
+		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, effectiveMtu, isKeyUpdate, isKeyUpdateAck, s.reliable)
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
 		}
@@ -549,6 +590,25 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		streamOffset: offset,
 	}
 
+	// Include maxPayload via pktMtuUpdate in the proto payload.
+	// pktMtuUpdate is mutually exclusive with close/keyUpdate flags, so skip if those are set.
+	if !isClose && !isKeyUpdate && !isKeyUpdateAck {
+		switch c.msgType() {
+		case initCryptoSnd, initRcv, initCryptoRcv:
+			// Init packets carry proto payloads and are retransmitted until acknowledged.
+			p.isMtuUpdate = true
+			p.mtuUpdateValue = uint16(c.listener.maxPayload)
+		case initSnd:
+			// No proto payload — sender's MTU is sent in the first data packet after handshake.
+		default:
+			// Data packets: send MTU once (for initSnd sender's first data packet).
+			if !c.mtuSent {
+				p.isMtuUpdate = true
+				p.mtuUpdateValue = uint16(c.listener.maxPayload)
+			}
+		}
+	}
+
 	if isKeyUpdate && c.sndKeys.prvKeyEpNext != nil {
 		p.isKeyUpdate = true
 		p.keyUpdatePub = c.sndKeys.prvKeyEpNext.PublicKey().Bytes()
@@ -571,6 +631,10 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
+	}
+
+	if !c.mtuSent && p.isMtuUpdate {
+		c.mtuSent = true
 	}
 
 	if isKeyUpdateAck {
@@ -598,4 +662,17 @@ func (c *conn) msgType() cryptoMsgType {
 		return data
 	}
 	return c.initMsgType
+}
+
+// willInjectMtu returns true if pktMtuUpdate will be added to the next packet.
+// Used to reserve space in the data splitting calculation.
+func (c *conn) willInjectMtu(msgType cryptoMsgType) bool {
+	switch msgType {
+	case initCryptoSnd, initRcv, initCryptoRcv:
+		return true
+	case initSnd:
+		return false
+	default:
+		return !c.mtuSent
+	}
 }

@@ -12,7 +12,7 @@ import (
 //   Bit 0:    hasAck
 //   Bit 1:    extend (48-bit offsets)
 //   Bit 2:    needsReTx
-//   Bits 3-5: packet type (0=data, 1=probe, 2=close, 3=keyUpdate,
+//   Bits 3-5: packet type (0=data, 1=mtuUpdate, 2=close, 3=keyUpdate,
 //             4=keyUpdateAck, 5=close+KU, 6=close+KUAck, 7=close+KU+KUAck)
 //   Bits 6-7: reserved
 // =============================================================================
@@ -36,7 +36,7 @@ const (
 	pktTypeMask  = 0x7 << pktTypeShift // 0b00111000
 
 	pktData         = 0 // plain data
-	pktProbe        = 1
+	pktMtuUpdate    = 1
 	pktClose        = 2
 	pktKeyUpdate    = 3
 	pktKeyUpdateAck = 4
@@ -52,7 +52,8 @@ const (
 
 type payloadHeader struct {
 	hasAck          bool
-	isProbe         bool
+	isMtuUpdate     bool
+	mtuUpdateValue  uint16 // max UDP payload when isMtuUpdate
 	isClose         bool
 	isKeyUpdate     bool
 	isKeyUpdateAck  bool
@@ -132,10 +133,10 @@ func decodeRcvWindow(encoded uint8) uint64 {
 // Packet type encoding
 // =============================================================================
 
-func encodePktType(isProbe, isClose, isKeyUpdate, isKeyUpdateAck bool) uint8 {
+func encodePktType(isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck bool) uint8 {
 	switch {
-	case isProbe:
-		return pktProbe
+	case isMtuUpdate:
+		return pktMtuUpdate
 	case isClose && isKeyUpdate:
 		return pktCloseKU
 	case isClose && isKeyUpdateAck:
@@ -153,9 +154,9 @@ func encodePktType(isProbe, isClose, isKeyUpdate, isKeyUpdateAck bool) uint8 {
 	}
 }
 
-func decodePktType(pktType uint8) (isProbe, isClose, isKeyUpdate, isKeyUpdateAck bool) {
+func decodePktType(pktType uint8) (isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck bool) {
 	switch pktType {
-	case pktProbe:
+	case pktMtuUpdate:
 		return true, false, false, false
 	case pktClose:
 		return false, true, false, false
@@ -181,7 +182,7 @@ func decodePktType(pktType uint8) (isProbe, isClose, isKeyUpdate, isKeyUpdateAck
 func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
-	pktType := encodePktType(p.isProbe, p.isClose, p.isKeyUpdate, p.isKeyUpdateAck)
+	pktType := encodePktType(p.isMtuUpdate, p.isClose, p.isKeyUpdate, p.isKeyUpdateAck)
 
 	// Stream header (streamId+offset) included when:
 	// - any control packet type, OR
@@ -217,6 +218,10 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset++
 	}
 
+	if p.isMtuUpdate {
+		offset += putUint16(encoded[offset:], p.mtuUpdateValue)
+	}
+
 	if p.isKeyUpdate {
 		copy(encoded[offset:], p.keyUpdatePub)
 		offset += pubKeySize
@@ -248,11 +253,11 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	flags := data[0]
 	isExtend := flags&flagExtend != 0
 	pktType := (flags & pktTypeMask) >> pktTypeShift
-	isProbe, isClose, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
+	isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
 
 	p := &payloadHeader{
 		hasAck:         flags&flagHasAck != 0,
-		isProbe:        isProbe,
+		isMtuUpdate:    isMtuUpdate,
 		isClose:        isClose,
 		isKeyUpdate:    isKeyUpdate,
 		isKeyUpdateAck: isKeyUpdateAck,
@@ -274,6 +279,14 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += 2
 		p.ack.rcvWnd = decodeRcvWindow(data[offset])
 		offset++
+	}
+
+	if p.isMtuUpdate {
+		if len(data) < offset+2 {
+			return nil, nil, errors.New("payload too small for mtuUpdate")
+		}
+		p.mtuUpdateValue = getUint16(data[offset:])
+		offset += 2
 	}
 
 	if p.isKeyUpdate {
@@ -331,7 +344,11 @@ func calcProtoOverheadWithStream(flags uint8, hasStreamHeader bool) int {
 	}
 
 	pktType := (flags & pktTypeMask) >> pktTypeShift
-	_, _, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
+	isMtuUpdate, _, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
+
+	if isMtuUpdate {
+		overhead += 2 // mtuUpdateValue
+	}
 
 	if isKeyUpdate {
 		overhead += pubKeySize

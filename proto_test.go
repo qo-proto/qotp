@@ -31,7 +31,10 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 	assert.Equal(t, expected.streamId, actual.streamId)
 	assert.Equal(t, expected.streamOffset, actual.streamOffset)
 	assert.Equal(t, expected.isClose, actual.isClose)
-	assert.Equal(t, expected.isProbe, actual.isProbe)
+	assert.Equal(t, expected.isMtuUpdate, actual.isMtuUpdate)
+	if expected.isMtuUpdate {
+		assert.Equal(t, expected.mtuUpdateValue, actual.mtuUpdateValue)
+	}
 	assert.Equal(t, expected.isKeyUpdate, actual.isKeyUpdate)
 	assert.Equal(t, expected.isKeyUpdateAck, actual.isKeyUpdateAck)
 
@@ -244,62 +247,67 @@ func TestProto_CloseNoAck_WithData(t *testing.T) {
 }
 
 // =============================================================================
-// TYPE: PROBE
+// TYPE: MTU UPDATE
 // =============================================================================
 
-func TestProto_Probe_NoPadding(t *testing.T) {
+func TestProto_MtuUpdate_Basic(t *testing.T) {
 	original := &payloadHeader{
-		isProbe:      true,
-		streamId:     1,
-		streamOffset: 0,
+		isMtuUpdate:    true,
+		mtuUpdateValue: 1400,
+		streamId:       1,
+		streamOffset:   0,
 	}
 
 	decoded, decodedData := roundTrip(t, original, []byte{})
 
 	assertPayloadEqual(t, original, decoded)
+	assert.Equal(t, uint16(1400), decoded.mtuUpdateValue)
 	assert.Empty(t, decodedData)
 }
 
-func TestProto_Probe_WithPadding(t *testing.T) {
+func TestProto_MtuUpdate_WithData(t *testing.T) {
 	original := &payloadHeader{
-		isProbe:      true,
-		streamId:     1,
-		streamOffset: 100,
+		isMtuUpdate:    true,
+		mtuUpdateValue: 8952,
+		streamId:       1,
+		streamOffset:   100,
 	}
-	padding := make([]byte, 1000)
+	data := []byte("some data")
 
-	decoded, decodedData := roundTrip(t, original, padding)
+	decoded, decodedData := roundTrip(t, original, data)
 
 	assertPayloadEqual(t, original, decoded)
-	assert.Equal(t, padding, decodedData)
+	assert.Equal(t, data, decodedData)
 }
 
-func TestProto_Probe_48Bit(t *testing.T) {
+func TestProto_MtuUpdate_48Bit(t *testing.T) {
 	original := &payloadHeader{
-		isProbe:      true,
-		streamId:     1,
-		streamOffset: 0x1000000,
+		isMtuUpdate:    true,
+		mtuUpdateValue: 1232,
+		streamId:       1,
+		streamOffset:   0x1000000,
 	}
-	padding := make([]byte, 100)
+	data := make([]byte, 100)
 
-	decoded, decodedData := roundTrip(t, original, padding)
+	decoded, decodedData := roundTrip(t, original, data)
 
 	assertPayloadEqual(t, original, decoded)
-	assert.Equal(t, padding, decodedData)
+	assert.Equal(t, data, decodedData)
 }
 
-func TestProto_Probe_NoAckEvenIfSet(t *testing.T) {
-	// Probe can have ACK
+func TestProto_MtuUpdate_WithAck(t *testing.T) {
 	original := &payloadHeader{
-		isProbe:      true,
-		streamId:     1,
-		streamOffset: 0,
-		ack:          &ack{streamId: 2, offset: 100, len: 50, rcvWnd: 1000},
+		isMtuUpdate:    true,
+		mtuUpdateValue: 1452,
+		streamId:       1,
+		streamOffset:   0,
+		ack:            &ack{streamId: 2, offset: 100, len: 50, rcvWnd: 1000},
 	}
 
 	decoded, _ := roundTrip(t, original, []byte{})
 
-	assert.True(t, decoded.isProbe)
+	assert.True(t, decoded.isMtuUpdate)
+	assert.Equal(t, uint16(1452), decoded.mtuUpdateValue)
 	assert.NotNil(t, decoded.ack)
 }
 
@@ -684,10 +692,10 @@ func TestProto_Overhead_Close(t *testing.T) {
 	assert.Equal(t, 8, calcProtoOverhead(flags))
 }
 
-func TestProto_Overhead_Probe(t *testing.T) {
-	var flags uint8 = pktProbe << pktTypeShift
-	// 1 (header) + 4 (streamId) + 3 (offset 24-bit) = 8
-	assert.Equal(t, 8, calcProtoOverhead(flags))
+func TestProto_Overhead_MtuUpdate(t *testing.T) {
+	var flags uint8 = pktMtuUpdate << pktTypeShift
+	// 1 (header) + 2 (mtuUpdateValue) + 4 (streamId) + 3 (offset 24-bit) = 10
+	assert.Equal(t, 10, calcProtoOverhead(flags))
 }
 
 // =============================================================================
@@ -789,21 +797,21 @@ func TestProto_Flags_CloseWithAck24(t *testing.T) {
 	assert.True(t, flags&flagHasAck != 0)
 }
 
-func TestProto_Flags_Probe24(t *testing.T) {
-	p := &payloadHeader{isProbe: true, streamId: 1, streamOffset: 100}
+func TestProto_Flags_MtuUpdate24(t *testing.T) {
+	p := &payloadHeader{isMtuUpdate: true, mtuUpdateValue: 1400, streamId: 1, streamOffset: 100}
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktProbe), (flags&pktTypeMask)>>pktTypeShift)
+	assert.Equal(t, uint8(pktMtuUpdate), (flags&pktTypeMask)>>pktTypeShift)
 	assert.True(t, flags&flagExtend == 0)
 }
 
-func TestProto_Flags_Probe48(t *testing.T) {
-	p := &payloadHeader{isProbe: true, streamId: 1, streamOffset: 0x1000000}
+func TestProto_Flags_MtuUpdate48(t *testing.T) {
+	p := &payloadHeader{isMtuUpdate: true, mtuUpdateValue: 1400, streamId: 1, streamOffset: 0x1000000}
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktProbe), (flags&pktTypeMask)>>pktTypeShift)
+	assert.Equal(t, uint8(pktMtuUpdate), (flags&pktTypeMask)>>pktTypeShift)
 	assert.True(t, flags&flagExtend != 0)
 }
 

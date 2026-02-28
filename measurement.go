@@ -11,11 +11,16 @@ import (
 // =============================================================================
 
 const (
-	defaultMTU     = 1400
 	minCwndPackets = 10
 
 	secondNano = 1_000_000_000
 	msNano     = 1_000_000
+
+	// MTU negotiation constants
+	ipOverhead      = 48   // always use IPv6 worst-case (IPv4=28, IPv6=48)
+	conservativeMTU = 1232 // IPv6 min link MTU (1280) - 48 headers; hard floor
+
+	mtuFallbackThreshold = 5 // consecutive losses before fallback to conservativeMTU
 )
 
 // =============================================================================
@@ -82,18 +87,33 @@ type measurements struct {
 	pacingGainPct     uint64 // Current pacing multiplier
 	cwnd              uint64 // Congestion window (bytes)
 
+	// MTU and limits
+	negotiatedMTU int    // original negotiated value (for restoring after fallback)
+	minCwnd       uint64 // Minimum congestion window (minCwndPackets * mtu)
+
 	// Stats
 	packetLossNr int
 	packetDupNr  int
 }
 
-func newMeasurements() measurements {
+func newMeasurements(mtu int) measurements {
 	return measurements{
 		isStartup:      true,
 		pacingGainPct:  startupGain,
 		rttMinNano:     math.MaxUint64,
 		rttMinTimeNano: math.MaxUint64,
-		cwnd:           minCwndPackets * defaultMTU,
+		cwnd:           uint64(minCwndPackets * mtu),
+		minCwnd:        uint64(minCwndPackets * mtu),
+		negotiatedMTU:  mtu,
+	}
+}
+
+// updateMTU adjusts MTU-dependent fields without resetting congestion state.
+func (m *measurements) updateMTU(mtu int) {
+	m.negotiatedMTU = mtu
+	m.minCwnd = uint64(minCwndPackets * mtu)
+	if m.cwnd < m.minCwnd {
+		m.cwnd = m.minCwnd
 	}
 }
 
@@ -197,7 +217,7 @@ func (m *measurements) updateNormal(nowNano uint64) {
 	}
 
 	bdp := (m.bwMax * m.rttMinNano) / secondNano
-	m.cwnd = max(bdp*2, minCwndPackets*defaultMTU)
+	m.cwnd = max(bdp*2, m.minCwnd)
 }
 
 // =============================================================================
@@ -225,6 +245,9 @@ func backoff(rtoNano uint64, attempt uint) (uint64, error) {
 	}
 	for i := uint(0); i < attempt; i++ {
 		rtoNano = (rtoNano * rtoBackoffPct) / 100
+		if rtoNano > maxRTO {
+			rtoNano = maxRTO
+		}
 	}
 	return rtoNano, nil
 }
@@ -237,7 +260,7 @@ func (m *measurements) reduceCwnd(reduction, gain uint64) {
 	m.bwMax = m.bwMax * reduction / 100
 	m.pacingGainPct = gain
 	m.isStartup = false
-	m.cwnd = max(m.cwnd*reduction/100, minCwndPackets*defaultMTU)
+	m.cwnd = max(m.cwnd*reduction/100, m.minCwnd)
 }
 
 func (m *measurements) onDuplicateAck() {

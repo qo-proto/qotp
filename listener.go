@@ -24,14 +24,13 @@ type Listener struct {
 	prvKeyId     *ecdh.PrivateKey
 	connMap      *linkedMap[uint64, *conn]
 	keyLogWriter io.Writer
-	mtu          int
+	maxPayload   int
 
 	// Round-robin state for Flush()
 	currentConnID   *uint64
 	currentStreamID *uint32
 
 	interfaceMTU int
-	isIPv6       bool
 
 	mu sync.Mutex
 }
@@ -44,14 +43,14 @@ type ListenOption struct {
 	prvKeyId     *ecdh.PrivateKey
 	localConn    NetworkConn
 	listenAddr   *net.UDPAddr
-	mtu          int
+	maxPayload   int
 	keyLogWriter io.Writer
 }
 
 type ListenFunc func(*ListenOption) error
 
-func WithMtu(mtu int) ListenFunc {
-	return func(o *ListenOption) error { o.mtu = mtu; return nil }
+func WithMaxPayload(maxPayload int) ListenFunc {
+	return func(o *ListenOption) error { o.maxPayload = maxPayload; return nil }
 }
 
 func WithKeyLogWriter(w io.Writer) ListenFunc {
@@ -114,7 +113,7 @@ func WithSeedString(s string) ListenFunc {
 // =============================================================================
 
 func Listen(options ...ListenFunc) (*Listener, error) {
-	o := &ListenOption{mtu: defaultMTU}
+	o := &ListenOption{}
 	for _, opt := range options {
 		if err := opt(o); err != nil {
 			return nil, err
@@ -143,23 +142,28 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	}
 
 	var interfaceMTU int
-	var isIPv6 bool
 	if udpConn, ok := o.localConn.(*UDPNetworkConn); ok {
 		interfaceMTU = getInterfaceMTU(udpConn.conn)
-		isIPv6 = isIPv6Conn(udpConn.conn)
 	} else {
 		interfaceMTU = 1500
-		isIPv6 = false
+	}
+
+	// Compute max payload from interface MTU
+	maxPayload := o.maxPayload
+	if maxPayload == 0 {
+		maxPayload = interfaceMTU - ipOverhead
+	}
+	if maxPayload < conservativeMTU {
+		maxPayload = conservativeMTU
 	}
 
 	l := &Listener{
 		localConn:    o.localConn,
 		prvKeyId:     o.prvKeyId,
-		mtu:          o.mtu,
+		maxPayload:   maxPayload,
 		keyLogWriter: o.keyLogWriter,
 		connMap:      newLinkedMap[uint64, *conn](),
 		interfaceMTU: interfaceMTU,
-		isIPv6:       isIPv6,
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil
@@ -180,6 +184,22 @@ func (l *Listener) Close() error {
 		return err
 	}
 	return l.localConn.Close()
+}
+
+// RefreshMaxPayload re-reads the network interface MTU and recomputes maxPayload.
+// Call this when the network interface changes (e.g., switching from WiFi to Ethernet).
+func (l *Listener) RefreshMaxPayload() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
+		l.interfaceMTU = getInterfaceMTU(udpConn.conn)
+	}
+	maxPayload := l.interfaceMTU - ipOverhead
+	if maxPayload < conservativeMTU {
+		maxPayload = conservativeMTU
+	}
+	l.maxPayload = maxPayload
 }
 
 func (l *Listener) HasActiveStreams() bool {
@@ -242,9 +262,9 @@ func (l *Listener) newConn(
 		initMsgType:  initMsgType,
 		snd:          newSendBuffer(sndBufferCapacity),
 		rcv:          newReceiveBuffer(rcvBufferCapacity),
-		measurements: newMeasurements(),
+		measurements: newMeasurements(l.maxPayload),
 		rcvWndSize:   rcvBufferCapacity,
-		mtuProber:    newMTUProber(l.isIPv6, l.interfaceMTU),
+		mtu:          l.maxPayload,
 	}
 
 	// Log keys for Wireshark debugging if enabled

@@ -220,12 +220,12 @@ func TestCryptoInitSnd_BasicFlow(t *testing.T) {
 	alicePrvKeyId := generateTestKey(t)
 	alicePrvKeyEp := generateTestKey(t)
 
-	connId, buffer, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	connId, buffer, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), testMaxPayload)
 	assert.NoError(t, err)
-	assert.Equal(t, defaultMTU, len(buffer))
+	assert.Equal(t, testMaxPayload, len(buffer))
 	assert.NotZero(t, connId)
 
-	pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(buffer, defaultMTU)
+	pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(buffer, testMaxPayload)
 	assert.NoError(t, err)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
@@ -234,7 +234,7 @@ func TestCryptoInitSnd_BasicFlow(t *testing.T) {
 func TestCryptoInitSnd_NilPubKeyId(t *testing.T) {
 	alicePrvKeyEp := generateTestKey(t)
 
-	_, _, err := encryptInitSnd(nil, alicePrvKeyEp.PublicKey(), defaultMTU)
+	_, _, err := encryptInitSnd(nil, alicePrvKeyEp.PublicKey(), testMaxPayload)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
 }
@@ -242,20 +242,20 @@ func TestCryptoInitSnd_NilPubKeyId(t *testing.T) {
 func TestCryptoInitSnd_NilPubKeyEp(t *testing.T) {
 	alicePrvKeyId := generateTestKey(t)
 
-	_, _, err := encryptInitSnd(alicePrvKeyId.PublicKey(), nil, defaultMTU)
+	_, _, err := encryptInitSnd(alicePrvKeyId.PublicKey(), nil, testMaxPayload)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
 }
 
 func TestCryptoDecryptInitSnd_TooSmall(t *testing.T) {
-	buffer := make([]byte, defaultMTU-1)
-	_, _, err := decryptInitSnd(buffer, defaultMTU)
+	buffer := make([]byte, testMaxPayload-1)
+	_, _, err := decryptInitSnd(buffer, testMaxPayload)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum init")
 }
 
 func TestCryptoDecryptInitSnd_EmptyBuffer(t *testing.T) {
-	_, _, err := decryptInitSnd([]byte{}, defaultMTU)
+	_, _, err := decryptInitSnd([]byte{}, testMaxPayload)
 	assert.Error(t, err)
 }
 
@@ -328,14 +328,14 @@ func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
 		alicePrvKeyId.PublicKey(),
 		alicePrvKeyEp,
 		0,
-		defaultMTU,
+		testMaxPayload,
 		rawData,
 	)
 	assert.NoError(t, err)
 	assert.NotZero(t, connId)
-	assert.Equal(t, defaultMTU, len(buffer))
+	assert.Equal(t, testMaxPayload, len(buffer))
 
-	pubKeyIdSnd, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, defaultMTU)
+	pubKeyIdSnd, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(buffer, bobPrvKeyId, testMaxPayload)
 	assert.NoError(t, err)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
@@ -343,7 +343,7 @@ func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
 }
 
 func TestCryptoInitCryptoSnd_NilKeys(t *testing.T) {
-	_, _, err := encryptInitCryptoSnd(nil, nil, nil, 0, defaultMTU, []byte("test"))
+	_, _, err := encryptInitCryptoSnd(nil, nil, nil, 0, testMaxPayload, []byte("test"))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "nil")
 }
@@ -354,14 +354,14 @@ func TestCryptoInitCryptoSnd_PayloadTooLarge(t *testing.T) {
 	bobPrvKeyId := generateTestKey(t)
 
 	// Payload larger than MTU allows
-	largeData := make([]byte, defaultMTU)
+	largeData := make([]byte, testMaxPayload)
 
 	_, _, err := encryptInitCryptoSnd(
 		bobPrvKeyId.PublicKey(),
 		alicePrvKeyId.PublicKey(),
 		alicePrvKeyEp,
 		0,
-		defaultMTU,
+		testMaxPayload,
 		largeData,
 	)
 	assert.Error(t, err)
@@ -369,8 +369,8 @@ func TestCryptoInitCryptoSnd_PayloadTooLarge(t *testing.T) {
 }
 
 func TestCryptoDecryptInitCryptoSnd_TooSmall(t *testing.T) {
-	buffer := make([]byte, defaultMTU-1)
-	_, _, _, err := decryptInitCryptoSnd(buffer, generateTestKey(t), defaultMTU)
+	buffer := make([]byte, testMaxPayload-1)
+	_, _, _, err := decryptInitCryptoSnd(buffer, generateTestKey(t), testMaxPayload)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum")
 }
@@ -556,11 +556,11 @@ func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
 	bobPrvKeyEp := generateTestKey(t)
 
 	// Step 1: Alice sends InitSnd
-	connId, bufferS0, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), defaultMTU)
+	connId, bufferS0, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), testMaxPayload)
 	assert.NoError(t, err)
 
 	// Step 2: Bob receives InitSnd
-	_, pubKeyEpSnd, err := decryptInitSnd(bufferS0, defaultMTU)
+	_, pubKeyEpSnd, err := decryptInitSnd(bufferS0, testMaxPayload)
 	assert.NoError(t, err)
 
 	// Step 3: Bob sends InitRcv
@@ -597,13 +597,13 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 		alicePrvKeyId.PublicKey(),
 		alicePrvKeyEp,
 		0,
-		defaultMTU,
+		testMaxPayload,
 		initPayload,
 	)
 	assert.NoError(t, err)
 
 	// Step 2: Bob receives InitCryptoSnd
-	_, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(bufferS0, bobPrvKeyId, defaultMTU)
+	_, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(bufferS0, bobPrvKeyId, testMaxPayload)
 	assert.NoError(t, err)
 	assert.Equal(t, initPayload, msg.payloadRaw)
 

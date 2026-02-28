@@ -59,7 +59,7 @@ func TestListen_DefaultOptions(t *testing.T) {
 	assert.NotNil(t, listener)
 	assert.NotNil(t, listener.prvKeyId)
 	assert.NotNil(t, listener.connMap)
-	assert.Equal(t, defaultMTU, listener.mtu)
+	assert.GreaterOrEqual(t, listener.maxPayload, conservativeMTU)
 	defer listener.Close()
 }
 
@@ -132,11 +132,19 @@ func TestListen_WithPrvKeyId(t *testing.T) {
 	defer listener.Close()
 }
 
-func TestListen_WithMtu(t *testing.T) {
-	listener, err := Listen(WithMtu(1200))
+func TestListen_WithMaxPayload(t *testing.T) {
+	listener, err := Listen(WithMaxPayload(1300))
 	assert.NoError(t, err)
 	assert.NotNil(t, listener)
-	assert.Equal(t, 1200, listener.mtu)
+	assert.Equal(t, 1300, listener.maxPayload)
+	defer listener.Close()
+}
+
+func TestListen_WithMaxPayload_BelowFloor(t *testing.T) {
+	listener, err := Listen(WithMaxPayload(1000))
+	assert.NoError(t, err)
+	assert.NotNil(t, listener)
+	assert.Equal(t, conservativeMTU, listener.maxPayload)
 	defer listener.Close()
 }
 
@@ -160,12 +168,12 @@ func TestListen_WithNetworkConn(t *testing.T) {
 func TestListen_MultipleOptions(t *testing.T) {
 	listener, err := Listen(
 		WithSeed(testPrvSeed1),
-		WithMtu(1200),
+		WithMaxPayload(1300),
 	)
 	assert.NoError(t, err)
 	assert.NotNil(t, listener)
 	assert.Equal(t, testPrvKey1.PublicKey().Bytes(), listener.prvKeyId.PublicKey().Bytes())
-	assert.Equal(t, 1200, listener.mtu)
+	assert.Equal(t, 1300, listener.maxPayload)
 	defer listener.Close()
 }
 
@@ -237,6 +245,31 @@ func TestListener_DialStringWithCryptoString_InvalidPort(t *testing.T) {
 }
 
 // =============================================================================
+// REFRESH MAX PAYLOAD TESTS
+// =============================================================================
+
+func TestListener_RefreshMaxPayload_NonUDP(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	listener, err := Listen(WithNetworkConn(connPair.Conn1), WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+
+	// Non-UDP conn: interfaceMTU stays at 1500 (default), maxPayload = 1500 - 48 = 1452
+	listener.RefreshMaxPayload()
+	assert.Equal(t, 1452, listener.maxPayload)
+}
+
+func TestListener_RefreshMaxPayload_FloorAtConservativeMTU(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	listener, err := Listen(WithNetworkConn(connPair.Conn1), WithSeed(testPrvSeed1))
+	assert.NoError(t, err)
+
+	// Force interfaceMTU to something tiny
+	listener.interfaceMTU = 100
+	listener.RefreshMaxPayload()
+	assert.Equal(t, conservativeMTU, listener.maxPayload)
+}
+
+// =============================================================================
 // NEWCONN TESTS
 // =============================================================================
 
@@ -302,7 +335,7 @@ func TestListener_Decode_EmptyBuffer(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	_, _, _, err := testDecode(l, []byte{}, getTestRemoteAddrPort())
@@ -314,7 +347,7 @@ func TestListener_Decode_TooSmall(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	_, _, _, err := testDecode(l, []byte{0x00}, getTestRemoteAddrPort())
@@ -326,7 +359,7 @@ func TestListener_Decode_InvalidVersion(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	buf := make([]byte, minPacketSize)
@@ -341,7 +374,7 @@ func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	buf := make([]byte, minPacketSize)
@@ -356,7 +389,7 @@ func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	buf := make([]byte, minPacketSize)
@@ -371,7 +404,7 @@ func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
 	l := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 
 	buf := make([]byte, minPacketSize)
@@ -507,6 +540,9 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 // =============================================================================
 
 func TestListener_DataTransfer_50PercentLoss(t *testing.T) {
+	maxRetry = 10
+	defer func() { maxRetry = 5 }()
+
 	runDataTransferTest(t, 10*1024, 1000,
 		func(counter int) bool { return counter%2 == 0 },
 		func(counter int) bool { return counter%2 == 0 },

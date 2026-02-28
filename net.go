@@ -99,14 +99,6 @@ func getInterfaceMTU(conn *net.UDPConn) int {
 	return 1500
 }
 
-func isIPv6Conn(conn *net.UDPConn) bool {
-	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok {
-		return false
-	}
-	return localAddr.IP.To4() == nil
-}
-
 func logDFResult(errIPv4, errIPv6 error) {
 	switch {
 	case errIPv4 == nil && errIPv6 == nil:

@@ -45,7 +45,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecret
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret required for InitRcv")
 		}
-		headerLen = headerSize + connIdSize + 2*pubKeySize
+		headerLen = minInitRcvSizeHdr
 		minSize = minInitRcvSizeHdr + footerDataSize
 		isSender = true
 		secret = sharedSecret
@@ -54,7 +54,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecret
 		if sharedSecret == nil {
 			return nil, errors.New("sharedSecret required for InitCryptoRcv")
 		}
-		headerLen = headerSize + connIdSize + pubKeySize
+		headerLen = minInitCryptoRcvSizeHdr
 		minSize = minInitCryptoRcvSizeHdr + footerDataSize
 		isSender = true
 		secret = sharedSecret
@@ -63,7 +63,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecret
 		if sharedSecretId == nil {
 			return nil, errors.New("sharedSecretId required for InitCryptoSnd")
 		}
-		headerLen = headerSize + 2*pubKeySize
+		headerLen = minInitCryptoSndSizeHdr
 		minSize = minInitCryptoSndSizeHdr + footerDataSize
 		isSender = false
 		secret = sharedSecretId

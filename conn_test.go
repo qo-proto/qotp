@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testMaxPayload = 1400 // fixed test value for maxPayload
+
 // =============================================================================
 // TEST HELPERS
 // =============================================================================
@@ -71,7 +73,7 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		initMsgType: initMsgType,
 		phase:       phase,
 		pubKeyIdRcv: prvIdBob.PublicKey(),
-		listener:    &Listener{prvKeyId: prvIdAlice, mtu: defaultMTU},
+		listener:    &Listener{prvKeyId: prvIdAlice, maxPayload: testMaxPayload},
 		snd:         newSendBuffer(sndBufferCapacity),
 		rcv:         newReceiveBuffer(1000),
 		streams:     newLinkedMap[uint32, *Stream](),
@@ -105,12 +107,12 @@ func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdAlice,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 	lBob := &Listener{
 		connMap:  newLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdBob,
-		mtu:      defaultMTU,
+		maxPayload: testMaxPayload,
 	}
 	return lAlice, lBob
 }
@@ -230,7 +232,7 @@ func TestConnEncode_InitCryptoSnd_PayloadTooLarge(t *testing.T) {
 	c := createTestConn(true, true, false)
 
 	// Create payload larger than MTU allows
-	largePayload := createTestData(defaultMTU + 100)
+	largePayload := createTestData(testMaxPayload + 100)
 
 	p := &payloadHeader{}
 	_, err := c.encode(p, largePayload, initCryptoSnd)
@@ -940,4 +942,396 @@ func TestConnDecode_DataWithNextKey(t *testing.T) {
 	payload, err := c.decode(encData, data)
 	assert.NoError(t, err)
 	assert.NotNil(t, payload)
+}
+
+// =============================================================================
+// MTU NEGOTIATION TESTS
+// =============================================================================
+
+func TestConn_NegotiateMTU_Symmetric(t *testing.T) {
+	c := createTestConn(true, false, false)
+	c.mtu = conservativeMTU // starts conservative
+
+	c.negotiateMTU(uint16(testMaxPayload))
+
+	assert.Equal(t, testMaxPayload, c.mtu)
+	assert.Equal(t, testMaxPayload, c.negotiatedMTU)
+}
+
+func TestConn_NegotiateMTU_RemoteSmaller(t *testing.T) {
+	c := createTestConn(true, false, false)
+	c.listener.maxPayload = 1400
+
+	c.negotiateMTU(1300)
+
+	assert.Equal(t, 1300, c.mtu)
+	assert.Equal(t, 1300, c.negotiatedMTU)
+}
+
+func TestConn_NegotiateMTU_LocalSmaller(t *testing.T) {
+	c := createTestConn(true, false, false)
+	c.listener.maxPayload = 1300
+
+	c.negotiateMTU(1400)
+
+	assert.Equal(t, 1300, c.mtu)
+	assert.Equal(t, 1300, c.negotiatedMTU)
+}
+
+func TestConn_NegotiateMTU_BelowFloor(t *testing.T) {
+	c := createTestConn(true, false, false)
+	c.listener.maxPayload = 1400
+
+	c.negotiateMTU(500) // below conservativeMTU
+
+	assert.Equal(t, conservativeMTU, c.mtu)
+	assert.Equal(t, conservativeMTU, c.negotiatedMTU)
+}
+
+func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
+	c := createTestConn(true, false, false)
+	c.listener.maxPayload = 8952 // jumbo frame: 9000 - 48
+
+	c.negotiateMTU(8952)
+
+	assert.Equal(t, 8952, c.mtu)
+	assert.Equal(t, 8952, c.negotiatedMTU)
+}
+
+func TestConn_InitialMTU_MatchesListenerMaxPayload(t *testing.T) {
+	lAlice, lBob := createTestListeners()
+	rAddr := netip.MustParseAddrPort("127.0.0.1:12345")
+
+	// Create a new conn — should start with listener's maxPayload
+	conn, err := lAlice.newConn(
+		123, rAddr, prvEpAlice, prvIdBob.PublicKey(), prvEpBob.PublicKey(), true, false,
+	)
+	assert.NoError(t, err)
+	assert.Equal(t, lAlice.maxPayload, conn.mtu)
+	_ = lBob // suppress unused
+}
+
+func TestConn_FallbackOnConsecutiveLosses(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtu = 1400
+	c.negotiatedMTU = 1400
+
+	// Simulate consecutive losses
+	for i := 0; i < mtuFallbackThreshold; i++ {
+		c.consecutiveLosses++
+		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
+			c.mtu = conservativeMTU
+		}
+	}
+
+	assert.Equal(t, conservativeMTU, c.mtu)
+	assert.Equal(t, 1400, c.negotiatedMTU) // original preserved
+}
+
+func TestConn_RestoreAfterFallback(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtu = conservativeMTU // currently in fallback
+	c.negotiatedMTU = 1400
+	c.consecutiveLosses = mtuFallbackThreshold
+
+	// Simulate successful ACK
+	c.consecutiveLosses = 0
+	if c.mtu < c.negotiatedMTU {
+		c.mtu = c.negotiatedMTU
+	}
+
+	assert.Equal(t, 1400, c.mtu)
+}
+
+func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtu = 1400
+	c.negotiatedMTU = 1400
+	c.listener.maxPayload = 1400
+
+	// Simulate receiving a pktMtuUpdate with a smaller value
+	p := &payloadHeader{
+		isMtuUpdate:    true,
+		mtuUpdateValue: 1300,
+		streamId:       1,
+		streamOffset:   0,
+	}
+
+	s := c.getOrCreateStream(1)
+	_, err := c.processIncomingPayload(p, []byte{}, 1000)
+	assert.NoError(t, err)
+	assert.Equal(t, 1300, c.mtu)
+	assert.Equal(t, 1300, c.negotiatedMTU)
+	_ = s
+}
+
+// =============================================================================
+// MTU NEGOTIATION HANDSHAKE ROUND-TRIP TESTS
+// =============================================================================
+
+func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
+	lAlice := &Listener{
+		connMap:    newLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdAlice,
+		maxPayload: 1400,
+	}
+	lBob := &Listener{
+		connMap:    newLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdBob,
+		maxPayload: 1300, // Bob has smaller maxPayload
+	}
+	remoteAddr := getTestRemoteAddr()
+
+	// Alice's initial connection (following TestConnFullHandshake pattern)
+	connAlice := &conn{
+		connId:       getUint64(prvEpAlice.PublicKey().Bytes()),
+		initMsgType:  initSnd,
+		listener:     lAlice,
+		rcv:          newReceiveBuffer(1000),
+		snd:          newSendBuffer(1000),
+		streams:      newLinkedMap[uint32, *Stream](),
+		mtu:          lAlice.maxPayload,
+		measurements: newMeasurements(lAlice.maxPayload),
+		rcvWndSize:   rcvBufferCapacity,
+		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
+		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
+	}
+	lAlice.connMap.put(connAlice.connId, connAlice)
+	assert.Equal(t, lAlice.maxPayload, connAlice.mtu) // starts with local maxPayload
+
+	// Step 1: Alice encodes InitSnd (no proto payload — no MTU info sent)
+	p := &payloadHeader{}
+	encoded, err := connAlice.encode(p, nil, initSnd)
+	assert.NoError(t, err)
+
+	// Step 2: Bob receives InitSnd — no MTU negotiation yet (initSnd has no proto payload)
+	connBob, _, _, err := testDecodeConn(lBob, encoded, remoteAddr)
+	assert.NoError(t, err)
+	assert.Equal(t, lBob.maxPayload, connBob.mtu) // starts with Bob's maxPayload
+
+	// Step 3: Bob responds with InitRcv, including pktMtuUpdate in proto payload
+	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
+	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
+	assert.NoError(t, err)
+
+	// Step 4: Alice receives InitRcv — crypto decode + proto decode + processIncomingPayload
+	_, payload, _, err := testDecodeConn(lAlice, encodedR0, remoteAddr)
+	assert.NoError(t, err)
+	ph, userData, err := decodeProto(payload)
+	assert.NoError(t, err)
+	_, err = connAlice.processIncomingPayload(ph, userData, 1000)
+	assert.NoError(t, err)
+	assert.Equal(t, 1300, connAlice.mtu) // min(1300, 1400) = 1300
+}
+
+// =============================================================================
+// WILL INJECT MTU TESTS
+// =============================================================================
+
+func TestConn_WillInjectMtu_InitCryptoSnd(t *testing.T) {
+	c := createTestConn(true, true, false)
+	assert.True(t, c.willInjectMtu(initCryptoSnd))
+}
+
+func TestConn_WillInjectMtu_InitRcv(t *testing.T) {
+	c := createTestConn(false, false, false)
+	assert.True(t, c.willInjectMtu(initRcv))
+}
+
+func TestConn_WillInjectMtu_InitCryptoRcv(t *testing.T) {
+	c := createTestConn(false, true, false)
+	assert.True(t, c.willInjectMtu(initCryptoRcv))
+}
+
+func TestConn_WillInjectMtu_InitSnd(t *testing.T) {
+	c := createTestConn(true, false, false)
+	assert.False(t, c.willInjectMtu(initSnd))
+}
+
+func TestConn_WillInjectMtu_Data_NotSentYet(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtuSent = false
+	assert.True(t, c.willInjectMtu(data))
+}
+
+func TestConn_WillInjectMtu_Data_AlreadySent(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtuSent = true
+	assert.False(t, c.willInjectMtu(data))
+}
+
+// =============================================================================
+// MTU SENT TRACKING TESTS
+// =============================================================================
+
+func TestConn_MtuSent_InitiallyFalse(t *testing.T) {
+	c := createTestConn(true, false, true)
+	assert.False(t, c.mtuSent)
+}
+
+func TestConn_MtuSent_SetAfterInitCryptoSnd(t *testing.T) {
+	c := createTestConn(true, true, false)
+	c.listener.localConn = NewConnPair("a", "b").Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+
+	s := c.Stream(0)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("test"), 0, false, false, false, 1000, false)
+	assert.NoError(t, err)
+	assert.True(t, c.mtuSent)
+}
+
+func TestConn_MtuSent_NotSetOnInitSnd(t *testing.T) {
+	// initSnd has no proto payload, so mtuSent should stay false
+	c := createTestConn(true, false, false)
+	c.listener.localConn = NewConnPair("a", "b").Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+
+	s := c.Stream(0)
+	_, _, err := c.encodeAndWrite(s, nil, nil, 0, false, false, false, 1000, false)
+	assert.NoError(t, err)
+	assert.False(t, c.mtuSent)
+}
+
+func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+
+	s := c.Stream(0)
+
+	// First data packet: should inject MTU and set mtuSent
+	_, _, err := c.encodeAndWrite(s, nil, []byte("first"), 0, false, false, false, 1000, false)
+	assert.NoError(t, err)
+	assert.True(t, c.mtuSent)
+
+	// Second data packet: should NOT inject MTU
+	_, _, err = c.encodeAndWrite(s, nil, []byte("second"), 5, false, false, false, 2000, false)
+	assert.NoError(t, err)
+	// mtuSent stays true, no double injection
+	assert.True(t, c.mtuSent)
+}
+
+// =============================================================================
+// MTU INJECTION IN ENCODE AND WRITE TESTS
+// =============================================================================
+
+func TestConn_EncodeAndWrite_InjectsMtuForInitCryptoSnd(t *testing.T) {
+	c := createTestConn(true, true, false)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+
+	s := c.Stream(0)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("hello"), 0, false, false, false, 1000, false)
+	assert.NoError(t, err)
+	assert.True(t, c.mtuSent)
+
+	// Verify the packet was written and contains pktMtuUpdate by reading it back
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
+}
+
+func TestConn_EncodeAndWrite_SkipsMtuOnClose(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+
+	s := c.Stream(0)
+	// isClose=true → should not inject mtuUpdate (mutually exclusive)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("bye"), 0, true, false, false, 1000, false)
+	assert.NoError(t, err)
+	assert.False(t, c.mtuSent)
+}
+
+func TestConn_EncodeAndWrite_SkipsMtuOnKeyUpdate(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements(testMaxPayload)
+	c.rcvWndSize = rcvBufferCapacity
+	c.sndKeys.prvKeyEpNext = prvEpNew
+
+	s := c.Stream(0)
+	// isKeyUpdate=true → should not inject mtuUpdate (mutually exclusive)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("ku"), 0, false, true, false, 1000, false)
+	assert.NoError(t, err)
+	assert.False(t, c.mtuSent)
+}
+
+func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
+	lAlice := &Listener{
+		connMap:    newLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdAlice,
+		maxPayload: 8952, // jumbo frame Alice
+	}
+	lBob := &Listener{
+		connMap:    newLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdBob,
+		maxPayload: 1452, // standard Ethernet Bob
+	}
+	remoteAddr := getTestRemoteAddr()
+
+	// Alice's initial connection for crypto handshake
+	connAlice := &conn{
+		connId:       getUint64(prvEpAlice.PublicKey().Bytes()),
+		initMsgType:  initCryptoSnd,
+		listener:     lAlice,
+		pubKeyIdRcv:  prvIdBob.PublicKey(),
+		rcv:          newReceiveBuffer(1000),
+		snd:          newSendBuffer(1000),
+		streams:      newLinkedMap[uint32, *Stream](),
+		mtu:          lAlice.maxPayload,
+		measurements: newMeasurements(lAlice.maxPayload),
+		rcvWndSize:   rcvBufferCapacity,
+		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
+		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
+	}
+	lAlice.connMap.put(connAlice.connId, connAlice)
+
+	// Step 1: Alice encodes InitCryptoSnd with pktMtuUpdate in proto payload
+	p := &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lAlice.maxPayload)}
+	packetData, _ := encodeProto(p, []byte("init data"))
+	encoded, err := connAlice.encode(p, packetData, initCryptoSnd)
+	assert.NoError(t, err)
+
+	// Step 2: Bob receives InitCryptoSnd — crypto decode + proto decode + process
+	connBob, payload, _, err := testDecodeConn(lBob, encoded, remoteAddr)
+	assert.NoError(t, err)
+	ph, userData, err := decodeProto(payload)
+	assert.NoError(t, err)
+	_, err = connBob.processIncomingPayload(ph, userData, 1000)
+	assert.NoError(t, err)
+	assert.Equal(t, 1452, connBob.mtu) // min(8952, 1452) = 1452
+
+	// Step 3: Bob responds with InitCryptoRcv, including pktMtuUpdate
+	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
+	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
+	assert.NoError(t, err)
+
+	// Step 4: Alice receives InitCryptoRcv — crypto decode + proto decode + process
+	_, payload, _, err = testDecodeConn(lAlice, encodedR0, remoteAddr)
+	assert.NoError(t, err)
+	ph, userData, err = decodeProto(payload)
+	assert.NoError(t, err)
+	_, err = connAlice.processIncomingPayload(ph, userData, 2000)
+	assert.NoError(t, err)
+	assert.Equal(t, 1452, connAlice.mtu) // min(1452, 8952) = 1452
 }

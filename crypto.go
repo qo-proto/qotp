@@ -34,13 +34,13 @@ const (
 	pubKeySize         = 32 // X25519 public key
 	headerSize         = 1  // Message type + version
 	connIdSize         = 8
-	msgInitFillLenSize = 2 // Padding length field for InitCryptoSnd
+	msgInitFillLenSize = 2  // Padding length field for InitCryptoSnd
 
 	// Minimum header sizes (before encrypted payload)
 	minInitRcvSizeHdr       = headerSize + connIdSize + (2 * pubKeySize) // 73 bytes
-	minInitCryptoSndSizeHdr = headerSize + (2 * pubKeySize)              // 65 bytes
-	minInitCryptoRcvSizeHdr = headerSize + connIdSize + pubKeySize       // 41 bytes
-	minDataSizeHdr          = headerSize + connIdSize                    // 9 bytes
+	minInitCryptoSndSizeHdr = headerSize + (2 * pubKeySize)             // 65 bytes
+	minInitCryptoRcvSizeHdr = headerSize + connIdSize + pubKeySize      // 41 bytes
+	minDataSizeHdr          = headerSize + connIdSize                   // 9 bytes
 
 	// Footer: encrypted sequence number + MAC
 	footerDataSize = snSize + macSize // 22 bytes
@@ -251,7 +251,7 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, nil, err
 	}
 
-	headerLen := headerSize + connIdSize + (2 * pubKeySize)
+	headerLen := minInitRcvSizeHdr
 	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -282,7 +282,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int)
 		return nil, nil, nil, err
 	}
 
-	headerLen := headerSize + (2 * pubKeySize)
+	headerLen := minInitCryptoSndSizeHdr
 	snConn, packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
@@ -313,7 +313,7 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	headerLen := headerSize + connIdSize + pubKeySize
+	headerLen := minInitCryptoRcvSizeHdr
 	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err

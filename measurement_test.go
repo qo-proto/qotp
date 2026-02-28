@@ -14,7 +14,7 @@ import (
 
 func newTestConnection() *conn {
 	return &conn{
-		measurements: newMeasurements(),
+		measurements: newMeasurements(testMaxPayload),
 	}
 }
 
@@ -23,11 +23,11 @@ func newTestConnection() *conn {
 // =============================================================================
 
 func TestMeasurements_New(t *testing.T) {
-	m := newMeasurements()
+	m := newMeasurements(testMaxPayload)
 
 	assert.True(t, m.isStartup)
 	assert.Equal(t, startupGain, m.pacingGainPct)
-	assert.Equal(t, uint64(minCwndPackets*defaultMTU), m.cwnd)
+	assert.Equal(t, uint64(minCwndPackets*testMaxPayload), m.cwnd)
 }
 
 // =============================================================================
@@ -154,8 +154,10 @@ func TestMeasurements_RTT_SmallValues(t *testing.T) {
 
 	conn.updateMeasurements(7, 1000, 1_000_000_000)
 
-	assert.Greater(t, conn.srtt, uint64(0))
-	assert.Greater(t, conn.rttvar, uint64(0))
+	// SRTT = 7/8 * 7 + 1/8 * 7 = 7 (stable)
+	assert.Equal(t, uint64(7), conn.srtt)
+	// RTTVAR = 3/4 * 3 + 1/4 * 0 = 2 (delta=0, integer truncation: 9/4=2)
+	assert.Equal(t, uint64(2), conn.rttvar)
 }
 
 func TestMeasurements_RTT_VarianceUnderflow(t *testing.T) {
@@ -537,13 +539,13 @@ func TestBackoff_3x(t *testing.T) {
 	assert.Equal(t, baseRTO*8, result)
 }
 
-func TestBackoff_MaxAllowed(t *testing.T) {
+func TestBackoff_CappedAtMaxRTO(t *testing.T) {
 	baseRTO := uint64(200 * msNano)
 
 	result, err := backoff(baseRTO, 4)
 
 	assert.NoError(t, err)
-	assert.Equal(t, baseRTO*16, result)
+	assert.Equal(t, maxRTO, result)
 }
 
 func TestBackoff_ExceedsMax(t *testing.T) {
@@ -587,7 +589,7 @@ func TestBackoff_LargeRTO(t *testing.T) {
 	result, err := backoff(largeRTO, 4)
 
 	assert.NoError(t, err)
-	assert.Equal(t, largeRTO*16, result)
+	assert.Equal(t, maxRTO, result)
 }
 
 // =============================================================================
@@ -596,11 +598,45 @@ func TestBackoff_LargeRTO(t *testing.T) {
 
 func TestMeasurements_DivisionByZeroProtection(t *testing.T) {
 	conn := newTestConnection()
-	conn.rttMinNano = 0
+	// First measurement sets rttMinNano, so updateBandwidth can divide by it
+	conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
 
-	assert.NotPanics(t, func() {
-		conn.updateMeasurements(100_000_000, 1000, 1_000_000_000)
-	})
+	assert.Equal(t, uint64(100_000_000), conn.rttMinNano)
+	assert.Equal(t, uint64(10000), conn.bwMax) // 1000 * 1e9 / 1e8 = 10000
+}
+
+// =============================================================================
+// UPDATE MTU TESTS
+// =============================================================================
+
+func TestMeasurements_UpdateMTU_Basic(t *testing.T) {
+	m := newMeasurements(1400)
+	assert.Equal(t, 1400, m.negotiatedMTU)
+	assert.Equal(t, uint64(minCwndPackets*1400), m.minCwnd)
+
+	m.updateMTU(1300)
+
+	assert.Equal(t, 1300, m.negotiatedMTU)
+	assert.Equal(t, uint64(minCwndPackets*1300), m.minCwnd)
+}
+
+func TestMeasurements_UpdateMTU_RaisesCwnd(t *testing.T) {
+	m := newMeasurements(1400)
+	// Reduce cwnd below what the new minCwnd will be
+	m.cwnd = 5000
+
+	m.updateMTU(1400)
+
+	assert.Equal(t, uint64(minCwndPackets*1400), m.cwnd, "cwnd should be raised to minCwnd")
+}
+
+func TestMeasurements_UpdateMTU_PreservesCwndAboveMin(t *testing.T) {
+	m := newMeasurements(1400)
+	m.cwnd = 100_000 // well above minCwnd
+
+	m.updateMTU(1300)
+
+	assert.Equal(t, uint64(100_000), m.cwnd, "cwnd should not change when above minCwnd")
 }
 
 // =============================================================================
