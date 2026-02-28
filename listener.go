@@ -31,6 +31,7 @@ type Listener struct {
 	currentStreamID *uint32
 
 	interfaceMTU int
+	readBuf      []byte // reusable buffer for Listen()
 
 	mu sync.Mutex
 }
@@ -164,6 +165,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		keyLogWriter: o.keyLogWriter,
 		connMap:      newLinkedMap[uint64, *conn](),
 		interfaceMTU: interfaceMTU,
+		readBuf:      make([]byte, maxPayload),
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil

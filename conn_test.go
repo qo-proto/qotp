@@ -1335,3 +1335,86 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1452, connAlice.mtu) // min(1452, 8952) = 1452
 }
+
+// =============================================================================
+// RETRANSMISSION BYPASSES RWND
+// =============================================================================
+
+// TestConn_FlushStream_RetransmitBypassesRwnd verifies that retransmissions
+// are sent even when the receive window is zero. This prevents a deadlock where
+// a lost packet creates a gap in the receiver's reassembly buffer, the receiver's
+// buffer fills with out-of-order data (rwnd→0), and the sender can never
+// retransmit the missing packet because it's blocked by rwnd.
+func TestConn_FlushStream_RetransmitBypassesRwnd(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c := createTestConn(true, false, true)
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.mtuSent = true
+	c.measurements = newMeasurements(testMaxPayload)
+
+	// Simulate rwnd-blocked: receiver has zero window
+	c.rcvWndSize = 0
+	c.dataInFlight = testMaxPayload // exceeds rcvWndSize → isBlockedByRwnd=true
+
+	s := c.Stream(0)
+
+	// Queue some data first to create the stream entry in the send buffer,
+	// then manually inject an in-flight packet with expired RTO to simulate
+	// a packet that was sent long ago and never ACKed (lost on the wire).
+	c.snd.queueData(s.streamID, []byte("new-data-blocked"))
+
+	retransmitData := []byte("lost-packet-data")
+	pktKey := createPacketKey(0, uint16(len(retransmitData)))
+	c.snd.mu.Lock()
+	c.snd.streams[s.streamID].inFlight.put(pktKey, &sendPacket{
+		data:         retransmitData,
+		sentTimeNano: 0, // sent at time 0
+		sentCount:    0,
+		needsReTx:    true,
+	})
+	c.snd.mu.Unlock()
+
+	// Call flushStream at a time well past the RTO (200ms+)
+	nowNano := uint64(500 * msNano)
+	dataSent, _, err := c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	assert.Greater(t, dataSent, 0, "retransmit should succeed despite rwnd=0")
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "one packet should be written")
+
+	// Drain the retransmitted packet
+	connPair.dropSender(0)
+
+	// Now flushStream again — no more retransmits pending, new data blocked by rwnd
+	dataSent, _, err = c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, dataSent, "new data should be blocked by rwnd=0")
+}
+
+// TestConn_FlushStream_NewDataBlockedByRwnd verifies that new data (non-retransmit)
+// is still properly blocked when the receive window is zero.
+func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c := createTestConn(true, false, true)
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.mtuSent = true
+	c.measurements = newMeasurements(testMaxPayload)
+
+	// Simulate rwnd-blocked
+	c.rcvWndSize = 0
+	c.dataInFlight = testMaxPayload
+
+	s := c.Stream(0)
+
+	// Queue only new data (no in-flight retransmits)
+	c.snd.queueData(s.streamID, []byte("should-not-send"))
+
+	nowNano := uint64(500 * msNano)
+	dataSent, _, err := c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, dataSent, "new data must be blocked by rwnd=0")
+	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender(), "no packets should be written")
+}

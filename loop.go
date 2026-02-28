@@ -20,8 +20,7 @@ import (
 // Listen reads one packet, decrypts it, and processes the payload.
 // Returns the stream that received data, or nil on timeout/no-data.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
-	encData := make([]byte, l.maxPayload)
-	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(encData, timeoutNano, nowNano)
+	n, rAddr, err := l.localConn.ReadFromUDPAddrPort(l.readBuf, timeoutNano, nowNano)
 
 	if err != nil {
 		var netErr net.Error
@@ -35,7 +34,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		return nil, nil
 	}
 
-	encData = encData[:n]
+	encData := l.readBuf[:n]
 
 	// Parse and validate header
 	if len(encData) < minPacketSize {

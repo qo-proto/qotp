@@ -3,6 +3,6 @@
 testdata
 .zed
 examples/example?/example?
-experiments/bench_*/bench_*
+experiments/bench/bench
 experiments/results/
-bench_*
+bench*
