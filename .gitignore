@@ -3,3 +3,5 @@
 testdata
 .zed
 examples/example?/example?
+experiments/bench_*/bench_*
+experiments/results/

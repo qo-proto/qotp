@@ -85,7 +85,8 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 
 * Max RTT: Up to 30 seconds connection timeout (no hard RTT limit, but suspicious RTT > 30s logged)
 * Packet identification: Stream offset (24 or 48-bit) + length (16-bit)
-* Default Max Data Transfer: 1400 bytes (configurable)
+* Max Payload: `interfaceMTU - 48` (typically 1452 for Ethernet; configurable via `WithMaxPayload`)
+  * Connections start at `conservativeMTU` (1232) and negotiate up via `pktMtuUpdate`
 * Buffer capacity: 16MB send + 16MB receive (configurable constants)
 * Crypto sequence space: 48-bit sequence number + 47-bit epoch = 2^95 total space
   * Separate from transport layer stream offsets
@@ -101,7 +102,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 **Flow 1: In-band Key Exchange (No Prior Keys)**
 
 ```
-Sender → Receiver: InitSnd (unencrypted, 1400 bytes min)
+Sender → Receiver: InitSnd (unencrypted, maxPayload bytes min)
   - pubKeyEpSnd + (pubKeyIdSnd)
   - Padded to prevent amplification
 
@@ -118,7 +119,7 @@ Both: Data messages (encrypted with shared secret)
 Sender → Receiver: InitCryptoSnd (encrypted - [prvKeyEpSnd + pubKeyIdRcv], non-PFS)
   - pubKeyEpSnd + (pubKeyIdSnd)
   - Can contain payload
-  - 1400 bytes min with padding
+  - maxPayload bytes min with padding
 
 Receiver → Sender: InitCryptoRcv (encrypted - [pubKeyEpSnd + prvKeyEpRcv], PFS)
   - pubKeyEpRcv
@@ -165,23 +166,24 @@ MinDataSizeHdr          = 9 bytes (header + connId)
 FooterDataSize          = 22 bytes (6 SN + 16 MAC)
 MinPacketSize           = 39 bytes (9 + 22 + 8)
 
-Default Max Data Transfer             = 1400 bytes
+Max Payload             = interfaceMTU - 48 (typically 1452)
+Conservative MTU        = 1232 (IPv6 min link MTU 1280 - 48)
 Send Buffer Capacity    = 16 MB
 Receive Buffer Capacity = 16 MB
 ```
 
 ### Message Structures
 
-#### InitSnd (Type 000, Min: 1400 bytes)
+#### InitSnd (Type 000, Min: maxPayload bytes)
 
-Unencrypted, no data payload. Minimum 1400 bytes prevents amplification attacks.
+Unencrypted, no data payload. Padded to maxPayload bytes to prevent amplification attacks.
 
 ```
 Byte 0:       Header (version=0, type=000)
 Bytes 1-32:   Public Key Ephemeral Sender (X25519)
               First 8 bytes = Connection ID
 Bytes 33-64:  Public Key Identity Sender (X25519)
-Bytes 65+:    Padding to 1400 bytes
+Bytes 65+:    Padding to maxPayload bytes
 ```
 
 **Connection ID**: First 64 bits of pubKeyEpSnd, used for the lifetime of the connection.
@@ -200,7 +202,7 @@ Bytes 79+:    Encrypted Payload (min 8 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
-#### InitCryptoSnd (Type 010, Min: 1400 bytes)
+#### InitCryptoSnd (Type 010, Min: maxPayload bytes)
 
 Encrypted with ECDH(prvKeyEpSnd, pubKeyIdRcv). No perfect forward secrecy for first message.
 
@@ -214,7 +216,7 @@ Bytes 71-72:  Filler Length (16-bit, encrypted)
 Bytes 73+:    Filler (variable, encrypted)
 Bytes X+:     Encrypted Payload (min 8 bytes)
 Last 16:      MAC (Poly1305)
-Total:        Padded to 1400 bytes
+Total:        Padded to maxPayload bytes
 ```
 
 #### InitCryptoRcv (Type 011, Min: 71 bytes)
@@ -312,17 +314,6 @@ Initiator                          Responder
 **Decryption**: Receiver tries `cur`, then `prev`, then `next` secrets to handle packets in flight during rotation.
 
 **Retransmission Handling**: Duplicate KEY_UPDATE packets (same pubKey as current or previous round) are ignored or re-ACKed without generating new keys.
-```
-
-**3. Update "Error Handling" section (line 606)**
-
-Change:
-```
-- Epoch mismatches handled with ±1 epoch tolerance
-```
-To:
-```
-- Key rotation: tries current, previous, and next secrets during transition
 
 ### Transport Layer (Payload Format)
 
@@ -332,90 +323,57 @@ After decryption, payload contains transport header + data. Min 8 bytes total.
 
 **Byte 0 (Header byte):**
 ```
-Bits 0-3: Protocol Version (4 bits, currently 0)
-Bits 4-7: Message Type (4 bits)
+Bit 0:    hasAck
+Bit 1:    extend (48-bit offsets instead of 24-bit)
+Bit 2:    needsReTx
+Bits 3-5: packet type (3 bits)
+Bits 6-7: reserved
 ```
 
-**Message Type Encoding (bits 5-6):**
+**Packet Types (bits 3-5):**
 
-| Type |IsClose |Has ACK |  Size  | Description |
-|------|--------|--------|--------|-------------|
-| 0000 | No     | Yes    | 24-bit | DATA        |
-| 0100 | No     | No     | 24-bit | DATA        |
-| 1000 | Yes    | Yes    | 24-bit | DATA/CLOSE  |
-| 1100 | Yes    | No     | 24-bit | DATA/CLOSE  |
-| 0010 | No     | Yes    | 48-bit | DATA        |
-| 0110 | No     | No     | 48-bit | DATA        |
-| 1010 | Yes    | Yes    | 48-bit | DATA/CLOSE  |
-| 1110 | Yes    | No     | 48-bit | DATA/CLOSE  |
-| 0001 | No     | No     | 24-bit | PROBE/PING  |
-| 0101 | No     | No     | 48-bit | PROBE/PING  |
-| 1001 | N/A    | N/A    | N/A    | UNUSED      |
-| 1101 | N/A    | N/A    | N/A    | UNUSED      |
-| 0011 | N/A    | N/A    | N/A    | UNUSED      |
-| 0111 | N/A    | N/A    | N/A    | UNUSED      |
-| 1011 | N/A    | N/A    | N/A    | UNUSED      |
-| 1111 | N/A    | N/A    | N/A    | UNUSED      |
+| Value | Name           | Description                    |
+|-------|----------------|--------------------------------|
+| 0     | data           | Plain data                     |
+| 1     | mtuUpdate      | MTU negotiation (2-byte value) |
+| 2     | close          | Stream close                   |
+| 3     | keyUpdate      | Key rotation initiation        |
+| 4     | keyUpdateAck   | Key rotation acknowledgment    |
+| 5     | KU+KUAck       | keyUpdate + keyUpdateAck       |
+| 6     | close+KU       | close + keyUpdate              |
+| 7     | close+KUAck    | close + keyUpdateAck           |
 
-**Message Type Semantics:**
+**MTU Negotiation (`pktMtuUpdate`):**
+- Carries a 2-byte `maxPayload` value from the sender
+- Included in init packets (InitCryptoSnd, InitRcv, InitCryptoRcv) and the first data packet after InitSnd handshake
+- Mutually exclusive with close/keyUpdate flags
+- Both peers exchange their `maxPayload`; connection MTU = `min(local, remote)`, floored at `conservativeMTU` (1232)
+- On consecutive packet losses (`mtuFallbackThreshold` = 5), MTU falls back to `conservativeMTU`; restored on next successful ACK
 
-- **Type `00` (DATA with ACK)**: 
-  - Contains acknowledgment for received data
-  - If `userData == nil` (not empty array): ACK-only packet, no stream data header
-  - If `userData == []byte{}` (empty array): PING packet with stream data header
+**Stream header** (streamId + offset) is included when:
+- Any non-data packet type, OR
+- Has user data, OR
+- No ACK (for minimum packet size)
 
-- **Type `01` (DATA without ACK)**:
-  - Pure data transmission, no acknowledgment piggybacked
-  - If `userData == []byte{}` (empty array): PING packet with stream data header
+**ACK-only packets** (`userData == nil` with hasAck): omit stream header to save space.
 
-- **Type `10` (CLOSE with ACK)**:
-  - Notifies peer that stream is closing at specified offset
-  - Includes acknowledgment for received data
-
-- **Type `11` (CLOSE without ACK)**:
-  - Notifies peer that stream is closing at specified offset
-  - No acknowledgment piggybacked
-
-**PING packets:**
-- Indicated by `userData == []byte{}` (empty array, not nil)
-- Always include stream data header (StreamID + StreamOffset)
-- Used for keepalive and RTT measurement
-- Require acknowledgment but are not retransmitted if lost
-
-**ACK-only packets:**
-- Indicated by `userData == nil` in type `00` messages
-- Omit stream data header to save space
-- Only contain ACK section
+**PING packets** (`userData == []byte{}`): include stream header, used for keepalive/RTT measurement.
 
 #### Packet Structure
 
-**With ACK + Stream Data (types 00, 01, 10, 11 with userData != nil):**
+**With ACK + Stream Data:**
 ```
 Byte 0:           Header
-Bytes 1-4:        ACK Stream ID (32-bit) [if type 00 or 10]
-Bytes 5-7/10:     ACK Offset (24 or 48-bit) [if type 00 or 10]
-Bytes 8-9/11-12:  ACK Length (16-bit) [if type 00 or 10]
-Byte 10/13:       ACK Receive Window (8-bit, encoded) [if type 00 or 10]
-Bytes X-X+3:      Stream ID (32-bit)
-Bytes X+4-X+6/9:  Stream Offset (24 or 48-bit)
-Bytes X+7/10+:    User Data (can be empty for PING)
-```
-
-**ACK-only (type 00 with userData == nil):**
-```
-Byte 0:           Header
-Bytes 1-4:        ACK Stream ID (32-bit)
-Bytes 5-7/10:     ACK Offset (24 or 48-bit)
-Bytes 8-9/11-12:  ACK Length (16-bit)
-Byte 10/13:       ACK Receive Window (8-bit, encoded)
-```
-
-**Data-only (type 01 with userData):**
-```
-Byte 0:           Header
-Bytes 1-4:        Stream ID (32-bit)
-Bytes 5-7/10:     Stream Offset (24 or 48-bit)
-Bytes 8/11+:      User Data
+Bytes 1-4:        ACK Stream ID (32-bit) [if hasAck]
+Bytes 5-7/10:     ACK Offset (24 or 48-bit) [if hasAck]
+Bytes 8-9/11-12:  ACK Length (16-bit) [if hasAck]
+Byte 10/13:       ACK Receive Window (8-bit, encoded) [if hasAck]
+Bytes X-X+1:      MTU Value (16-bit) [if pktMtuUpdate]
+Bytes Y-Y+31:     Key Update Public Key (32 bytes) [if keyUpdate]
+Bytes Z-Z+31:     Key Update Ack Public Key (32 bytes) [if keyUpdateAck]
+Bytes A-A+3:      Stream ID (32-bit) [if hasStreamHeader]
+Bytes A+4-A+6/9:  Stream Offset (24 or 48-bit) [if hasStreamHeader]
+Bytes A+7/10+:    User Data
 ```
 
 #### Receive Window Encoding
@@ -472,18 +430,17 @@ RTO = SRTT + 4 × RTTVAR
 RTO = clamp(RTO, 100ms, 2000ms)
 Default RTO = 200ms (when no SRTT)
 
-Backoff: RTO_i = RTO × 2^(i-1)
+Backoff: RTO_i = min(RTO × 2^(i-1), maxRTO) — capped at 2000ms per step
 Max retries: 4 (total 5 attempts)
-Timeout after ~5 seconds total
 ```
 
-**Example timing**:
-- Attempt 1: t=0
-- Attempt 2: t=250ms
-- Attempt 3: t=687ms
-- Attempt 4: t=1452ms
-- Attempt 5: t=2791ms
-- Fail: t=5134ms
+**Example timing** (default RTO = 200ms):
+- Attempt 1: t=0 (200ms)
+- Attempt 2: t=200ms (400ms)
+- Attempt 3: t=600ms (800ms)
+- Attempt 4: t=1400ms (1600ms)
+- Attempt 5: t=3000ms (2000ms, capped)
+- Fail: t=5000ms
 
 #### Flow Control
 
@@ -610,9 +567,9 @@ Enables O(1) in-flight packet tracking and ACK processing.
 ## Overhead Analysis
 
 **Crypto Layer Overhead**:
-- InitSnd: 1400 bytes (no data, padding)
+- InitSnd: maxPayload bytes (no data, padding)
 - InitRcv: 103+ bytes (73 header + 6 SN + 16 MAC + ≥8 payload)
-- InitCryptoSnd: 1400 bytes (includes padding)
+- InitCryptoSnd: maxPayload bytes (includes padding)
 - InitCryptoRcv: 63+ bytes (41 header + 6 SN + 16 MAC + ≥8 payload)
 - Data: 39+ bytes (9 header + 6 SN + 16 MAC + ≥8 payload)
 
@@ -621,11 +578,12 @@ Enables O(1) in-flight packet tracking and ACK processing.
 - No ACK, 48-bit offset: 11 bytes
 - With ACK, 24-bit offset: 18 bytes
 - With ACK, 48-bit offset: 24 bytes
+- pktMtuUpdate adds 2 bytes (included in init and first data packet)
 
 **Total Minimum Overhead** (Data message with payload):
 - Best case: 39 bytes (9 + 6 + 16 + 8 transport header)
 - Typical: 39-47 bytes for data packets
-- 1400-byte packet: ~2.8-3.4% overhead
+- 1452-byte packet: ~2.7-3.2% overhead
 
 ## Implementation Details
 
@@ -648,10 +606,11 @@ All buffer operations protected by mutexes:
 
 ### Error Handling
 
-**Crypto Errors**: 
+**Crypto Errors**:
 - Authentication failures logged and dropped silently
 - Malformed packets logged and dropped
 - Epoch mismatches handled with ±1 epoch tolerance
+- Key rotation: tries current, previous, and next secrets during transition
 
 **Buffer Full**:
 - Send: `Write()` returns partial bytes written
@@ -738,8 +697,8 @@ func (s *Stream) Ping()
 // Address to listen on
 qotp.WithListenAddr("127.0.0.1:8888")
 
-// Custom MTU (default 1400)
-qotp.WithMtu(1200)
+// Custom max payload (default: interfaceMTU - 48, typically 1452)
+qotp.WithMaxPayload(1200)
 
 // Pre-configured identity key
 qotp.WithPrvKeyId(privateKey)

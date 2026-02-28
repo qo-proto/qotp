@@ -267,14 +267,22 @@ stream.Ping()
 // RTT is used internally for congestion control
 ```
 
-## Example 10: Custom MTU
+## Example 10: Custom Max Payload
 
-Adjust packet size for your network.
+Adjust max UDP payload size for your network. Default is `interfaceMTU - 48` (typically 1452 for Ethernet).
 
 ```go
 listener, err := qotp.Listen(
-    qotp.WithMtu(1200), // Smaller MTU for tunnels/VPNs
+    qotp.WithMaxPayload(1200), // Smaller payload for tunnels/VPNs
 )
+```
+
+Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload during handshake via `pktMtuUpdate`.
+
+To re-detect the interface MTU at runtime (e.g., after switching from WiFi to Ethernet):
+
+```go
+listener.RefreshMaxPayload()
 ```
 
 ## Example 11: Wireshark Debugging
@@ -386,7 +394,7 @@ if conn.HasActiveStreams() {
 |----------|-------------|
 | `Listen(options...)` | Create a new listener |
 | `WithListenAddr(addr)` | Bind to specific address |
-| `WithMtu(mtu)` | Set packet size (default 1400) |
+| `WithMaxPayload(maxPayload)` | Set max UDP payload (default: interfaceMTU - 48) |
 | `WithSeed(seed)` | Deterministic key from bytes |
 | `WithSeedHex(hex)` | Deterministic key from hex |
 | `WithSeedString(s)` | Deterministic key from string |
@@ -403,6 +411,7 @@ if conn.HasActiveStreams() {
 | `Listen(timeout, now)` | Receive one packet (low-level) |
 | `Flush(now)` | Send pending data (low-level) |
 | `HasActiveStreams()` | Check for active streams |
+| `RefreshMaxPayload()` | Re-detect interface MTU and recompute maxPayload |
 | `Dial(addr)` | Connect with `netip.AddrPort` |
 | `DialString(addr)` | Connect with string address |
 | `DialWithCrypto(addr, pubKey)` | Connect (0-RTT) with `netip.AddrPort` |

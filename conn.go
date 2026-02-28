@@ -524,7 +524,8 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
 	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
 
-	if isBlockedByPacing || isBlockedByCwnd || isBlockedByRwnd {
+	// Pacing and congestion window block everything (including retransmits)
+	if isBlockedByPacing || isBlockedByCwnd {
 		if ack == nil {
 			if isBlockedByPacing {
 				return 0, c.nextWriteTime - nowNano, nil
@@ -545,7 +546,11 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		effectiveMtu -= 2
 	}
 
-	// Try retransmission first (oldest unacked packet)
+	// Try retransmission first (oldest unacked packet).
+	// Retransmissions bypass the receive window check: the data was already
+	// counted in dataInFlight when first sent, and the receiver's window was
+	// open at that time. Blocking retransmits on rwnd causes deadlocks when
+	// a lost packet creates a gap in the receiver's reassembly buffer.
 	splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := c.snd.readyToRetransmit(s.streamID, ack, effectiveMtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		return 0, 0, err
@@ -557,6 +562,15 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			c.mtu = conservativeMTU
 		}
 		return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+	}
+
+	// Receive window blocks new data only (retransmits already handled above)
+	if isBlockedByRwnd {
+		if ack == nil {
+			return 0, MinDeadLine, nil
+		}
+		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
+		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 
 	// Try sending new data (only after handshake or if init not yet sent)
