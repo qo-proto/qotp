@@ -354,7 +354,7 @@ func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 	// elapsed = 2.3s - 1.0s = 1.3s > 1.2s → triggers probe
 	conn.updateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
 
-	assert.Equal(t, uint64(125), conn.pacingGainPct, "should probe with 125% gain")
+	assert.Equal(t, uint64(200), conn.pacingGainPct, "should probe with 200% gain")
 	assert.Equal(t, uint64(2_300_000_000), conn.lastProbeTimeNano, "should update probe time")
 	assert.Equal(t, probeRounds, conn.probeRoundsRemaining, "should set probe rounds")
 }
