@@ -29,7 +29,7 @@ type result struct {
 func main() {
 	addr := flag.String("addr", "127.0.0.1", "server IP address")
 	sizeMB := flag.Int("size", 32, "data size in MB")
-	out := flag.String("out", "", "csv output file (default: stdout)")
+	scenario := flag.String("scenario", "loopback", "scenario label for CSV")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -57,22 +57,14 @@ func main() {
 	wg.Wait()
 
 	w := csv.NewWriter(os.Stdout)
-	if *out != "" {
-		f, err := os.Create(*out)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		w = csv.NewWriter(f)
-	}
 	defer w.Flush()
 
-	w.Write([]string{"protocol", "size_mb", "total_ms"})
 	for _, r := range results {
 		w.Write([]string{
 			r.protocol,
 			fmt.Sprintf("%d", r.size/1024/1024),
 			fmt.Sprintf("%.3f", float64(r.duration.Microseconds())/1000.0),
+			*scenario,
 		})
 	}
 }

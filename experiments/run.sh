@@ -45,23 +45,23 @@ Usage: $(basename "${BASH_SOURCE[0]}") [OPTIONS]
 Run benchmarks locally on loopback (no rate limiting).
 
 OPTIONS:
-  -h, --help      Print this help and exit
-  --size MB       Data size in MB (default: 32)
-  --out DIR       Output directory (default: experiments/results)
+  -h, --help        Print this help and exit
+  --sizes LIST      Comma-separated data sizes in MB (default: 1,4,16,64,128)
+  --out DIR         Output directory (default: experiments/results)
 EOF
   exit
 }
 
 parse_params() {
-  SIZE=32
+  SIZES="1,4,16,64,128"
   OUT_DIR="$SCRIPT_DIR/results"
 
   while :; do
     case "${1-}" in
     -h | --help) usage ;;
     --no-color) NO_COLOR=1 ;;
-    --size)
-      SIZE="${2-}"
+    --sizes)
+      SIZES="${2-}"
       shift
       ;;
     --out)
@@ -80,15 +80,29 @@ parse_params "$@"
 
 mkdir -p "$OUT_DIR"
 
+IFS=',' read -ra SIZE_ARR <<< "$SIZES"
+
 msg_info "Starting server..."
 "$SCRIPT_DIR/server/server" >/dev/null 2>&1 &
 SRV_PID=$!
 sleep 0.5
 
-msg_info "Running benchmark: ${SIZE} MB"
-msg ""
+echo "protocol,size_mb,total_ms,scenario" > "$OUT_DIR/combined.csv"
 
-"$SCRIPT_DIR/client/client" -size="$SIZE" -out="$OUT_DIR/combined.csv" 2>/dev/null
+for s in "${SIZE_ARR[@]}"; do
+  msg_info "Running benchmark: ${s} MB"
+  "$SCRIPT_DIR/client/client" -size="$s" -scenario="loopback" \
+    >> "$OUT_DIR/combined.csv" 2>/dev/null
+done
+
+msg ""
 column -t -s, "$OUT_DIR/combined.csv"
 msg ""
 msg_ok "CSV written to $OUT_DIR/combined.csv"
+
+if command -v gnuplot &>/dev/null; then
+  gnuplot -e "csv='$OUT_DIR/combined.csv'; outdir='$OUT_DIR'" "$SCRIPT_DIR/plot.gp"
+  msg_ok "Plots written to $OUT_DIR/"
+else
+  msg_info "Install gnuplot to generate charts automatically"
+fi

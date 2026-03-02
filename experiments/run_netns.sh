@@ -50,29 +50,41 @@ Run benchmarks over a rate-limited veth pair using network namespaces.
 Requires root.
 
 OPTIONS:
-  -h, --help      Print this help and exit
-  --size MB       Data size in MB (default: 32)
-  --rate RATE     Link rate, e.g. 1gbit, 100mbit (default: 1gbit)
-  --out DIR       Output directory (default: experiments/results)
+  -h, --help          Print this help and exit
+  --sizes LIST        Comma-separated data sizes in MB (default: 1,4,16,64)
+  --rates LIST        Comma-separated link rates (default: 100mbit,500mbit,1gbit)
+  --delays LIST       Comma-separated one-way delays (default: 0ms,20ms,50ms,100ms)
+  --jitters LIST      Comma-separated jitter values (default: 0ms,5ms,10ms)
+  --out DIR           Output directory (default: experiments/results)
 EOF
   exit
 }
 
 parse_params() {
-  SIZE=32
-  RATE="1gbit"
+  SIZES="1,4,16,64"
+  RATES="100mbit,500mbit,1gbit"
+  DELAYS="0ms,20ms,50ms,100ms"
+  JITTERS="0ms,5ms,10ms"
   OUT_DIR="$SCRIPT_DIR/results"
 
   while :; do
     case "${1-}" in
     -h | --help) usage ;;
     --no-color) NO_COLOR=1 ;;
-    --size)
-      SIZE="${2-}"
+    --sizes)
+      SIZES="${2-}"
       shift
       ;;
-    --rate)
-      RATE="${2-}"
+    --rates)
+      RATES="${2-}"
+      shift
+      ;;
+    --delays)
+      DELAYS="${2-}"
+      shift
+      ;;
+    --jitters)
+      JITTERS="${2-}"
       shift
       ;;
     --out)
@@ -93,6 +105,11 @@ parse_params "$@"
 
 mkdir -p "$OUT_DIR"
 
+IFS=',' read -ra SIZE_ARR <<< "$SIZES"
+IFS=',' read -ra RATE_ARR <<< "$RATES"
+IFS=',' read -ra DELAY_ARR <<< "$DELAYS"
+IFS=',' read -ra JITTER_ARR <<< "$JITTERS"
+
 # Clean up stale namespaces from previous runs
 ip netns del "$NS_SRV" 2>/dev/null || true
 ip netns del "$NS_CLI" 2>/dev/null || true
@@ -112,20 +129,44 @@ ip netns exec "$NS_CLI" ip addr add 10.0.0.2/24 dev veth-cli
 ip netns exec "$NS_CLI" ip link set veth-cli up
 ip netns exec "$NS_CLI" ip link set lo up
 
-# Rate limit both directions
-ip netns exec "$NS_SRV" tc qdisc add dev veth-srv root tbf rate "$RATE" burst 64kb latency 1ms
-ip netns exec "$NS_CLI" tc qdisc add dev veth-cli root tbf rate "$RATE" burst 64kb latency 1ms
-
-msg_info "Benchmark: ${SIZE} MB @ ${RATE}"
-msg ""
-
 # Start server in server namespace
 ip netns exec "$NS_SRV" "$SCRIPT_DIR/server/server" -addr=10.0.0.1 >/dev/null 2>&1 &
 SRV_PID=$!
 sleep 0.5
 
-# Run client in client namespace
-ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" -addr=10.0.0.1 -size="$SIZE" -out="$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+echo "protocol,size_mb,total_ms,scenario" > "$OUT_DIR/combined.csv"
+
+for rate in "${RATE_ARR[@]}"; do
+  for delay in "${DELAY_ARR[@]}"; do
+    for jitter in "${JITTER_ARR[@]}"; do
+      scenario="${rate}_${delay}_${jitter}"
+
+      # netem for delay/jitter, then tbf for rate shaping
+      for dev_ns in "$NS_SRV:veth-srv" "$NS_CLI:veth-cli"; do
+        ns="${dev_ns%%:*}"
+        dev="${dev_ns##*:}"
+        ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem delay "$delay" "$jitter"
+        ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst 64kb latency 1ms
+      done
+
+      for s in "${SIZE_ARR[@]}"; do
+        msg_info "Benchmark: ${s} MB @ ${scenario}"
+        ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
+          -addr=10.0.0.1 -size="$s" -scenario="$scenario" \
+          >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+      done
+    done
+  done
+done
+
+msg ""
 column -t -s, "$OUT_DIR/combined.csv"
 msg ""
 msg_ok "CSV written to $OUT_DIR/combined.csv"
+
+if command -v gnuplot &>/dev/null; then
+  gnuplot -e "csv='$OUT_DIR/combined.csv'; outdir='$OUT_DIR'" "$SCRIPT_DIR/plot.gp"
+  msg_ok "Plots written to $OUT_DIR/"
+else
+  msg_info "Install gnuplot to generate charts automatically"
+fi
