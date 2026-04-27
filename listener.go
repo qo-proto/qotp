@@ -264,9 +264,9 @@ func (l *Listener) newConn(
 		initMsgType:  initMsgType,
 		snd:          newSendBuffer(sndBufferCapacity),
 		rcv:          newReceiveBuffer(rcvBufferCapacity),
-		measurements: newMeasurements(l.maxPayload),
+		measurements: newMeasurements(conservativeMTU),
 		rcvWndSize:   rcvBufferCapacity,
-		mtu:          l.maxPayload,
+		mtu:          conservativeMTU,
 	}
 
 	// Log keys for Wireshark debugging if enabled

@@ -59,27 +59,28 @@ type msg struct {
 // =============================================================================
 
 // encryptInitSnd creates an unencrypted InitSnd packet.
-// Padded to MTU to prevent amplification attacks.
+// Padded to conservativeMTU to prevent amplification attacks.
+// Embeds localMaxPayload so the receiver can negotiate MTU at handshake time.
 // Returns connId derived from first 8 bytes of pubKeyEpSnd.
-func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, mtu int) (connId uint64, encData []byte, err error) {
+func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, localMaxPayload int) (connId uint64, encData []byte, err error) {
 	if pubKeyIdSnd == nil || pubKeyEpSnd == nil {
 		return 0, nil, errors.New("handshake keys cannot be nil")
 	}
-	encData = make([]byte, mtu)
+	encData = make([]byte, conservativeMTU)
 	encData[0] = (uint8(initSnd) << 5) | cryptoVersion
 	copy(encData[headerSize:], pubKeyEpSnd.Bytes())
 	copy(encData[headerSize+pubKeySize:], pubKeyIdSnd.Bytes())
+	putUint16(encData[headerSize+2*pubKeySize:], uint16(localMaxPayload))
 	return getUint64(encData[headerSize:]), encData, nil
 }
 
 // encryptInitCryptoSnd creates an encrypted 0-RTT initiation packet.
 // Encrypted with ECDH(prvKeyEpSnd, pubKeyIdRcv) - no perfect forward secrecy.
-// Padded to MTU to prevent amplification attacks.
+// Padded to conservativeMTU to prevent amplification attacks.
 func encryptInitCryptoSnd(
 	pubKeyIdRcv, pubKeyIdSnd *ecdh.PublicKey,
 	prvKeyEpSnd *ecdh.PrivateKey,
 	snCrypto uint64,
-	mtu int,
 	packetData []byte,
 ) (connId uint64, encData []byte, err error) {
 	if pubKeyIdRcv == nil || pubKeyIdSnd == nil || prvKeyEpSnd == nil {
@@ -91,8 +92,8 @@ func encryptInitCryptoSnd(
 	copy(header[headerSize:], prvKeyEpSnd.PublicKey().Bytes())
 	copy(header[headerSize+pubKeySize:], pubKeyIdSnd.Bytes())
 
-	// Pad to MTU: [fillLen (2 bytes)][filler (fillLen bytes)][packetData]
-	fillLen := mtu - (minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize + len(packetData))
+	// Pad to conservativeMTU: [fillLen (2 bytes)][filler (fillLen bytes)][packetData]
+	fillLen := conservativeMTU - (minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize + len(packetData))
 	if fillLen < 0 {
 		return 0, nil, errors.New("packet data too large for MTU")
 	}
@@ -212,21 +213,22 @@ func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, 
 // Decryption
 // =============================================================================
 
-// decryptInitSnd extracts public keys from an unencrypted InitSnd packet.
-// Validates packet size against MTU to prevent amplification attacks.
-func decryptInitSnd(encData []byte, mtu int) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, err error) {
-	if len(encData) < mtu {
-		return nil, nil, errors.New("size is below minimum init")
+// decryptInitSnd extracts public keys and sender's maxPayload from an unencrypted InitSnd packet.
+// Validates packet size against conservativeMTU to prevent amplification attacks.
+func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, senderMaxPayload uint16, err error) {
+	if len(encData) < conservativeMTU {
+		return nil, nil, 0, errors.New("size is below minimum init")
 	}
 	pubKeyEpSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize : headerSize+pubKeySize])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	pubKeyIdSnd, err = ecdh.X25519().NewPublicKey(encData[headerSize+pubKeySize : headerSize+(2*pubKeySize)])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
-	return pubKeyIdSnd, pubKeyEpSnd, nil
+	senderMaxPayload = getUint16(encData[headerSize+2*pubKeySize:])
+	return pubKeyIdSnd, pubKeyEpSnd, senderMaxPayload, nil
 }
 
 // decryptInitRcv decrypts an InitRcv handshake response.
@@ -262,9 +264,9 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 
 // decryptInitCryptoSnd decrypts a 0-RTT initiation packet.
 // Uses receiver's identity key for decryption (no PFS for this message).
-func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey, mtu int) (
+func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, m *msg, err error) {
-	if len(encData) < mtu {
+	if len(encData) < conservativeMTU {
 		return nil, nil, nil, errors.New("size is below minimum init")
 	}
 

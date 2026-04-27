@@ -189,7 +189,7 @@ func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cry
 func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
 	switch msgType {
 	case initSnd:
-		pubKeyIdSnd, pubKeyEpSnd, err := decryptInitSnd(encData, l.maxPayload)
+		pubKeyIdSnd, pubKeyEpSnd, senderMaxPayload, err := decryptInitSnd(encData)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
 		}
@@ -197,6 +197,7 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 		if err != nil {
 			return nil, nil, err
 		}
+		conn.negotiateMTU(senderMaxPayload)
 		sharedSecret, err := conn.sndKeys.prvKeyEp.ECDH(pubKeyEpSnd)
 		if err != nil {
 			return nil, nil, fmt.Errorf("ECDH: %w", err)
@@ -206,7 +207,7 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 		return conn, []byte{}, nil
 
 	case initCryptoSnd:
-		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId, l.maxPayload)
+		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
 		}
@@ -288,7 +289,6 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.prvKeyId.PublicKey(),
 			c.sndKeys.prvKeyEp,
 			c.snCrypto,
-			c.listener.maxPayload,
 			packetData,
 		)
 	case initRcv, initCryptoRcv, data:
@@ -609,9 +609,8 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 			p.isMtuUpdate = true
 			p.mtuUpdateValue = uint16(c.listener.maxPayload)
 		case initSnd:
-			// No proto payload — sender's MTU is sent in the first data packet after handshake.
+			// MTU is embedded in the initSnd fixed header; no proto payload needed.
 		default:
-			// Data packets: send MTU once (for initSnd sender's first data packet).
 			if !c.mtuSent {
 				p.isMtuUpdate = true
 				p.mtuUpdateValue = uint16(c.listener.maxPayload)
@@ -643,7 +642,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		return 0, 0, err
 	}
 
-	if !c.mtuSent && p.isMtuUpdate {
+	if !c.mtuSent && (p.isMtuUpdate || c.msgType() == initSnd) {
 		c.mtuSent = true
 	}
 

@@ -445,8 +445,8 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	lAlice.connMap.put(connId, connAlice)
 	connAlice.connId = connId
 
-	// 1295 bytes is max payload for InitCryptoSnd
-	testData := createTestData(1295)
+	// 1135 bytes is max payload for InitCryptoSnd at conservativeMTU=1232 (1232 - 65 hdr - 22 footer - 2 fillLen - 8 proto = 1135)
+	testData := createTestData(1135)
 
 	p := &payloadHeader{streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
@@ -998,16 +998,16 @@ func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
 	assert.Equal(t, 8952, c.negotiatedMTU)
 }
 
-func TestConn_InitialMTU_MatchesListenerMaxPayload(t *testing.T) {
+func TestConn_InitialMTU_StartsAtConservativeMTU(t *testing.T) {
 	lAlice, lBob := createTestListeners()
 	rAddr := netip.MustParseAddrPort("127.0.0.1:12345")
 
-	// Create a new conn — should start with listener's maxPayload
+	// New conn starts at conservativeMTU; negotiateMTU upgrades it after handshake
 	conn, err := lAlice.newConn(
 		123, rAddr, prvEpAlice, prvIdBob.PublicKey(), prvEpBob.PublicKey(), true, false,
 	)
 	assert.NoError(t, err)
-	assert.Equal(t, lAlice.maxPayload, conn.mtu)
+	assert.Equal(t, conservativeMTU, conn.mtu)
 	_ = lBob // suppress unused
 }
 
@@ -1090,24 +1090,25 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 		rcv:          newReceiveBuffer(1000),
 		snd:          newSendBuffer(1000),
 		streams:      newLinkedMap[uint32, *Stream](),
-		mtu:          lAlice.maxPayload,
-		measurements: newMeasurements(lAlice.maxPayload),
+		mtu:          conservativeMTU,
+		measurements: newMeasurements(conservativeMTU),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
 	}
 	lAlice.connMap.put(connAlice.connId, connAlice)
-	assert.Equal(t, lAlice.maxPayload, connAlice.mtu) // starts with local maxPayload
+	assert.Equal(t, conservativeMTU, connAlice.mtu) // starts at conservativeMTU; negotiateMTU upgrades it
 
-	// Step 1: Alice encodes InitSnd (no proto payload — no MTU info sent)
+	// Step 1: Alice encodes InitSnd — embeds localMaxPayload=1400 in fixed header
 	p := &payloadHeader{}
 	encoded, err := connAlice.encode(p, nil, initSnd)
 	assert.NoError(t, err)
 
-	// Step 2: Bob receives InitSnd — no MTU negotiation yet (initSnd has no proto payload)
+	// Step 2: Bob receives InitSnd — negotiates MTU immediately from embedded sender maxPayload
+	// min(Bob=1300, Alice=1400) = 1300
 	connBob, _, _, err := testDecodeConn(lBob, encoded, remoteAddr)
 	assert.NoError(t, err)
-	assert.Equal(t, lBob.maxPayload, connBob.mtu) // starts with Bob's maxPayload
+	assert.Equal(t, lBob.maxPayload, connBob.mtu) // min(1300, 1400) = 1300 = Bob's maxPayload
 
 	// Step 3: Bob responds with InitRcv, including pktMtuUpdate in proto payload
 	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
@@ -1183,8 +1184,8 @@ func TestConn_MtuSent_SetAfterInitCryptoSnd(t *testing.T) {
 	assert.True(t, c.mtuSent)
 }
 
-func TestConn_MtuSent_NotSetOnInitSnd(t *testing.T) {
-	// initSnd has no proto payload, so mtuSent should stay false
+func TestConn_MtuSent_SetOnInitSnd(t *testing.T) {
+	// initSnd embeds localMaxPayload in fixed header, so mtuSent is set after sending
 	c := createTestConn(true, false, false)
 	c.listener.localConn = NewConnPair("a", "b").Conn1
 	c.remoteAddr = getTestRemoteAddr()
@@ -1195,7 +1196,7 @@ func TestConn_MtuSent_NotSetOnInitSnd(t *testing.T) {
 	s := c.Stream(0)
 	_, _, err := c.encodeAndWrite(s, nil, nil, 0, false, false, false, 1000, false)
 	assert.NoError(t, err)
-	assert.False(t, c.mtuSent)
+	assert.True(t, c.mtuSent)
 }
 
 func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
@@ -1298,8 +1299,8 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 		rcv:          newReceiveBuffer(1000),
 		snd:          newSendBuffer(1000),
 		streams:      newLinkedMap[uint32, *Stream](),
-		mtu:          lAlice.maxPayload,
-		measurements: newMeasurements(lAlice.maxPayload),
+		mtu:          conservativeMTU,
+		measurements: newMeasurements(conservativeMTU),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
