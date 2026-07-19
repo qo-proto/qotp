@@ -38,13 +38,14 @@ var (
 	rtoBackoffPct = uint64(200) // 2x per retry
 
 	// BBR timing
-	probeMultiplier = uint64(8) // Probe every 8x RTT_min
-	probeRounds     = uint64((windowSize + 1) / 2) // Keep probe gain long enough to fill bw window
+	probeMultiplier  = uint64(8) // Probe every 8x RTT_min
+	probeCycleRounds = uint64(2) // One probe round (probeGain) + one drain round (drainGain)
 
 	// BBR pacing gains (percentage, 100 = 1.0x)
 	startupGain = uint64(277) // 2.77x aggressive growth
 	normalGain  = uint64(100) // 1.0x steady state
-	probeGain   = uint64(200) // 2.0x probe bandwidth
+	probeGain   = uint64(125) // 1.25x probe for spare bandwidth
+	drainGain   = uint64(75)  // 0.75x drain the queue the probe built
 
 	// BBR state transitions
 	bwDecThreshold    = uint64(3)   // Exit startup after 3 non-increasing rounds
@@ -83,9 +84,9 @@ type measurements struct {
 	rttMinWin         [windowSize]rttMinEntry // Min-RTT candidates, ascending: [0] = oldest & smallest
 	rttMinCount       int                     // Number of valid entries in rttMinWin
 	rttMinNano        uint64                  // rttMinWin[0].rttNano (cached)
-	bwSamples         [windowSize]uint64 // Rolling window of bandwidth samples
-	bwSampleIdx       int                // Next write index into bwSamples
-	bwMax             uint64             // Max of bwSamples (cached)
+	bwRounds          [windowSize]uint64 // Best bw sample of each of the last completed rounds
+	bwRoundIdx        int                // Next write index into bwRounds
+	bwMax             uint64             // Max of bwRounds and the in-progress round (cached)
 	bwDec             uint64             // Consecutive samples without bandwidth increase
 	lastProbeTimeNano    uint64 // When we last probed for more bandwidth
 	probeRoundsRemaining uint64 // Rounds left in current probe cycle
@@ -209,34 +210,41 @@ func (m *measurements) updateBandwidth(deliveredAtSend uint64, rttNano uint64) {
 		"totalDelivered", m.totalDelivered,
 	)
 
-	// Write into rolling window
-	m.bwSamples[m.bwSampleIdx] = bwCurrent
-	m.bwSampleIdx = (m.bwSampleIdx + 1) % windowSize
-
-	// Recompute max from window
-	var bwMax uint64
-	for _, s := range m.bwSamples {
-		if s > bwMax {
-			bwMax = s
-		}
-	}
-	m.bwMax = bwMax
-
-	// Track best bandwidth in current round
+	// Track best bandwidth in current round; bwMax reacts to increases immediately
 	if bwCurrent > m.roundBwBest {
 		m.roundBwBest = bwCurrent
+	}
+	if bwCurrent > m.bwMax {
+		m.bwMax = bwCurrent
 	}
 
 	// Round completion: all packets in-flight at round start have been ACK'd
 	if deliveredAtSend >= m.roundDeliveredTarget {
 		m.onRoundEnd()
+
+		// Retire the round into the max window; recompute so that maxima
+		// older than windowSize rounds can age out
+		m.bwRounds[m.bwRoundIdx] = m.roundBwBest
+		m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
+		var bwMax uint64
+		for _, s := range m.bwRounds {
+			if s > bwMax {
+				bwMax = s
+			}
+		}
+		m.bwMax = bwMax
+
 		m.roundDeliveredTarget = m.totalDelivered
 		m.prevRoundBwBest = m.roundBwBest
 		m.roundBwBest = 0
 
+		// Probe gain cycle: probe (1.25x) -> drain (0.75x) -> normal (1.0x)
 		if m.probeRoundsRemaining > 0 {
 			m.probeRoundsRemaining--
-			if m.probeRoundsRemaining == 0 {
+			switch m.probeRoundsRemaining {
+			case 1:
+				m.pacingGainPct = drainGain
+			case 0:
 				m.pacingGainPct = normalGain
 			}
 		}
@@ -288,7 +296,7 @@ func (m *measurements) updateStartup() {
 func (m *measurements) updateNormal(nowNano uint64) {
 	if m.probeRoundsRemaining == 0 && nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
 		m.pacingGainPct = probeGain
-		m.probeRoundsRemaining = probeRounds
+		m.probeRoundsRemaining = probeCycleRounds
 		m.lastProbeTimeNano = nowNano
 	}
 

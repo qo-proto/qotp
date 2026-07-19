@@ -373,9 +373,31 @@ func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 	// elapsed = 2.3s - 1.0s = 1.3s > 1.2s → triggers probe
 	conn.updateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
 
-	assert.Equal(t, uint64(200), conn.pacingGainPct, "should probe with 200% gain")
+	assert.Equal(t, probeGain, conn.pacingGainPct, "should probe with 1.25x gain")
 	assert.Equal(t, uint64(2_300_000_000), conn.lastProbeTimeNano, "should update probe time")
-	assert.Equal(t, probeRounds, conn.probeRoundsRemaining, "should set probe rounds")
+	assert.Equal(t, probeCycleRounds, conn.probeRoundsRemaining, "should set probe cycle rounds")
+}
+
+func TestMeasurements_Probing_CycleProbeDrainNormal(t *testing.T) {
+	conn := newTestConnection()
+	conn.isStartup = false
+	conn.bwMax = 10000
+	conn.srtt = 100_000_000
+	conn.lastProbeTimeNano = 1_000_000_000
+
+	// Trigger the probe (elapsed 1.3s > 150ms * 8 = 1.2s)
+	conn.updateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
+	assert.Equal(t, probeGain, conn.pacingGainPct, "probe round at 1.25x")
+
+	// Next completed round switches to drain
+	delivered := conn.totalDelivered
+	conn.updateMeasurements(150_000_000, 1000, delivered, 2_500_000_000)
+	assert.Equal(t, drainGain, conn.pacingGainPct, "drain round at 0.75x")
+
+	// Following completed round returns to normal
+	delivered = conn.totalDelivered
+	conn.updateMeasurements(150_000_000, 1000, delivered, 2_700_000_000)
+	assert.Equal(t, normalGain, conn.pacingGainPct, "back to 1.0x after drain")
 }
 
 // =============================================================================
