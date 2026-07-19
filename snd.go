@@ -54,14 +54,14 @@ func (p packetKey) offset() uint64 {
 }
 
 // sendPacket tracks an in-flight packet awaiting acknowledgment.
+// Key update flags are not stored per packet: they are derived from the
+// connection's key state at encode time (initial send and retransmit alike).
 type sendPacket struct {
 	data            []byte
 	sentTimeNano    uint64
 	deliveredAtSend uint64 // totalDelivered snapshot when packet was sent
 	sentCount       uint   // Number of transmission attempts
 	isClose         bool
-	isKeyUpdate     bool
-	isKeyUpdateAck  bool
 	needsReTx       bool
 }
 
@@ -155,7 +155,7 @@ func (sb *sender) queuePing(streamID uint32) {
 
 // readyToSend returns the next packet to send for the stream.
 // Returns nil if nothing to send. Moves data from queue to in-flight.
-func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck, reliable bool) (
+func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, mtu int, reliable bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	sb.mu.Lock()
@@ -166,17 +166,17 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		return nil, 0, false
 	}
 
-	// Priority 1: Ping request
+	// Priority 1: Ping request (best-effort: dropped at RTO, never retransmitted)
 	if stream.pingRequested {
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.inFlight.put(key, &sendPacket{isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
+		stream.inFlight.put(key, &sendPacket{needsReTx: false})
 		return []byte{}, key.offset(), false
 	}
 
 	// Priority 2: Queued data
 	if len(stream.queuedData) > 0 {
-		return sb.sendQueuedData(stream, msgType, ack, mtu, isKeyUpdate, isKeyUpdateAck, reliable)
+		return sb.sendQueuedData(stream, msgType, ack, mtu, reliable)
 	}
 
 	// Priority 3: Standalone FIN (no more data, but need to send close)
@@ -190,19 +190,19 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		}
 
 		stream.closeSent = true
-		stream.inFlight.put(closeKey, &sendPacket{isClose: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: true})
+		stream.inFlight.put(closeKey, &sendPacket{isClose: true, needsReTx: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
 	return nil, 0, false
 }
 
-func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, isKeyUpdate, isKeyUpdateAck, reliable bool) (
+func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, reliable bool) (
 	data []byte, offset uint64, isClose bool) {
 
 	maxData := 0
 	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset, isKeyUpdate, isKeyUpdateAck)
+		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
 		if overhead > mtu {
 			return nil, 0, false
 		}
@@ -222,9 +222,9 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 		}
 	}
 
-	// Control packets (close, key updates) always retransmit; data follows stream setting
-	needsReTx := isClose || isKeyUpdate || isKeyUpdateAck || (len(data) > 0 && reliable)
-	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: needsReTx})
+	// Close always retransmits; data follows the stream setting
+	needsReTx := isClose || (len(data) > 0 && reliable)
+	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose, needsReTx: needsReTx})
 	stream.queuedData = stream.queuedData[length:]
 	stream.bytesSentOffset += length
 
@@ -240,43 +240,43 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 func (sb *sender) readyToRetransmit(
 	streamID uint32, ack *ack, mtu int,
 	baseRTO uint64, msgType cryptoMsgType,
-	nowNano uint64) (data []byte, offset uint64, isClose, isKeyUpdate, isKeyUpdateAck bool, err error) {
+	nowNano uint64) (data []byte, offset uint64, isClose bool, err error) {
 
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		return nil, 0, false, false, false, nil
+		return nil, 0, false, nil
 	}
 
 	key, pkt, ok := stream.inFlight.first()
 	if !ok {
-		return nil, 0, false, false, false, nil
+		return nil, 0, false, nil
 	}
 
 	rtoWithBackoff, err := backoff(baseRTO, pkt.sentCount)
 	if err != nil {
-		return nil, 0, false, false, false, err
+		return nil, 0, false, err
 	}
 
 	// Not expired yet
 	if nowNano-pkt.sentTimeNano <= rtoWithBackoff {
-		return nil, 0, false, false, false, nil
+		return nil, 0, false, nil
 	}
 
 	// Best-effort packets (unreliable data, pings) are never retransmitted;
 	// expired ones are removed by drainExpiredBestEffort
 	if !pkt.needsReTx {
-		return nil, 0, false, false, false, nil
+		return nil, 0, false, nil
 	}
 
 	// Calculate max data for current MTU
 	maxData := 0
 	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset(), pkt.isKeyUpdate, pkt.isKeyUpdateAck)
+		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset())
 		if overhead > mtu {
-			return nil, 0, false, false, false, errors.New("overhead larger than MTU")
+			return nil, 0, false, errors.New("overhead larger than MTU")
 		}
 		maxData = mtu - overhead
 	}
@@ -285,7 +285,7 @@ func (sb *sender) readyToRetransmit(
 	if len(pkt.data) <= maxData {
 		pkt.sentTimeNano = nowNano
 		pkt.sentCount++
-		return pkt.data, key.offset(), pkt.isClose, pkt.isKeyUpdate, pkt.isKeyUpdateAck, nil
+		return pkt.data, key.offset(), pkt.isClose, nil
 	}
 
 	// Need to split packet (MTU decreased)
@@ -295,7 +295,7 @@ func (sb *sender) readyToRetransmit(
 func (sb *sender) splitAndRetransmit(
 	stream *transmitBuffer, key packetKey, pkt *sendPacket,
 	maxData int, nowNano uint64,
-) ([]byte, uint64, bool, bool, bool, error) {
+) ([]byte, uint64, bool, error) {
 
 	leftData := pkt.data[:maxData]
 	rightData := pkt.data[maxData:]
@@ -303,12 +303,10 @@ func (sb *sender) splitAndRetransmit(
 	// Left part: new entry
 	leftKey := createPacketKey(key.offset(), uint16(maxData))
 	stream.inFlight.put(leftKey, &sendPacket{
-		data:           leftData,
-		sentTimeNano:   nowNano,
-		sentCount:      pkt.sentCount + 1,
-		isKeyUpdate:    pkt.isKeyUpdate,
-		isKeyUpdateAck: pkt.isKeyUpdateAck,
-		needsReTx:      pkt.needsReTx,
+		data:         leftData,
+		sentTimeNano: nowNano,
+		sentCount:    pkt.sentCount + 1,
+		needsReTx:    pkt.needsReTx,
 	})
 
 	// Right part: replace original
@@ -316,7 +314,7 @@ func (sb *sender) splitAndRetransmit(
 	pkt.data = rightData
 	stream.inFlight.replace(key, rightKey, pkt)
 
-	return leftData, key.offset(), false, pkt.isKeyUpdate, pkt.isKeyUpdateAck, nil
+	return leftData, key.offset(), false, nil
 }
 
 // drainExpiredBestEffort removes expired best-effort packets (needsReTx=false:
@@ -424,25 +422,16 @@ func (sb *sender) checkStreamFullyAcked(streamID uint32) bool {
 	return !hasInFlight && stream.bytesSentOffset >= *stream.closeAtOffset
 }
 
-func (sb *sender) ensureKeyFlagsTracked(streamID uint32, isKeyUpdate, isKeyUpdateAck bool) uint64 {
-    sb.mu.Lock()
-    defer sb.mu.Unlock()
-    
-    stream := sb.getOrCreateStream(streamID)
-    
-    if isKeyUpdate || isKeyUpdateAck {
-        key := createPacketKey(stream.bytesSentOffset, 0)
-        if !stream.inFlight.contains(key) {
-            stream.inFlight.put(key, &sendPacket{
-                isKeyUpdate:    isKeyUpdate,
-                isKeyUpdateAck: isKeyUpdateAck,
-                needsReTx:      true,
-                data:           []byte{},
-            })
-        }
-    }
-    
-    return stream.bytesSentOffset
+// getSendOffset returns the stream's current send offset, used as the wire
+// offset for packets that carry no data (ACK-only, key updates).
+func (sb *sender) getSendOffset(streamID uint32) uint64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	if stream := sb.streams[streamID]; stream != nil {
+		return stream.bytesSentOffset
+	}
+	return 0
 }
 
 func (sb *sender) getOffsetClosedAt(streamID uint32) *uint64 {

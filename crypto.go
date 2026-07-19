@@ -412,20 +412,16 @@ func generateKey() (*ecdh.PrivateKey, error) {
 }
 
 // calcCryptoOverheadWithData returns the crypto layer overhead for a given message type.
+// Key update pubkeys are not included here: the caller reserves their space by
+// reducing the MTU handed to the sender (see flushStream).
 // Returns -1 for InitSnd (no payload allowed).
-func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, isKeyUpdate, isKeyUpdateAck bool) int {
+func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) int {
 	var flags uint8 = flagHasStream // this path always sizes with stream header
 	if ack != nil {
 		flags |= flagHasAck
 	}
 	if (ack != nil && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF {
 		flags |= flagExtend
-	}
-	if isKeyUpdate {
-		flags |= flagKeyUpdate
-	}
-	if isKeyUpdateAck {
-		flags |= flagKeyUpdateAck
 	}
 
 	overhead := calcProtoOverhead(flags)

@@ -266,6 +266,19 @@ func TestConnSequenceNumber_KeyRotationTrigger(t *testing.T) {
 	assert.NotNil(t, c.sndKeys.prvKeyEpNext, "should generate new ephemeral key at 2^46")
 }
 
+func TestConnSequenceNumber_KeyRotationTrigger_PastThreshold(t *testing.T) {
+	// A missed trigger (e.g. transient keygen failure at exactly 2^46) must
+	// retry on later packets, not be skipped forever.
+	c := createTestConn(true, false, true)
+	c.snCrypto = (1 << 46) + 5
+	c.sndKeys.prvKeyEpNext = nil
+
+	p := &payloadHeader{streamId: 1}
+	_, err := c.encode(p, []byte("test"), data)
+	assert.NoError(t, err)
+	assert.NotNil(t, c.sndKeys.prvKeyEpNext, "rotation initiation must self-heal past 2^46")
+}
+
 func TestConnSequenceNumber_RotationNotCompleted(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.snCrypto = (1 << 47) - 1
@@ -1179,7 +1192,7 @@ func TestConn_MtuSent_SetAfterInitCryptoSnd(t *testing.T) {
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("test"), 0, false, false, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("test"), 0, false, 1000, false)
 	assert.NoError(t, err)
 	assert.True(t, c.mtuSent)
 }
@@ -1194,7 +1207,7 @@ func TestConn_MtuSent_SetOnInitSnd(t *testing.T) {
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, nil, 0, false, false, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, nil, 0, false, 1000, false)
 	assert.NoError(t, err)
 	assert.True(t, c.mtuSent)
 }
@@ -1211,12 +1224,12 @@ func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
 	s := c.Stream(0)
 
 	// First data packet: should inject MTU and set mtuSent
-	_, _, err := c.encodeAndWrite(s, nil, []byte("first"), 0, false, false, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("first"), 0, false, 1000, false)
 	assert.NoError(t, err)
 	assert.True(t, c.mtuSent)
 
 	// Second data packet: should NOT inject MTU
-	_, _, err = c.encodeAndWrite(s, nil, []byte("second"), 5, false, false, false, 2000, false)
+	_, _, err = c.encodeAndWrite(s, nil, []byte("second"), 5, false, 2000, false)
 	assert.NoError(t, err)
 	// mtuSent stays true, no double injection
 	assert.True(t, c.mtuSent)
@@ -1236,7 +1249,7 @@ func TestConn_EncodeAndWrite_InjectsMtuForInitCryptoSnd(t *testing.T) {
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("hello"), 0, false, false, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("hello"), 0, false, 1000, false)
 	assert.NoError(t, err)
 	assert.True(t, c.mtuSent)
 
@@ -1255,7 +1268,7 @@ func TestConn_EncodeAndWrite_SkipsMtuOnClose(t *testing.T) {
 
 	s := c.Stream(0)
 	// isClose=true → should not inject mtuUpdate (mutually exclusive)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("bye"), 0, true, false, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("bye"), 0, true, 1000, false)
 	assert.NoError(t, err)
 	assert.False(t, c.mtuSent)
 }
@@ -1272,7 +1285,7 @@ func TestConn_EncodeAndWrite_SkipsMtuOnKeyUpdate(t *testing.T) {
 
 	s := c.Stream(0)
 	// isKeyUpdate=true → should not inject mtuUpdate (mutually exclusive)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("ku"), 0, false, true, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("ku"), 0, false, 1000, false)
 	assert.NoError(t, err)
 	assert.False(t, c.mtuSent)
 }
@@ -1418,4 +1431,75 @@ func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 0, dataSent, "new data must be blocked by rwnd=0")
 	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender(), "no packets should be written")
+}
+
+// =============================================================================
+// FLUSHSTREAM KEY UPDATE TESTS (state-driven KU send and RTO-paced resend)
+// =============================================================================
+
+func newKuTestConn(connPair *ConnPair) (*conn, *Stream) {
+	c := createTestConn(true, false, true)
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.mtuSent = true
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+
+	// Rotation pending: initiated but not yet acked
+	c.sndKeys.prvKeyEpNext = prvEpNew
+	return c, c.Stream(0)
+}
+
+func TestConn_FlushStream_KeyUpdate_IdleResendRTOPaced(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newKuTestConn(connPair)
+
+	// First flush: idle connection, pending KU → KU-only packet goes out
+	_, _, err := c.flushStream(s, uint64(1*secondNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
+	assert.Equal(t, uint64(1*secondNano), c.kuLastSentNano, "KU send must be stamped")
+
+	// Within RTO (default 200ms): no resend
+	_, _, err = c.flushStream(s, uint64(1*secondNano+50*msNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "within RTO: no KU resend")
+
+	// Past RTO: resend
+	_, _, err = c.flushStream(s, uint64(1*secondNano+250*msNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender(), "past RTO: KU resent")
+}
+
+func TestConn_FlushStream_KeyUpdate_RetryExceeded(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newKuTestConn(connPair)
+
+	now := uint64(1 * secondNano)
+	for i := 0; i < int(maxRetry); i++ {
+		_, _, err := c.flushStream(s, now)
+		assert.NoError(t, err)
+		now += 300 * msNano // beyond RTO each round
+	}
+
+	_, _, err := c.flushStream(s, now)
+	assert.Error(t, err, "key update must give up after maxRetry unanswered resends")
+	assert.Contains(t, err.Error(), "key update")
+}
+
+func TestConn_FlushStream_KeyUpdate_CompletedStopsSending(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newKuTestConn(connPair)
+
+	_, _, err := c.flushStream(s, uint64(1*secondNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
+
+	// KUAck processed: next secret established → isKeyUpdate false
+	c.sndKeys.next = bytes.Repeat([]byte{7}, 32)
+
+	_, _, err = c.flushStream(s, uint64(2*secondNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "completed rotation must stop KU sends")
 }

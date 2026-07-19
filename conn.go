@@ -69,6 +69,11 @@ type conn struct {
 	consecutiveLosses int
 	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
 
+	// Key update retransmission: a pending KU rides on every outgoing packet;
+	// on an idle connection, KU-only packets are re-sent RTO-paced
+	kuLastSentNano uint64 // last time a packet carrying the KU went out
+	kuSendCount    uint   // RTO-paced re-sends this round; errors past maxRetry
+
 	measurements
 	mu sync.Mutex
 }
@@ -318,13 +323,16 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 	}
 
 	c.snCrypto++
-	// At halfway: initiate rotation
-	if c.snCrypto == 1<<46 && c.sndKeys.prvKeyEpNext == nil {
+	// At halfway: initiate rotation. >= (not ==) so a transient keygen
+	// failure retries on the next packet instead of being skipped forever.
+	if c.snCrypto >= 1<<46 && c.sndKeys.prvKeyEpNext == nil {
 		newKey, err := generateKey()
 		if err != nil {
 			return nil, err
 		}
 		c.sndKeys.prvKeyEpNext = newKey
+		c.kuLastSentNano = 0
+		c.kuSendCount = 0
 	}
 
 	// At overflow: rotate
@@ -537,10 +545,27 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// (covers the case where the sender went silent mid-gap)
 	c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 
+	// Key update handling: a pending KU is attached to every outgoing packet
+	// by encodeAndWrite. On an idle connection nothing carries it, so re-send
+	// RTO-paced KU-only packets; give up after maxRetry like data retransmits.
+	// KUAck needs no timer: a lost ack is re-triggered by the peer's KU retransmit.
+	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
+	kuSendDue := false
+	if isKeyUpdate {
+		if c.kuLastSentNano == 0 {
+			kuSendDue = true
+		} else if nowNano-c.kuLastSentNano > c.rtoNano() {
+			c.kuSendCount++
+			if c.kuSendCount >= maxRetry {
+				return 0, 0, errors.New("key update: max retry attempts exceeded")
+			}
+			kuSendDue = true
+		}
+	}
+
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
 	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
-	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
 
 	// Pacing blocks everything (including retransmits)
 	if isBlockedByPacing {
@@ -548,15 +573,21 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			return 0, c.nextWriteTime - nowNano, nil
 		}
 		// Blocked but have ACK to send
-		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
 	}
 
-	// Reserve space for the MTU update field if it will be injected.
-	// The exact injection depends on close/keyUpdate flags (determined below),
-	// but reserving space pessimistically is correct — at worst the packet is 2 bytes smaller.
+	// Reserve space for key update pubkeys and the MTU update field:
+	// encodeAndWrite attaches them from connection state, so the sender must
+	// size data accordingly. Pessimistic reservation is correct — at worst
+	// the packet is a few bytes smaller.
 	msgType := c.msgType()
 	effectiveMtu := c.mtu
+	if isKeyUpdate {
+		effectiveMtu -= pubKeySize
+	}
+	if isKeyUpdateAck {
+		effectiveMtu -= pubKeySize
+	}
 	if c.willInjectMtu(msgType) {
 		effectiveMtu -= 2
 	}
@@ -566,7 +597,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// counted in dataInFlight when first sent, and the receiver's window was
 	// open at that time. Blocking retransmits on rwnd causes deadlocks when
 	// a lost packet creates a gap in the receiver's reassembly buffer.
-	splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, err := c.snd.readyToRetransmit(s.streamID, ack, effectiveMtu, c.rtoNano(), msgType, nowNano)
+	splitData, offset, isClose, err := c.snd.readyToRetransmit(s.streamID, ack, effectiveMtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -575,41 +606,43 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
 			c.mtu = conservativeMTU
 		}
-		return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+		return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, false)
 	}
 
-	// Receive window blocks new data only (retransmits already handled above)
+	// Receive window blocks new data only. Retransmits are handled above;
+	// ACKs and KU-only packets carry no data and may pass.
 	if isBlockedByRwnd {
-		if ack == nil {
+		if ack == nil && !kuSendDue {
 			return 0, MinDeadLine, nil
 		}
-		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
 	}
 
 	// Try sending new data (only after handshake or if init not yet sent)
 	if c.phase == phaseReady || c.phase == phaseCreated {
 
-		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, effectiveMtu, isKeyUpdate, isKeyUpdateAck, s.reliable)
+		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, effectiveMtu, s.reliable)
 		if splitData != nil {
-			return c.encodeAndWrite(s, ack, splitData, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, true)
+			return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, true)
 		}
-		if ack != nil || c.phase == phaseCreated || isKeyUpdate {
-			offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-			return c.encodeAndWrite(s, ack, nil, offset, isClose, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+		if ack != nil || c.phase == phaseCreated || kuSendDue {
+			return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
 		}
 	}
 
 	// Send ACK-only if pending
 	if ack != nil || isKeyUpdateAck {
-		offset := c.snd.ensureKeyFlagsTracked(s.streamID, isKeyUpdate, isKeyUpdateAck)
-		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
+		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
 	}
 
 	return 0, MinDeadLine, nil
 }
 
-func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose, isKeyUpdate, isKeyUpdateAck bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
+func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
+	// Key update flags are derived from connection state: a pending KU/KUAck
+	// rides on every outgoing packet until the rotation completes.
+	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
+
 	p := &payloadHeader{
 		isClose:      isClose,
 		needsReTx:    s.reliable || isClose || isKeyUpdate || isKeyUpdateAck,
@@ -619,20 +652,19 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	// Include maxPayload via the MTU update field in the proto payload.
-	// Skipped on close/keyUpdate packets to keep them at their expected size
-	// (the overhead reservation in flushStream does not account for it there).
+	// Skipped on close/keyUpdate packets to keep them at their expected size.
 	// InitSnd embeds MTU in its fixed crypto header instead (willInjectMtu is false).
 	if !isClose && !isKeyUpdate && !isKeyUpdateAck && c.willInjectMtu(c.msgType()) {
 		p.isMtuUpdate = true
 		p.mtuUpdateValue = uint16(c.listener.maxPayload)
 	}
 
-	if isKeyUpdate && c.sndKeys.prvKeyEpNext != nil {
+	if isKeyUpdate {
 		p.isKeyUpdate = true
 		p.keyUpdatePub = c.sndKeys.prvKeyEpNext.PublicKey().Bytes()
 	}
 
-	if isKeyUpdateAck && c.rcvKeys.prvKeyEpNext != nil {
+	if isKeyUpdateAck {
 		p.isKeyUpdateAck = true
 		p.keyUpdatePubAck = c.rcvKeys.prvKeyEpNext.PublicKey().Bytes()
 	}
@@ -653,6 +685,10 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 
 	if !c.mtuSent && (p.isMtuUpdate || c.msgType() == initSnd) {
 		c.mtuSent = true
+	}
+
+	if isKeyUpdate {
+		c.kuLastSentNano = nowNano
 	}
 
 	if isKeyUpdateAck {
