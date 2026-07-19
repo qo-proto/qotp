@@ -265,7 +265,9 @@ stream.Ping()
 
 // Ping will be sent on next Flush() and RTT measured when ACK arrives.
 // Pings are best-effort: a lost ping is not retransmitted, just send another.
-// RTT is used internally for congestion control and can be read via:
+// RTT is used internally for congestion control and can be read via the
+// getters below - call them from the Loop callback (the send path updates
+// them locklessly, so reading from another goroutine is a data race):
 srtt := stream.RTTNano()    // smoothed RTT (0 until first sample)
 jitter := stream.RTTVarNano() // RTT variation
 ```
@@ -484,22 +486,11 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 
 ---
 
-## Functions to Consider Hiding
+## API Surface Notes
 
-The following are currently exported but should probably be internal (unexported):
-
-### Definitely Internal
-
-| Type/Function | Reason |
-|--------------|--------|
-| `SendBuffer`, `ReceiveBuffer`, `RcvBuffer` | Internal buffer implementation |
-| `LinkedMap` | Internal data structure |
-| `Measurements` | Internal BBR/RTT tracking |
-| `PutUint16`, `PutUint24`, `Uint16`, etc. | Internal encoding helpers |
-| `InsertStatus`, `AckStatus`, `RcvInsertStatus` | Internal status types |
-| `Message` | Internal crypto message type |
-| `NewSendBuffer`, `NewReceiveBuffer` | Internal constructors |
-| `NewMeasurements` | Internal constructor |
+The internal machinery — buffers (`sender`, `receiver`), `linkedMap`,
+`measurements`, the encoding helpers, status types, crypto `msg`, and their
+constructors — is already unexported. The remaining judgement calls are below.
 
 ### Maybe Internal
 

@@ -599,7 +599,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			return 0, c.nextWriteTime - nowNano, nil
 		}
 		// Blocked but have ACK to send
-		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+		return c.sendControlPacket(s, ack, nowNano)
 	}
 
 	// Reserve space for key update pubkeys and the MTU update field:
@@ -655,7 +655,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 				return 0, 0, errors.New("handshake: max retry attempts exceeded")
 			}
 			c.initSendCount++
-			return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+			return c.sendControlPacket(s, ack, nowNano)
 		}
 	}
 
@@ -665,7 +665,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		if ack == nil && !kuSendDue {
 			return 0, MinDeadLine, nil
 		}
-		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+		return c.sendControlPacket(s, ack, nowNano)
 	}
 
 	// Try sending new data (only after handshake or if init not yet sent)
@@ -676,13 +676,13 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, true)
 		}
 		if ack != nil || c.phase == phaseCreated || kuSendDue {
-			return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+			return c.sendControlPacket(s, ack, nowNano)
 		}
 	}
 
 	// Send ACK-only if pending
 	if ack != nil || isKeyUpdateAck {
-		return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+		return c.sendControlPacket(s, ack, nowNano)
 	}
 
 	return 0, MinDeadLine, nil
@@ -765,6 +765,13 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	return dataLen, pacingNano, nil
+}
+
+// sendControlPacket sends a packet carrying no stream data (ACK, key update,
+// or handshake re-send) at the stream's current send offset. Key-update and
+// MTU fields are attached by encodeAndWrite from connection state.
+func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
+	return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
 }
 
 // =============================================================================

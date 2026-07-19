@@ -486,8 +486,87 @@ func TestStream_DuplicatePacket_DeliveredOnce(t *testing.T) {
 }
 
 // =============================================================================
-// STREAM LIFECYCLE TESTS
+// UNRELIABLE STREAM - END TO END
 // =============================================================================
+
+// A best-effort stream with a permanently lost middle packet must skip the gap
+// after the reorder deadline and deliver the data past it, rather than stalling.
+func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
+	connA, listenerB, connPair := setupStreamTest(t)
+
+	streamA := connA.Stream(0)
+	streamA.SetReliable(false)
+
+	testData := make([]byte, 6*conservativeMTU)
+	for i := range testData {
+		testData[i] = byte(i)
+	}
+	_, err := streamA.Write(testData)
+	assert.NoError(t, err)
+
+	// Data/init packets are near-MTU on the wire; ACKs are tiny. Peek the
+	// front packet's size to drop a data chunk rather than an ACK.
+	peekSize := func() int {
+		connPair.Conn1.writeQueueMu.Lock()
+		defer connPair.Conn1.writeQueueMu.Unlock()
+		if len(connPair.Conn1.writeQueue) == 0 {
+			return 0
+		}
+		return len(connPair.Conn1.writeQueue[0].data)
+	}
+
+	received := []byte{}
+	var streamB *Stream
+	largeSeen := 0
+	dropped := false
+
+	// Advance time by 50ms/iteration so both the sender RTO (drops the lost
+	// best-effort packet) and the receiver reorder deadline (100ms) elapse.
+	for i := 0; i < 80; i++ {
+		connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		connA.listener.Flush(connPair.Conn1.localTime)
+		connPair.Conn1.localTime += 50 * msNano
+
+		// Deliver sender packets one at a time; permanently drop the 3rd
+		// large (data) packet — past the init and any single init re-send.
+		for connPair.nrOutgoingPacketsSender() > 0 {
+			if !dropped && peekSize() > conservativeMTU/2 {
+				largeSeen++
+				if largeSeen == 3 {
+					_ = connPair.dropSender(0)
+					dropped = true
+					continue
+				}
+			}
+			_, _ = connPair.senderToRecipient(0)
+		}
+
+		s, _ := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		if s != nil {
+			streamB = s
+		}
+		if streamB != nil {
+			if d, _ := streamB.Read(); len(d) > 0 {
+				received = append(received, d...)
+			}
+		}
+		listenerB.Flush(connPair.Conn2.localTime)
+		connPair.Conn2.localTime += 50 * msNano
+
+		// Return path (InitCryptoRcv + ACKs) delivered reliably, so the
+		// handshake completes and the sender learns what was received
+		_, _ = connPair.recipientToSenderAll()
+	}
+
+	if streamB == nil {
+		t.Fatal("receiver never saw the stream")
+	}
+	assert.True(t, dropped, "test did not exercise a data-packet drop")
+	// Progressed past the gap (more than one packet delivered)...
+	assert.Greater(t, len(received), 2*conservativeMTU, "must deliver data past the skipped gap, not stall on it")
+	// ...and the lost best-effort packet was never delivered.
+	assert.Less(t, len(received), len(testData), "lost packet must not appear in the delivered stream")
+}
 
 func TestStream_IsOpen_Initially(t *testing.T) {
 	connA, _, _ := setupStreamTest(t)

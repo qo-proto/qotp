@@ -469,7 +469,7 @@ and counted as losses (data only).
 
 **Receive Window**: 
 - Advertised in each ACK
-- Calculated as: `buffer_capacity - current_buffer_usage`
+- Calculated as: `max(0, buffer_capacity - current_buffer_usage)` (usage can briefly exceed capacity, see below)
 - Encoded logarithmically (8-bit → 896GB range)
 - Sender respects: `data_in_flight + packet_size ≤ rcv_window`
 
@@ -595,20 +595,21 @@ where retransmitting stale data is worse than dropping it.
 
 ### Buffer Management
 
-**Send Buffer** (`SendBuffer`):
+**Send Buffer** (`sender`):
 - Capacity: 16 MB (configurable constant `sndBufferCapacity`)
 - Tracks: queued data, in-flight data, ACKed data
 - Per-stream accounting
 - `queuedData`: data waiting to be sent (not yet transmitted)
 - `inFlight`: sent but not ACKed (LinkedMap keyed by offset+length)
-- Retransmission: oldest unACKed packet on RTO
+- Retransmission: oldest unACKed reliable packet on RTO; best-effort packets are dropped instead
 
-**Receive Buffer** (`ReceiveBuffer`):
+**Receive Buffer** (`receiver`):
 - Capacity: 16 MB (configurable constant `rcvBufferCapacity`)
 - Handles: out-of-order delivery, overlapping segments
 - Per-stream segments stored in LinkedMap (sorted by offset)
 - Deduplication: checks against `nextInOrder`
 - Overlap handling: overlapping bytes from an honest peer are identical; mismatches are logged and resolved to one copy
+- In-order data (fills the head-of-line gap) is accepted even when full — it is immediately drainable, so accepting it frees space; rejecting it would deadlock. Usage may briefly exceed capacity by one segment as a result.
 - Tracks finished streams to reject data for cleaned-up streams
 
 **Packet Key Encoding** (64-bit):
@@ -652,12 +653,27 @@ Enables O(1) in-flight packet tracking and ACK processing.
 
 ### Thread Safety
 
-All buffer operations protected by mutexes:
-- `SendBuffer.mu`: Protects send buffer operations
-- `ReceiveBuffer.mu`: Protects receive buffer operations
-- `conn.mu`: Protects connection state
-- `Listener.mu`: Protects listener state
-- `Stream.mu`: Protects stream read/write
+The design is a single event-loop goroutine: `Loop` calls `Flush` (send) then
+`Listen` (receive) in sequence, so those two never overlap. User goroutines may
+concurrently call `Stream` methods (`Read`/`Write`/`Ping`/`Close`) and
+`Listener` methods; the boundary between them and the loop is guarded by
+per-component locks:
+
+- `sender.mu` / `receiver.mu`: send and receive buffers (shared: user
+  `Write`/`Read` vs. the loop's send/receive)
+- `linkedMap.mu`: the stream/connection maps
+- `conn.mu`: the connection's stream map and receive-path processing, vs. user
+  calls to `Stream()` / `HasActiveStreams()`
+- `Listener.mu`: connection lifecycle
+- `Stream.mu`: `Read`/`Write` serialization
+
+The **send path (`Flush` → `flushStream`) runs without `conn.mu`** and mutates
+connection-scalar state (measurements, `dataInFlight`, `phase`, sequence
+number) — this is safe only because it shares the loop goroutine with the
+receive path. Consequently the measurement getters (`RTTNano`, `RTTVarNano`)
+are safe only when called from the `Loop` callback, which runs on that same
+goroutine. The `LatePackets`/`LateBytes` counters, by contrast, are guarded by
+`receiver.mu` and safe from any goroutine.
 
 ### Error Handling
 
@@ -755,6 +771,8 @@ func (s *Stream) SetReliable(reliable bool)
 func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64)
 
 // RTTNano / RTTVarNano expose the smoothed RTT and jitter estimates.
+// Read them from the Loop callback: the send path updates them without a
+// lock, so reading from another goroutine is a data race.
 func (s *Stream) RTTNano() uint64
 func (s *Stream) RTTVarNano() uint64
 

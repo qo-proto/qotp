@@ -1,9 +1,7 @@
 package qotp
 
 import (
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -601,45 +599,11 @@ func TestMeasurements_DivisionByZeroProtection(t *testing.T) {
 	assert.Equal(t, uint64(10000), conn.bwMax)
 }
 
-// =============================================================================
-// CONCURRENT ACCESS TESTS
-// =============================================================================
-
-func TestMeasurements_ConcurrentAccess(t *testing.T) {
-	conn := newTestConnection()
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 10; i++ {
-			conn.updateMeasurements(100_000_000, 1000, 0, uint64(1_000_000_000+i*100_000_000))
-			time.Sleep(time.Microsecond)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 10; i++ {
-			conn.calcPacing(1000)
-			time.Sleep(time.Microsecond)
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 5; i++ {
-			conn.rtoNano()
-			time.Sleep(time.Microsecond * 2)
-		}
-	}()
-
-	wg.Wait()
-
-	// Should not panic and should have valid state
-	assert.GreaterOrEqual(t, conn.bwMax, uint64(0))
-}
+// NOTE: measurements are updated only by the event-loop goroutine (Flush +
+// Listen run in sequence on it), so they are intentionally NOT concurrency-safe
+// and there is no concurrent-access test. Supported cross-goroutine access
+// (user Write/Read/Ping, LatePackets/LateBytes) goes through the sender/receiver
+// locks instead. See the Thread Safety notes in the README.
 
 // =============================================================================
 // INTEGRATION TESTS

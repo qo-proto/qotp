@@ -11,7 +11,8 @@ import (
 //
 // Per-stream RcvBuffer stores out-of-order segments in a sorted map.
 // RemoveOldestInOrder returns contiguous data starting from next expected offset.
-// Overlapping segments are validated for data integrity (must match).
+// Overlapping bytes from an honest peer are identical; a mismatch is logged and
+// resolved to one copy rather than treated as fatal.
 // =============================================================================
 
 const rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
