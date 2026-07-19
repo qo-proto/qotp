@@ -105,6 +105,17 @@ func (c *conn) keyUpdateFlags() (isKeyUpdate, isKeyUpdateAck bool) {
 	return
 }
 
+// kuAttachDue returns true when the pending KEY_UPDATE should be attached to
+// the next outgoing packet: on first send, then once per RTO until the
+// KEY_UPDATE_ACK arrives. The key is not attached to every packet — any
+// single carrier may be lost, and the next RTO tick re-sends it.
+func (c *conn) kuAttachDue(nowNano uint64) bool {
+	if isKeyUpdate, _ := c.keyUpdateFlags(); !isKeyUpdate {
+		return false
+	}
+	return c.kuLastSentNano == 0 || nowNano-c.kuLastSentNano > c.rtoNano()
+}
+
 // =============================================================================
 // Connection lifecycle
 // =============================================================================
@@ -545,23 +556,16 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// (covers the case where the sender went silent mid-gap)
 	c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 
-	// Key update handling: a pending KU is attached to every outgoing packet
-	// by encodeAndWrite. On an idle connection nothing carries it, so re-send
-	// RTO-paced KU-only packets; give up after maxRetry like data retransmits.
+	// Key update handling: the pending KU is attached to the next outgoing
+	// packet by encodeAndWrite, then re-attached once per RTO until the
+	// KEY_UPDATE_ACK arrives. On an idle connection a KU-only packet is sent
+	// instead. Gives up after maxRetry re-sends, like data retransmits.
 	// KUAck needs no timer: a lost ack is re-triggered by the peer's KU retransmit.
 	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
-	kuSendDue := false
-	if isKeyUpdate {
-		if c.kuLastSentNano == 0 {
-			kuSendDue = true
-		} else if nowNano-c.kuLastSentNano > c.rtoNano() {
-			c.kuSendCount++
-			if c.kuSendCount >= maxRetry {
-				return 0, 0, errors.New("key update: max retry attempts exceeded")
-			}
-			kuSendDue = true
-		}
+	if isKeyUpdate && c.kuSendCount >= maxRetry {
+		return 0, 0, errors.New("key update: max retry attempts exceeded")
 	}
+	kuSendDue := c.kuAttachDue(nowNano)
 
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
@@ -582,7 +586,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// the packet is a few bytes smaller.
 	msgType := c.msgType()
 	effectiveMtu := c.mtu
-	if isKeyUpdate {
+	if kuSendDue {
 		effectiveMtu -= pubKeySize
 	}
 	if isKeyUpdateAck {
@@ -639,9 +643,11 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 }
 
 func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
-	// Key update flags are derived from connection state: a pending KU/KUAck
-	// rides on every outgoing packet until the rotation completes.
-	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
+	// Key update flags are derived from connection state. The pending KU is
+	// attached once per RTO (kuAttachDue); the pending KUAck is attached
+	// until sent once (phase flips to Ready below).
+	isKeyUpdate := c.kuAttachDue(nowNano)
+	_, isKeyUpdateAck := c.keyUpdateFlags()
 
 	p := &payloadHeader{
 		isClose:      isClose,
@@ -687,7 +693,10 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		c.mtuSent = true
 	}
 
-	if isKeyUpdate {
+	if p.isKeyUpdate {
+		if c.kuLastSentNano != 0 {
+			c.kuSendCount++ // an RTO passed without a KUAck: this is a re-send
+		}
 		c.kuLastSentNano = nowNano
 	}
 

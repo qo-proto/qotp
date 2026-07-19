@@ -314,13 +314,13 @@ Initiator                          Responder
 **Decryption**: Receiver tries `cur`, then `prev`, then `next` secrets to handle packets in flight during rotation.
 
 **Sending and Retransmission**: Key update flags are derived from connection
-state at encode time — a pending KEY_UPDATE rides on *every* outgoing packet
-(data, ACK, ping) until the KEY_UPDATE_ACK arrives. On an idle connection,
-KU-only packets are re-sent paced by the RTO; after `maxRetry` unanswered
-re-sends the connection errors. A lost KEY_UPDATE_ACK needs no timer: the
-peer's retransmitted KEY_UPDATE re-triggers it. Duplicate KEY_UPDATE packets
-(same pubKey as current or previous round) are ignored or re-ACKed without
-generating new keys.
+state at encode time — the pending KEY_UPDATE is attached to the next
+outgoing packet (data, ACK, or a KU-only packet when idle), then re-attached
+once per RTO until the KEY_UPDATE_ACK arrives; any single carrier packet may
+be lost. After `maxRetry` unanswered re-sends the connection errors. A lost
+KEY_UPDATE_ACK needs no timer: the peer's retransmitted KEY_UPDATE
+re-triggers it. Duplicate KEY_UPDATE packets (same pubKey as current or
+previous round) are ignored or re-ACKed without generating new keys.
 
 ### Transport Layer (Payload Format)
 

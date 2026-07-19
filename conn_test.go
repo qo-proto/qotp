@@ -1476,16 +1476,36 @@ func TestConn_FlushStream_KeyUpdate_RetryExceeded(t *testing.T) {
 	connPair := NewConnPair("a", "b")
 	c, s := newKuTestConn(connPair)
 
+	// Initial send + maxRetry re-sends, each one RTO apart
 	now := uint64(1 * secondNano)
-	for i := 0; i < int(maxRetry); i++ {
+	for i := 0; i < int(maxRetry)+1; i++ {
 		_, _, err := c.flushStream(s, now)
 		assert.NoError(t, err)
 		now += 300 * msNano // beyond RTO each round
 	}
 
 	_, _, err := c.flushStream(s, now)
-	assert.Error(t, err, "key update must give up after maxRetry unanswered resends")
+	assert.Error(t, err, "key update must give up after maxRetry unanswered re-sends")
 	assert.Contains(t, err.Error(), "key update")
+}
+
+func TestConn_FlushStream_KeyUpdate_AttachedOncePerRTO(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newKuTestConn(connPair)
+
+	// First data packet carries the KU
+	c.snd.queueData(s.streamID, []byte("hello"))
+	_, _, err := c.flushStream(s, uint64(1*secondNano))
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(1*secondNano), c.kuLastSentNano)
+
+	// Second data packet within the RTO must NOT carry it again
+	// (kuLastSentNano is only stamped when the KU is actually attached)
+	c.snd.queueData(s.streamID, []byte("hello"))
+	_, _, err = c.flushStream(s, uint64(1*secondNano+50*msNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender())
+	assert.Equal(t, uint64(1*secondNano), c.kuLastSentNano, "KU must not re-attach within RTO")
 }
 
 func TestConn_FlushStream_KeyUpdate_CompletedStopsSending(t *testing.T) {
