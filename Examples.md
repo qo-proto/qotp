@@ -263,9 +263,15 @@ stream := conn.Stream(0)
 // Queue a ping packet
 stream.Ping()
 
-// Ping will be sent on next Flush() and RTT measured when ACK arrives
-// RTT is used internally for congestion control
+// Ping will be sent on next Flush() and RTT measured when ACK arrives.
+// Pings are best-effort: a lost ping is not retransmitted, just send another.
+// RTT is used internally for congestion control and can be read via:
+srtt := stream.RTTNano()    // smoothed RTT (0 until first sample)
+jitter := stream.RTTVarNano() // RTT variation
 ```
+
+QOTP has no automatic keep-alive; call `Ping()` periodically (e.g. every
+20-25s) if you need to keep NAT bindings alive on an idle connection.
 
 ## Example 10: Custom Max Payload
 
@@ -277,7 +283,7 @@ listener, err := qotp.Listen(
 )
 ```
 
-Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload during handshake via `pktMtuUpdate`.
+Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload during handshake via the MTU update flag.
 
 To re-detect the interface MTU at runtime (e.g., after switching from WiFi to Ethernet):
 
@@ -384,6 +390,32 @@ if conn.HasActiveStreams() {
 }
 ```
 
+## Example 16: Unreliable (Best-Effort) Streams
+
+For real-time traffic (audio, video, game state) where retransmitting stale
+data is worse than dropping it. Lost data is skipped after a reorder deadline
+instead of being retransmitted, so the application must frame its own messages.
+
+```go
+stream := conn.Stream(1)
+stream.SetReliable(false) // call before the first Write
+
+// Optional: tune how long the receiver waits for reordered packets
+// before declaring a gap lost (default 100ms). RTT stats can guide this:
+stream.SetReorderDeadlineNano(4 * stream.RTTVarNano())
+
+stream.Write(frame) // sent once, never retransmitted
+
+// On the receiving side, Read() delivers what arrived; lost ranges are
+// silently skipped after the deadline. Late arrivals are observable:
+if stream.LatePackets() > 0 {
+    log.Printf("%d packets (%d bytes) arrived too late",
+        stream.LatePackets(), stream.LateBytes())
+}
+```
+
+Close (FIN) and key updates are always reliable, even on unreliable streams.
+
 ---
 
 ## API Summary
@@ -434,7 +466,13 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `Read()` | Read available data |
 | `Write(data)` | Queue data for sending |
 | `Close()` | Initiate graceful close |
-| `Ping()` | Send ping for RTT measurement |
+| `Ping()` | Send best-effort ping for RTT measurement |
+| `SetReliable(bool)` | Toggle retransmission (default true; set before first Write) |
+| `SetReorderDeadlineNano(nano)` | Gap-skip deadline for unreliable streams (default 100ms) |
+| `RTTNano()` | Smoothed RTT estimate (0 until first sample) |
+| `RTTVarNano()` | RTT variation (jitter) estimate |
+| `LatePackets()` | Packets that arrived after their range was skipped |
+| `LateBytes()` | Bytes that arrived after their range was skipped |
 | `IsClosed()` | Both directions closed |
 | `IsCloseRequested()` | Close() was called |
 | `IsOpen()` | Not closing and not closed |

@@ -86,7 +86,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 * Max RTT: Up to 30 seconds connection timeout (no hard RTT limit, but suspicious RTT > 30s logged)
 * Packet identification: Stream offset (24 or 48-bit) + length (16-bit)
 * Max Payload: `interfaceMTU - 48` (typically 1452 for Ethernet; configurable via `WithMaxPayload`)
-  * Connections start at `conservativeMTU` (1232) and negotiate up via `pktMtuUpdate`
+  * Connections start at `conservativeMTU` (1232) and negotiate up via the MTU update flag
 * Buffer capacity: 16MB send + 16MB receive (configurable constants)
 * Crypto sequence space: 48-bit sequence number + 47-bit epoch = 2^95 total space
   * Separate from transport layer stream offsets
@@ -321,43 +321,39 @@ After decryption, payload contains transport header + data. Min 8 bytes total.
 
 #### Payload Header Format
 
-**Byte 0 (Header byte):**
+**Byte 0 (Header byte)** — one independent flag per field, in wire order:
 ```
-Bit 0:    hasAck
-Bit 1:    extend (48-bit offsets instead of 24-bit)
-Bit 2:    needsReTx
-Bits 3-5: packet type (3 bits)
-Bits 6-7: reserved
+Bit 0: hasAck          ACK block present
+Bit 1: hasStream       streamId + streamOffset (+ userData) present
+Bit 2: extend          48-bit offsets instead of 24-bit
+Bit 3: needsReTx       sender retransmits until ACKed (0 = best-effort)
+Bit 4: isClose         stream close (FIN)
+Bit 5: isKeyUpdate     32-byte pubkey present (key rotation initiation)
+Bit 6: isKeyUpdateAck  32-byte pubkey present (key rotation acknowledgment)
+Bit 7: isMtuUpdate     16-bit max UDP payload present
 ```
 
-**Packet Types (bits 3-5):**
+Any flag combination is representable; overhead is computable directly from
+the flag byte. `needsReTx=0` on a data packet tells the receiver the stream
+is best-effort: gaps from lost packets will never be repaired and are skipped
+after a reorder deadline (see Unreliable Streams).
 
-| Value | Name           | Description                    |
-|-------|----------------|--------------------------------|
-| 0     | data           | Plain data                     |
-| 1     | mtuUpdate      | MTU negotiation (2-byte value) |
-| 2     | close          | Stream close                   |
-| 3     | keyUpdate      | Key rotation initiation        |
-| 4     | keyUpdateAck   | Key rotation acknowledgment    |
-| 5     | KU+KUAck       | keyUpdate + keyUpdateAck       |
-| 6     | close+KU       | close + keyUpdate              |
-| 7     | close+KUAck    | close + keyUpdateAck           |
-
-**MTU Negotiation (`pktMtuUpdate`):**
+**MTU Negotiation (`isMtuUpdate`):**
 - Carries a 2-byte `maxPayload` value from the sender
-- Included in init packets (InitCryptoSnd, InitRcv, InitCryptoRcv) and the first data packet after InitSnd handshake
-- Mutually exclusive with close/keyUpdate flags
+- Included in init packets (InitCryptoSnd, InitRcv, InitCryptoRcv) and the first data packet after InitSnd handshake (InitSnd embeds it in the crypto header instead)
+- Not combined with close/keyUpdate packets (sizing policy, not a wire constraint)
 - Both peers exchange their `maxPayload`; connection MTU = `min(local, remote)`, floored at `conservativeMTU` (1232)
 - On consecutive packet losses (`mtuFallbackThreshold` = 5), MTU falls back to `conservativeMTU`; restored on next successful ACK
+- More than 3 fallback→restore cycles on a connection logs an MTU-flapping warning (likely MTU black hole)
 
-**Stream header** (streamId + offset) is included when:
-- Any non-data packet type, OR
+**Stream header** (streamId + offset, signaled by `hasStream`) is included when:
+- Any control flag is set (close, key update, MTU update), OR
 - Has user data, OR
 - No ACK (for minimum packet size)
 
-**ACK-only packets** (`userData == nil` with hasAck): omit stream header to save space.
+**ACK-only packets** (`hasStream=0` with `hasAck`): omit stream header to save space; trailing bytes after the ACK block are rejected.
 
-**PING packets** (`userData == []byte{}`): include stream header, used for keepalive/RTT measurement.
+**PING packets** (`hasStream=1` with zero remaining bytes): used for keepalive/RTT measurement. Pings are best-effort: never retransmitted, dropped from tracking one RTO after sending.
 
 #### Packet Structure
 
@@ -368,11 +364,11 @@ Bytes 1-4:        ACK Stream ID (32-bit) [if hasAck]
 Bytes 5-7/10:     ACK Offset (24 or 48-bit) [if hasAck]
 Bytes 8-9/11-12:  ACK Length (16-bit) [if hasAck]
 Byte 10/13:       ACK Receive Window (8-bit, encoded) [if hasAck]
-Bytes X-X+1:      MTU Value (16-bit) [if pktMtuUpdate]
-Bytes Y-Y+31:     Key Update Public Key (32 bytes) [if keyUpdate]
-Bytes Z-Z+31:     Key Update Ack Public Key (32 bytes) [if keyUpdateAck]
-Bytes A-A+3:      Stream ID (32-bit) [if hasStreamHeader]
-Bytes A+4-A+6/9:  Stream Offset (24 or 48-bit) [if hasStreamHeader]
+Bytes X-X+1:      MTU Value (16-bit) [if isMtuUpdate]
+Bytes Y-Y+31:     Key Update Public Key (32 bytes) [if isKeyUpdate]
+Bytes Z-Z+31:     Key Update Ack Public Key (32 bytes) [if isKeyUpdateAck]
+Bytes A-A+3:      Stream ID (32-bit) [if hasStream]
+Bytes A+4-A+6/9:  Stream Offset (24 or 48-bit) [if hasStream]
 Bytes A+7/10+:    User Data
 ```
 
@@ -387,33 +383,43 @@ The 8-bit receive window field encodes buffer capacity from 0 to ~896GB using lo
 **State Machine**:
 
 ```
-Startup → Drain/Normal → Probe → Normal
-  ↓
-Always: RTT inflation check
+Startup → Normal, with a periodic probe cycle:
+Normal → Probe (1 round) → Drain (1 round) → Normal
 ```
 
 **Pacing Gains**:
 - Startup: 277% (2.77x) - aggressive growth
 - Normal: 100% (1.0x) - steady state
-- Drain: 75% (0.75x) - reduce queue after startup
-- Probe: 125% (1.25x) - periodic bandwidth probing
-- DupAck: 90% (0.9x) - back off on duplicate ACK
+- Probe: 125% (1.25x) - probe for spare bandwidth (one round)
+- Drain: 75% (0.75x) - drain the queue the probe built (one round)
 
 **State Transitions**:
 
-1. **Startup → Normal**: When bandwidth stops growing (3 consecutive samples without increase)
-2. **Normal → Drain**: When RTT inflation > 150% of minimum
-3. **Normal → DupAck**: On duplicate ACK (reduce bandwidth to 98%)
-4. **Normal → Probe**: Every 8 × RTT_min (probe for more bandwidth)
+1. **Startup → Normal**: 3 consecutive packet-timed rounds without ≥25% bandwidth growth
+2. **Normal → Probe**: Every 8 × RTT_min. A probe is one round at 1.25x pacing of normal data (no extra packets), immediately followed by one drain round at 0.75x, then back to 1.0x
 
 **Measurements**:
 
 ```
-SRTT = (7/8) × SRTT + (1/8) × RTT_sample
+SRTT   = (7/8) × SRTT + (1/8) × RTT_sample          (RFC 6298; feeds RTO)
 RTTVAR = (3/4) × RTTVAR + (1/4) × |SRTT - RTT_sample|
-RTT_min = min(RTT_samples) over 10 seconds
-BW_max = max(bytes_acked / RTT_min)
+BW_sample = delivered_bytes_during_flight / RTT_sample  (delivery rate)
 ```
+
+**RTT_min filter**: time-windowed minimum with a 10-second TTL, kept as a
+monotonic staircase of candidates (oldest & smallest first). Higher samples
+during queue buildup never displace the minimum; when the minimum expires,
+the best still-valid candidate takes over.
+
+**BW_max filter**: windowed maximum over the best sample of each of the last
+10 packet-timed rounds (not per-ACK). It rises immediately on a better sample
+but can only fall at round boundaries when old maxima age out. App-limited
+rounds produce low samples, which a max filter ignores automatically. The
+8-round probe interval and 10-round retention align: each probe's discovery
+survives until the next probe re-validates it.
+
+**Rounds**: a round ends when all packets in flight at its start are ACKed
+(tracked via `deliveredAtSend >= roundDeliveredTarget`).
 
 **Pacing Calculation**:
 
@@ -421,7 +427,8 @@ BW_max = max(bytes_acked / RTT_min)
 pacing_interval = (packet_size × 1e9) / (BW_max × gain_percent / 100)
 ```
 
-If no bandwidth estimate: use `SRTT / 10` or fallback to 10ms.
+If no bandwidth estimate: use `SRTT / 10` or fallback to 10ms
+(≈10 packets per RTT, comparable to TCP's initial window).
 
 #### Retransmission (RTO)
 
@@ -430,17 +437,22 @@ RTO = SRTT + 4 × RTTVAR
 RTO = clamp(RTO, 100ms, 2000ms)
 Default RTO = 200ms (when no SRTT)
 
-Backoff: RTO_i = min(RTO × 2^(i-1), maxRTO) — capped at 2000ms per step
-Max retries: 4 (total 5 attempts)
+Backoff: wait before retransmit n (n = 0..4) = min(RTO × 2^n, 2000ms)
+Max retransmit attempts: 5 (maxRetry), then the connection errors
 ```
 
 **Example timing** (default RTO = 200ms):
-- Attempt 1: t=0 (200ms)
-- Attempt 2: t=200ms (400ms)
-- Attempt 3: t=600ms (800ms)
-- Attempt 4: t=1400ms (1600ms)
-- Attempt 5: t=3000ms (2000ms, capped)
-- Fail: t=5000ms
+- Original send: t=0 (wait 200ms)
+- Retransmit 1: t=200ms (wait 400ms)
+- Retransmit 2: t=600ms (wait 800ms)
+- Retransmit 3: t=1400ms (wait 1600ms)
+- Retransmit 4: t=3000ms (wait 2000ms, capped)
+- Retransmit 5: t=5000ms
+- Fail: max retry exceeded
+
+Best-effort packets (unreliable data, pings) are never retransmitted: they
+are dropped from in-flight tracking one plain RTO after sending (no backoff)
+and counted as losses (data only).
 
 #### Flow Control
 
@@ -521,6 +533,35 @@ A receives CLOSE at offset 50
 When both sides have sndClosed && rcvClosed: stream cleanup
 ```
 
+### Unreliable (Best-Effort) Streams
+
+Streams are reliable by default. `SetReliable(false)` (call before the first
+`Write`) switches a stream to best-effort delivery for real-time traffic
+where retransmitting stale data is worse than dropping it.
+
+**Sender side**:
+- Data packets carry `needsReTx=0` and are never retransmitted
+- Lost packets are dropped from in-flight tracking one RTO after sending
+  (no backoff) and counted as losses
+- Close (FIN) and key updates remain reliable even on unreliable streams
+- ACKs are best-effort in both modes (sent once, never retransmitted)
+
+**Receiver side (gap skipping)**:
+- The first `needsReTx=0` data packet marks the stream unreliable (sticky)
+- A head-of-line gap (lost packet) is skipped once it has been open longer
+  than the reorder deadline: delivery advances to the next buffered segment,
+  or to the close offset when the tail of the stream was lost
+- Reorder deadline: 100ms default, per-stream override via
+  `SetReorderDeadlineNano` — tune with `RTTNano()`/`RTTVarNano()`
+  (e.g. srtt/2 or 4×rttvar)
+- Data arriving for an already-skipped range is dropped and counted;
+  poll `LatePackets()`/`LateBytes()` to observe it
+
+**Consequences for the application**:
+- The delivered byte stream may have lost ranges silently removed, so the
+  application must do its own message framing
+- RTT/bandwidth measurement works unchanged (delivered packets are ACKed)
+
 ### Connection Management
 
 **Connection ID**: 
@@ -578,7 +619,7 @@ Enables O(1) in-flight packet tracking and ACK processing.
 - No ACK, 48-bit offset: 11 bytes
 - With ACK, 24-bit offset: 18 bytes
 - With ACK, 48-bit offset: 24 bytes
-- pktMtuUpdate adds 2 bytes (included in init and first data packet)
+- MTU update flag adds 2 bytes (included in init and first data packet)
 
 **Total Minimum Overhead** (Data message with payload):
 - Best case: 39 bytes (9 + 6 + 16 + 8 transport header)
@@ -687,8 +728,25 @@ func (s *Stream) IsClosed() bool
 // IsCloseRequested returns true if Close() has been called.
 func (s *Stream) IsCloseRequested() bool
 
-// Ping queues a ping packet for RTT measurement.
+// Ping queues a best-effort ping packet for RTT measurement.
 func (s *Stream) Ping()
+
+// SetReliable controls retransmission of lost data (default true).
+// Set to false for real-time streams; call before the first Write.
+func (s *Stream) SetReliable(reliable bool)
+
+// SetReorderDeadlineNano sets how long an unreliable stream waits for
+// out-of-order data before skipping a gap (default 100ms).
+func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64)
+
+// RTTNano / RTTVarNano expose the smoothed RTT and jitter estimates.
+func (s *Stream) RTTNano() uint64
+func (s *Stream) RTTVarNano() uint64
+
+// LatePackets / LateBytes count data that arrived after its range
+// was already skipped as lost (unreliable streams).
+func (s *Stream) LatePackets() uint64
+func (s *Stream) LateBytes() uint64
 ```
 
 ### Listener Options
