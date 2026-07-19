@@ -636,56 +636,56 @@ func TestCryptoOverhead_InitSnd(t *testing.T) {
 }
 
 func TestCryptoOverhead_InitRcv(t *testing.T) {
-	// calcCryptoOverheadWithData always has stream header (true)
-	expected := calcProtoOverheadWithStream(0, true) + minInitRcvSizeHdr + footerDataSize
+	// calcCryptoOverheadWithData always sizes with the stream header present
+	expected := calcProtoOverhead(flagHasStream) + minInitRcvSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoSnd(t *testing.T) {
-	expected := calcProtoOverheadWithStream(0, true) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
+	expected := calcProtoOverhead(flagHasStream) + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoSnd, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_InitCryptoRcv(t *testing.T) {
-	expected := calcProtoOverheadWithStream(0, true) + minInitCryptoRcvSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream) + minInitCryptoRcvSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(initCryptoRcv, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_Data(t *testing.T) {
-	expected := calcProtoOverheadWithStream(0, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	expected := calcProtoOverheadWithStream(flagHasAck, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagHasAck) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeAckOffset(t *testing.T) {
 	ack := &ack{offset: 0xFFFFFF + 1}
-	expected := calcProtoOverheadWithStream(flagHasAck|flagExtend, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagHasAck|flagExtend) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, false, false))
 }
 
 func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
-	expected := calcProtoOverheadWithStream(flagExtend, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagExtend) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1, false, false))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdate(t *testing.T) {
-	expected := calcProtoOverheadWithStream(pktKeyUpdate<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagKeyUpdate) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, true, false))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAck(t *testing.T) {
-	expected := calcProtoOverheadWithStream(pktKeyUpdateAck<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagKeyUpdateAck) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 100, false, true))
 }
 
 func TestCryptoOverhead_DataWithKeyUpdateAndAck(t *testing.T) {
 	ack := &ack{offset: 1000}
-	expected := calcProtoOverheadWithStream(flagHasAck|pktKeyUpdate<<pktTypeShift, true) + minDataSizeHdr + footerDataSize
+	expected := calcProtoOverhead(flagHasStream|flagHasAck|flagKeyUpdate) + minDataSizeHdr + footerDataSize
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, ack, 100, true, false))
 }
 

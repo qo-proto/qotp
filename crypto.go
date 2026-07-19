@@ -413,17 +413,21 @@ func generateKey() (*ecdh.PrivateKey, error) {
 // calcCryptoOverheadWithData returns the crypto layer overhead for a given message type.
 // Returns -1 for InitSnd (no payload allowed).
 func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64, isKeyUpdate, isKeyUpdateAck bool) int {
-	var flags uint8
+	var flags uint8 = flagHasStream // this path always sizes with stream header
 	if ack != nil {
 		flags |= flagHasAck
 	}
 	if (ack != nil && ack.offset > 0xFFFFFF) || offset > 0xFFFFFF {
 		flags |= flagExtend
 	}
-	pktType := encodePktType(false, false, isKeyUpdate, isKeyUpdateAck)
-	flags |= pktType << pktTypeShift
+	if isKeyUpdate {
+		flags |= flagKeyUpdate
+	}
+	if isKeyUpdateAck {
+		flags |= flagKeyUpdateAck
+	}
 
-	overhead := calcProtoOverheadWithStream(flags, true)
+	overhead := calcProtoOverhead(flags)
 
 	switch msgType {
 	case initRcv:

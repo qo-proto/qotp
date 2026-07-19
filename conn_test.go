@@ -1049,7 +1049,7 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	c.negotiatedMTU = 1400
 	c.listener.maxPayload = 1400
 
-	// Simulate receiving a pktMtuUpdate with a smaller value
+	// Simulate receiving a the MTU update field with a smaller value
 	p := &payloadHeader{
 		isMtuUpdate:    true,
 		mtuUpdateValue: 1300,
@@ -1110,7 +1110,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, lBob.maxPayload, connBob.mtu) // min(1300, 1400) = 1300 = Bob's maxPayload
 
-	// Step 3: Bob responds with InitRcv, including pktMtuUpdate in proto payload
+	// Step 3: Bob responds with InitRcv, including the MTU update field in proto payload
 	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
 	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
 	assert.NoError(t, err)
@@ -1240,7 +1240,7 @@ func TestConn_EncodeAndWrite_InjectsMtuForInitCryptoSnd(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, c.mtuSent)
 
-	// Verify the packet was written and contains pktMtuUpdate by reading it back
+	// Verify the packet was written and contains the MTU update field by reading it back
 	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
 }
 
@@ -1307,7 +1307,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	}
 	lAlice.connMap.put(connAlice.connId, connAlice)
 
-	// Step 1: Alice encodes InitCryptoSnd with pktMtuUpdate in proto payload
+	// Step 1: Alice encodes InitCryptoSnd with the MTU update field in proto payload
 	p := &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lAlice.maxPayload)}
 	packetData, _ := encodeProto(p, []byte("init data"))
 	encoded, err := connAlice.encode(p, packetData, initCryptoSnd)
@@ -1322,7 +1322,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1452, connBob.mtu) // min(8952, 1452) = 1452
 
-	// Step 3: Bob responds with InitCryptoRcv, including pktMtuUpdate
+	// Step 3: Bob responds with InitCryptoRcv, including the MTU update field
 	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
 	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
 	assert.NoError(t, err)

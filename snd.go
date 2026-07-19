@@ -173,7 +173,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
 		stream.inFlight.put(key, &sendPacket{isPing: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
-		return []byte{}, 0, false
+		return []byte{}, key.offset(), false
 	}
 
 	// Priority 2: Queued data

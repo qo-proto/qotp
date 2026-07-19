@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"sync"
 )
@@ -65,6 +66,7 @@ type conn struct {
 	mtu               int  // negotiated max UDP payload (starts conservative, updated after handshake)
 	mtuSent           bool // whether we've sent our maxPayload to the peer
 	consecutiveLosses int
+	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
 
 	measurements
 	mu sync.Mutex
@@ -383,6 +385,13 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 				c.consecutiveLosses = 0
 				if c.mtu < c.negotiatedMTU {
 					c.mtu = c.negotiatedMTU
+					c.mtuFlapCount++
+					if c.mtuFlapCount > mtuFlapWarnThreshold {
+						slog.Warn("MTU flapping: repeated fallback/restore cycles, path may drop large packets",
+							"cycles", c.mtuFlapCount,
+							"negotiatedMTU", c.negotiatedMTU,
+							"conservativeMTU", conservativeMTU)
+					}
 				}
 			}
 			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed && c.snd.checkStreamFullyAcked(p.ack.streamId) {
@@ -533,7 +542,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return c.encodeAndWrite(s, ack, nil, offset, false, isKeyUpdate, isKeyUpdateAck, nowNano, false)
 	}
 
-	// Reserve space for pktMtuUpdate if it will be injected.
+	// Reserve space for the MTU update field if it will be injected.
 	// The exact injection depends on close/keyUpdate flags (determined below),
 	// but reserving space pessimistically is correct — at worst the packet is 2 bytes smaller.
 	msgType := c.msgType()
@@ -600,8 +609,9 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		streamOffset: offset,
 	}
 
-	// Include maxPayload via pktMtuUpdate in the proto payload.
-	// pktMtuUpdate is mutually exclusive with close/keyUpdate flags, so skip if those are set.
+	// Include maxPayload via the MTU update field in the proto payload.
+	// Skipped on close/keyUpdate packets to keep them at their expected size
+	// (the overhead reservation in flushStream does not account for it there).
 	if !isClose && !isKeyUpdate && !isKeyUpdateAck {
 		switch c.msgType() {
 		case initCryptoSnd, initRcv, initCryptoRcv:
@@ -673,7 +683,7 @@ func (c *conn) msgType() cryptoMsgType {
 	return c.initMsgType
 }
 
-// willInjectMtu returns true if pktMtuUpdate will be added to the next packet.
+// willInjectMtu returns true if the MTU update field will be added to the next packet.
 // Used to reserve space in the data splitting calculation.
 func (c *conn) willInjectMtu(msgType cryptoMsgType) bool {
 	switch msgType {

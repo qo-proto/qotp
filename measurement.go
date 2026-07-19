@@ -19,6 +19,7 @@ const (
 	conservativeMTU = 1232 // IPv6 min link MTU (1280) - 48 headers; hard floor
 
 	mtuFallbackThreshold = 5  // consecutive losses before fallback to conservativeMTU
+	mtuFlapWarnThreshold = 3  // fallback→restore cycles before warning about a black hole
 	windowSize           = 10 // rolling window for min/max filters
 )
 
@@ -56,7 +57,17 @@ var (
 	// Timeouts
 	MinDeadLine  = uint64(100 * msNano)
 	ReadDeadLine = uint64(30 * secondNano)
+
+	// Min-RTT filter: samples older than this can no longer be the minimum
+	rttMinTTLNano = uint64(10 * secondNano)
 )
+
+// rttMinEntry is a min-RTT candidate: a sample that may become the window
+// minimum once older (smaller) samples expire.
+type rttMinEntry struct {
+	rttNano  uint64
+	timeNano uint64
+}
 
 // =============================================================================
 // Measurements - RTT estimation and BBR congestion control
@@ -69,9 +80,9 @@ type measurements struct {
 
 	// BBR state
 	isStartup         bool
-	rttSamples        [windowSize]uint64 // Rolling window of RTT samples
-	rttSampleIdx      int                // Next write index into rttSamples
-	rttMinNano        uint64             // Min of rttSamples (cached)
+	rttMinWin         [windowSize]rttMinEntry // Min-RTT candidates, ascending: [0] = oldest & smallest
+	rttMinCount       int                     // Number of valid entries in rttMinWin
+	rttMinNano        uint64                  // rttMinWin[0].rttNano (cached)
 	bwSamples         [windowSize]uint64 // Rolling window of bandwidth samples
 	bwSampleIdx       int                // Next write index into bwSamples
 	bwMax             uint64             // Max of bwSamples (cached)
@@ -97,16 +108,12 @@ type measurements struct {
 }
 
 func newMeasurements(mtu int) measurements {
-	m := measurements{
+	return measurements{
 		isStartup:     true,
 		pacingGainPct: startupGain,
 		rttMinNano:    math.MaxUint64,
 		negotiatedMTU: mtu,
 	}
-	for i := range m.rttSamples {
-		m.rttSamples[i] = math.MaxUint64
-	}
-	return m
 }
 
 // updateMTU adjusts MTU-dependent fields without resetting congestion state.
@@ -130,7 +137,7 @@ func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, deliver
 
 	m.totalDelivered += uint64(ackLen)
 	m.updateRTT(rttNano)
-	m.updateMinRTT(rttNano)
+	m.updateMinRTT(rttNano, nowNano)
 	m.updateBandwidth(deliveredAtSend, rttNano)
 	m.updateBBRState(nowNano)
 }
@@ -157,17 +164,33 @@ func (m *measurements) updateRTT(rttNano uint64) {
 	m.srtt = (m.srtt*7 + rttNano) / 8
 }
 
-func (m *measurements) updateMinRTT(rttNano uint64) {
-	m.rttSamples[m.rttSampleIdx] = rttNano
-	m.rttSampleIdx = (m.rttSampleIdx + 1) % windowSize
-
-	rttMin := uint64(math.MaxUint64)
-	for _, s := range m.rttSamples {
-		if s < rttMin {
-			rttMin = s
-		}
+// updateMinRTT maintains a time-windowed minimum via a monotonic staircase:
+// entries ascend in both age and value, so [0] is always the current minimum
+// and later entries are the successors once it expires.
+func (m *measurements) updateMinRTT(rttNano uint64, nowNano uint64) {
+	// Expire candidates older than the TTL (front = oldest)
+	expired := 0
+	for expired < m.rttMinCount && nowNano-m.rttMinWin[expired].timeNano > rttMinTTLNano {
+		expired++
 	}
-	m.rttMinNano = rttMin
+	if expired > 0 {
+		copy(m.rttMinWin[:], m.rttMinWin[expired:m.rttMinCount])
+		m.rttMinCount -= expired
+	}
+
+	// Evict candidates dominated by the new sample (older and >= it)
+	for m.rttMinCount > 0 && m.rttMinWin[m.rttMinCount-1].rttNano >= rttNano {
+		m.rttMinCount--
+	}
+
+	// Admit as newest candidate; if full, the new sample is the largest of all
+	// candidates and the least likely to be needed, so drop it
+	if m.rttMinCount < len(m.rttMinWin) {
+		m.rttMinWin[m.rttMinCount] = rttMinEntry{rttNano: rttNano, timeNano: nowNano}
+		m.rttMinCount++
+	}
+
+	m.rttMinNano = m.rttMinWin[0].rttNano
 }
 
 func (m *measurements) updateBandwidth(deliveredAtSend uint64, rttNano uint64) {

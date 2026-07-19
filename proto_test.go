@@ -576,7 +576,7 @@ func TestProto_Decode_TooSmall_ForAck(t *testing.T) {
 
 func TestProto_Decode_TooSmall_ForKeyUpdate(t *testing.T) {
 	data := make([]byte, 10)
-	data[0] = pktKeyUpdate << pktTypeShift // Has key update but not enough bytes
+	data[0] = flagKeyUpdate // Has key update but not enough bytes
 
 	_, _, err := decodeProto(data)
 	assert.Error(t, err)
@@ -645,14 +645,14 @@ func TestProto_RcvWindow_RoundTrip(t *testing.T) {
 // =============================================================================
 
 func TestProto_Overhead_NoAck24Bit(t *testing.T) {
-	// No ACK means stream header is always included: 1 + 4 + 3 = 8
-	var flags uint8 = 0
+	// Stream header only: 1 + 4 + 3 = 8
+	var flags uint8 = flagHasStream
 	assert.Equal(t, 8, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_NoAck48Bit(t *testing.T) {
-	// No ACK, extended: 1 + 4 + 6 = 11
-	var flags uint8 = flagExtend
+	// Stream header, extended: 1 + 4 + 6 = 11
+	var flags uint8 = flagHasStream | flagExtend
 	assert.Equal(t, 11, calcProtoOverhead(flags))
 }
 
@@ -669,31 +669,31 @@ func TestProto_Overhead_WithAck48Bit(t *testing.T) {
 }
 
 func TestProto_Overhead_KeyUpdate(t *testing.T) {
-	var flags uint8 = pktKeyUpdate << pktTypeShift
+	var flags uint8 = flagKeyUpdate | flagHasStream
 	// 1 (header) + 32 (pubkey) + 4 (streamId) + 3 (offset 24-bit) = 40
 	assert.Equal(t, 40, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_KeyUpdateAck(t *testing.T) {
-	var flags uint8 = pktKeyUpdateAck << pktTypeShift
+	var flags uint8 = flagKeyUpdateAck | flagHasStream
 	// 1 (header) + 32 (pubkey) + 4 (streamId) + 3 (offset 24-bit) = 40
 	assert.Equal(t, 40, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_KeyUpdateAndAck(t *testing.T) {
-	var flags uint8 = pktKUBoth << pktTypeShift
+	var flags uint8 = flagKeyUpdate | flagKeyUpdateAck | flagHasStream
 	// 1 (header) + 32 + 32 (both pubkeys) + 4 (streamId) + 3 (offset 24-bit) = 72
 	assert.Equal(t, 72, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_Close(t *testing.T) {
-	var flags uint8 = pktClose << pktTypeShift
+	var flags uint8 = flagClose | flagHasStream
 	// 1 (header) + 4 (streamId) + 3 (offset 24-bit) = 8
 	assert.Equal(t, 8, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_MtuUpdate(t *testing.T) {
-	var flags uint8 = pktMtuUpdate << pktTypeShift
+	var flags uint8 = flagMtuUpdate | flagHasStream
 	// 1 (header) + 2 (mtuUpdateValue) + 4 (streamId) + 3 (offset 24-bit) = 10
 	assert.Equal(t, 10, calcProtoOverhead(flags))
 }
@@ -748,7 +748,7 @@ func TestProto_Flags_DataNoAck24(t *testing.T) {
 	flags := encoded[0]
 	assert.True(t, flags&flagHasAck == 0)
 	assert.True(t, flags&flagExtend == 0)
-	assert.Equal(t, uint8(pktData), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&(flagClose|flagKeyUpdate|flagKeyUpdateAck|flagMtuUpdate) == 0)
 }
 
 func TestProto_Flags_DataWithAck24(t *testing.T) {
@@ -783,7 +783,7 @@ func TestProto_Flags_CloseNoAck24(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktClose), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagClose != 0)
 	assert.True(t, flags&flagHasAck == 0)
 	assert.True(t, flags&flagExtend == 0)
 }
@@ -793,7 +793,7 @@ func TestProto_Flags_CloseWithAck24(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktClose), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagClose != 0)
 	assert.True(t, flags&flagHasAck != 0)
 }
 
@@ -802,7 +802,7 @@ func TestProto_Flags_MtuUpdate24(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktMtuUpdate), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagMtuUpdate != 0)
 	assert.True(t, flags&flagExtend == 0)
 }
 
@@ -811,7 +811,7 @@ func TestProto_Flags_MtuUpdate48(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktMtuUpdate), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagMtuUpdate != 0)
 	assert.True(t, flags&flagExtend != 0)
 }
 
@@ -820,7 +820,7 @@ func TestProto_Flags_KeyUpdate(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktKeyUpdate), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagKeyUpdate != 0)
 }
 
 func TestProto_Flags_KeyUpdateAck(t *testing.T) {
@@ -828,7 +828,7 @@ func TestProto_Flags_KeyUpdateAck(t *testing.T) {
 	encoded, _ := encodeProto(p, []byte{})
 
 	flags := encoded[0]
-	assert.Equal(t, uint8(pktKeyUpdateAck), (flags&pktTypeMask)>>pktTypeShift)
+	assert.True(t, flags&flagKeyUpdateAck != 0)
 }
 
 func TestProto_Flags_AckTriggersExtend(t *testing.T) {

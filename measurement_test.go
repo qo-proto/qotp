@@ -207,21 +207,40 @@ func TestMeasurements_RTTMin_LowerReplaces(t *testing.T) {
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "lower RTT should become new minimum")
 }
 
-func TestMeasurements_RTTMin_WindowRollsOut(t *testing.T) {
+func TestMeasurements_RTTMin_SurvivesHigherSamples(t *testing.T) {
 	conn := newTestConnection()
 
 	// First sample: low RTT
 	conn.updateMeasurements(50_000_000, 1000, 0, 1_000_000_000)
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano)
 
-	// Fill window with higher RTT to push out the low sample
+	// Many higher samples within the TTL must NOT displace the minimum
 	delivered := conn.totalDelivered
 	for i := 0; i < windowSize; i++ {
 		conn.updateMeasurements(150_000_000, 1000, delivered, uint64(2_000_000_000+i*100_000_000))
 		delivered = conn.totalDelivered
 	}
 
-	assert.Equal(t, uint64(150_000_000), conn.rttMinNano, "old low RTT should roll out of window")
+	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "minimum must survive queue-inflated samples within TTL")
+}
+
+func TestMeasurements_RTTMin_TTLExpiry(t *testing.T) {
+	conn := newTestConnection()
+
+	// First sample: low RTT
+	conn.updateMeasurements(50_000_000, 1000, 0, 1_000_000_000)
+	assert.Equal(t, uint64(50_000_000), conn.rttMinNano)
+
+	// A higher candidate recorded within the TTL
+	delivered := conn.totalDelivered
+	conn.updateMeasurements(150_000_000, 1000, delivered, 5_000_000_000)
+	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "minimum still valid")
+
+	// Beyond the 10s TTL of the first sample: the stored candidate takes over
+	delivered = conn.totalDelivered
+	conn.updateMeasurements(200_000_000, 1000, delivered, 12_000_000_000)
+	assert.Equal(t, uint64(150_000_000), conn.rttMinNano,
+		"expired minimum falls back to the best still-valid candidate")
 }
 
 // =============================================================================

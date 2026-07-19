@@ -8,42 +8,30 @@ import (
 // =============================================================================
 // Transport layer protocol encoding/decoding
 //
-// Header byte:
-//   Bit 0:    hasAck
-//   Bit 1:    extend (48-bit offsets)
-//   Bit 2:    needsReTx
-//   Bits 3-5: packet type (0=data, 1=mtuUpdate, 2=close, 3=keyUpdate,
-//             4=keyUpdateAck, 5=close+KU, 6=close+KUAck, 7=close+KU+KUAck)
-//   Bits 6-7: reserved
+// Header byte: one independent flag per field, in wire order.
+//   Bit 0: hasAck        ACK block present
+//   Bit 1: hasStream     streamId + streamOffset (+ userData) present
+//   Bit 2: extend        48-bit offsets instead of 24-bit
+//   Bit 3: needsReTx     sender will retransmit until acked
+//   Bit 4: isClose
+//   Bit 5: isKeyUpdate      32-byte pubkey present
+//   Bit 6: isKeyUpdateAck   32-byte pubkey present
+//   Bit 7: isMtuUpdate      16-bit max UDP payload present
+//
+// Wire layout: [flags][ack?][mtu?][keyPub?][keyPubAck?][streamId+offset?][data]
 // =============================================================================
 
 const (
 	minProtoSize = 8
 
-	// Header byte layout:
-	//   Bit 0:   hasAck
-	//   Bit 1:   extend (48-bit offsets)
-	//   Bit 2:   needsReTx
-	//   Bits 3-5: packet type (3 bits)
-	//   Bits 6-7: reserved
-
-	flagHasAck    = 1 << 0
-	flagExtend    = 1 << 1
-	flagNeedsReTx = 1 << 2
-
-	// Packet type (bits 3-5)
-	pktTypeShift = 3
-	pktTypeMask  = 0x7 << pktTypeShift // 0b00111000
-
-	pktData         = 0 // plain data
-	pktMtuUpdate    = 1
-	pktClose        = 2
-	pktKeyUpdate    = 3
-	pktKeyUpdateAck = 4
-	pktKUBoth       = 5 // keyUpdate + keyUpdateAck
-	pktCloseKU      = 6 // close + keyUpdate
-	pktCloseKUAck   = 7 // close + keyUpdateAck
-	// Note: close + keyUpdate + keyUpdateAck not encoded (not a valid state)
+	flagHasAck       = 1 << 0
+	flagHasStream    = 1 << 1
+	flagExtend       = 1 << 2
+	flagNeedsReTx    = 1 << 3
+	flagClose        = 1 << 4
+	flagKeyUpdate    = 1 << 5
+	flagKeyUpdateAck = 1 << 6
+	flagMtuUpdate    = 1 << 7
 )
 
 // =============================================================================
@@ -130,70 +118,25 @@ func decodeRcvWindow(encoded uint8) uint64 {
 }
 
 // =============================================================================
-// Packet type encoding
-// =============================================================================
-
-func encodePktType(isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck bool) uint8 {
-	switch {
-	case isMtuUpdate:
-		return pktMtuUpdate
-	case isClose && isKeyUpdate:
-		return pktCloseKU
-	case isClose && isKeyUpdateAck:
-		return pktCloseKUAck
-	case isClose:
-		return pktClose
-	case isKeyUpdate && isKeyUpdateAck:
-		return pktKUBoth
-	case isKeyUpdate:
-		return pktKeyUpdate
-	case isKeyUpdateAck:
-		return pktKeyUpdateAck
-	default:
-		return pktData
-	}
-}
-
-func decodePktType(pktType uint8) (isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck bool) {
-	switch pktType {
-	case pktMtuUpdate:
-		return true, false, false, false
-	case pktClose:
-		return false, true, false, false
-	case pktKeyUpdate:
-		return false, false, true, false
-	case pktKeyUpdateAck:
-		return false, false, false, true
-	case pktKUBoth:
-		return false, false, true, true
-	case pktCloseKU:
-		return false, true, true, false
-	case pktCloseKUAck:
-		return false, true, false, true
-	default:
-		return false, false, false, false
-	}
-}
-
-// =============================================================================
 // Encode
 // =============================================================================
 
 func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
-	pktType := encodePktType(p.isMtuUpdate, p.isClose, p.isKeyUpdate, p.isKeyUpdateAck)
-
 	// Stream header (streamId+offset) included when:
-	// - any control packet type, OR
-	// - has user data, OR
+	// - any control flag set, OR
+	// - has user data (empty userData = ping), OR
 	// - no ACK (for minimum packet size)
-	hasStreamHeader := pktType != pktData || userData != nil || p.ack == nil
+	hasStreamHeader := p.isMtuUpdate || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
+		userData != nil || p.ack == nil
 
-	// Build flags
 	var flags uint8
 	if p.ack != nil {
 		flags |= flagHasAck
+	}
+	if hasStreamHeader {
+		flags |= flagHasStream
 	}
 	if isExtend {
 		flags |= flagExtend
@@ -201,9 +144,20 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	if p.needsReTx {
 		flags |= flagNeedsReTx
 	}
-	flags |= pktType << pktTypeShift
+	if p.isClose {
+		flags |= flagClose
+	}
+	if p.isKeyUpdate {
+		flags |= flagKeyUpdate
+	}
+	if p.isKeyUpdateAck {
+		flags |= flagKeyUpdateAck
+	}
+	if p.isMtuUpdate {
+		flags |= flagMtuUpdate
+	}
 
-	overhead := calcProtoOverheadWithStream(flags, hasStreamHeader)
+	overhead := calcProtoOverhead(flags)
 	encoded := make([]byte, overhead+len(userData))
 	offset := 0
 
@@ -252,21 +206,20 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 
 	flags := data[0]
 	isExtend := flags&flagExtend != 0
-	pktType := (flags & pktTypeMask) >> pktTypeShift
-	isMtuUpdate, isClose, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
 
 	p := &payloadHeader{
 		hasAck:         flags&flagHasAck != 0,
-		isMtuUpdate:    isMtuUpdate,
-		isClose:        isClose,
-		isKeyUpdate:    isKeyUpdate,
-		isKeyUpdateAck: isKeyUpdateAck,
+		isMtuUpdate:    flags&flagMtuUpdate != 0,
+		isClose:        flags&flagClose != 0,
+		isKeyUpdate:    flags&flagKeyUpdate != 0,
+		isKeyUpdateAck: flags&flagKeyUpdateAck != 0,
 		needsReTx:      flags&flagNeedsReTx != 0,
 	}
 	offset := 1
 
 	if p.hasAck {
-		if len(data) < offset+10 {
+		ackSize := 4 + offsetSize(isExtend) + 2 + 1 // streamId + offset + len + rcvWnd
+		if len(data) < offset+ackSize {
 			return nil, nil, errors.New("payload too small for ack")
 		}
 		p.ack = &ack{
@@ -305,9 +258,8 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += pubKeySize
 	}
 
-	hasStreamHeader := pktType != pktData || !p.hasAck || len(data) > offset
-
-	if hasStreamHeader {
+	var userData []byte
+	if flags&flagHasStream != 0 {
 		streamHeaderSize := 4 + offsetSize(isExtend)
 		if len(data) < offset+streamHeaderSize {
 			return nil, nil, errors.New("payload too small for stream header")
@@ -316,11 +268,9 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += 4
 		p.streamOffset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
-	}
-
-	var userData []byte
-	if hasStreamHeader {
 		userData = data[offset:]
+	} else if len(data) > offset {
+		return nil, nil, errors.New("trailing bytes without stream header")
 	}
 
 	return p, userData, nil
@@ -330,12 +280,11 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 // Overhead calculation
 // =============================================================================
 
-func calcProtoOverheadWithStream(flags uint8, hasStreamHeader bool) int {
-	overhead := 1 // header
+func calcProtoOverhead(flags uint8) int {
+	overhead := 1 // flags byte
 
-	isExtend := flags&flagExtend != 0
 	offsetBytes := 3
-	if isExtend {
+	if flags&flagExtend != 0 {
 		offsetBytes = 6
 	}
 
@@ -343,31 +292,21 @@ func calcProtoOverheadWithStream(flags uint8, hasStreamHeader bool) int {
 		overhead += 4 + offsetBytes + 2 + 1 // streamId + offset + len + rcvWnd
 	}
 
-	pktType := (flags & pktTypeMask) >> pktTypeShift
-	isMtuUpdate, _, isKeyUpdate, isKeyUpdateAck := decodePktType(pktType)
-
-	if isMtuUpdate {
+	if flags&flagMtuUpdate != 0 {
 		overhead += 2 // mtuUpdateValue
 	}
 
-	if isKeyUpdate {
+	if flags&flagKeyUpdate != 0 {
 		overhead += pubKeySize
 	}
 
-	if isKeyUpdateAck {
+	if flags&flagKeyUpdateAck != 0 {
 		overhead += pubKeySize
 	}
 
-	if hasStreamHeader {
+	if flags&flagHasStream != 0 {
 		overhead += 4 + offsetBytes // streamId + offset
 	}
 
 	return overhead
-}
-
-func calcProtoOverhead(flags uint8) int {
-	pktType := (flags & pktTypeMask) >> pktTypeShift
-	// Stream header present if any control packet type or no ACK
-	hasStreamHeader := pktType != pktData || flags&flagHasAck == 0
-	return calcProtoOverheadWithStream(flags, hasStreamHeader)
 }
