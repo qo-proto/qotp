@@ -99,7 +99,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 	}
 
 	var closeConnIds []uint64
-	closeStreams := map[*conn][]uint32{}
+	var closeStreams map[*conn][]uint32
 
 	//needs to be defer, otherwise we lock ourselfs out.
 	defer func() {
@@ -115,35 +115,35 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 
 	startStreamID := l.currentStreamID
 
-	for _, conn := range l.connMap.iterator(l.currentConnID) {
-		for _, stream := range conn.streams.iterator(startStreamID) {
-			dataSent, pacingNano, err := conn.flushStream(stream, nowNano)
+	// Stale cursors after a close are handled by the iterator's fallback.
+	for _, c := range l.connMap.iterator(l.currentConnID) {
+		for _, stream := range c.streams.iterator(startStreamID) {
+			dataSent, pacingNano, err := c.flushStream(stream, nowNano)
 			if err != nil {
 				slog.Info("closing connection", slog.Any("err", err))
-				closeConnIds = append(closeConnIds, conn.connId)
-				l.currentConnID = nil
-				l.currentStreamID = nil
+				closeConnIds = append(closeConnIds, c.connId)
 				return minPacing
 			}
 
-			if stream.rcvClosed && stream.sndClosed && !conn.rcv.hasPendingAckForStream(stream.streamID) {
-				closeStreams[conn] = append(closeStreams[conn], stream.streamID)
+			if stream.rcvClosed && stream.sndClosed && !c.rcv.hasPendingAckForStream(stream.streamID) {
+				if closeStreams == nil {
+					closeStreams = map[*conn][]uint32{}
+				}
+				closeStreams[c] = append(closeStreams[c], stream.streamID)
 				continue
 			}
 
 			if dataSent > 0 {
-				l.currentConnID = &conn.connId
+				l.currentConnID = &c.connId
 				l.currentStreamID = &stream.streamID
 				return 0
 			}
 
-			if conn.lastReadTimeNano != 0 && nowNano > conn.lastReadTimeNano+ReadDeadLine {
+			if c.lastReadTimeNano != 0 && nowNano > c.lastReadTimeNano+ReadDeadLine {
 				slog.Info("close connection, timeout",
 					slog.Uint64("now", nowNano),
-					slog.Uint64("last", conn.lastReadTimeNano))
-				closeConnIds = append(closeConnIds, conn.connId)
-				l.currentConnID = nil
-				l.currentStreamID = nil
+					slog.Uint64("last", c.lastReadTimeNano))
+				closeConnIds = append(closeConnIds, c.connId)
 				return minPacing
 			}
 

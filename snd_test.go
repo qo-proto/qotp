@@ -987,6 +987,22 @@ func TestSendBuffer_GetOffsetClosedAt_Closed(t *testing.T) {
 	assert.Equal(t, uint64(4), *result)
 }
 
+// getOffsetAcked is a test helper: the acked offset is where in-flight begins
+// (everything before is acked).
+func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return 0
+	}
+	if firstKey, _, ok := stream.inFlight.first(); ok {
+		return firstKey.offset()
+	}
+	return stream.bytesSentOffset
+}
+
 func TestSendBuffer_GetOffsetAcked_NoStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
@@ -1071,44 +1087,43 @@ func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
 }
 
 // =============================================================================
-// UPDATEPACKETSIZE TESTS
+// MARKSENT TESTS
 // =============================================================================
 
-func TestSendBuffer_UpdatePacketSize(t *testing.T) {
+func TestSendBuffer_MarkSent(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
 
-	sb.updatePacketSize(1, 0, 4, 50, 12345, 5000)
+	sb.markSent(1, 0, 4, 12345, 5000)
 
 	_, info, ok := sb.streams[1].inFlight.first()
 	assert.True(t, ok)
-	assert.Equal(t, uint16(50), info.packetSize)
 	assert.Equal(t, uint64(12345), info.sentTimeNano)
 	assert.Equal(t, uint64(5000), info.deliveredAtSend)
 }
 
-func TestSendBuffer_UpdatePacketSize_NonexistentStream(t *testing.T) {
+func TestSendBuffer_MarkSent_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
 	// Should not panic
-	sb.updatePacketSize(999, 0, 4, 50, 12345, 0)
+	sb.markSent(999, 0, 4, 12345, 0)
 }
 
-func TestSendBuffer_UpdatePacketSize_NonexistentPacket(t *testing.T) {
+func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
 
 	// Wrong offset - should not panic
-	sb.updatePacketSize(1, 100, 4, 50, 12345, 0)
+	sb.markSent(1, 100, 4, 12345, 0)
 }
 
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
-	sb.updatePacketSize(1, 0, 4, 50, 12345, 5000)
+	sb.markSent(1, 0, 4, 12345, 5000)
 
 	status, sentTime, deliveredAtSend := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 

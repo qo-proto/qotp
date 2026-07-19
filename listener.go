@@ -154,9 +154,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	if maxPayload == 0 {
 		maxPayload = interfaceMTU - ipOverhead
 	}
-	if maxPayload < conservativeMTU {
-		maxPayload = conservativeMTU
-	}
+	maxPayload = clampMaxPayload(maxPayload)
 
 	l := &Listener{
 		localConn:    o.localConn,
@@ -197,11 +195,15 @@ func (l *Listener) RefreshMaxPayload() {
 	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
 		l.interfaceMTU = getInterfaceMTU(udpConn.conn)
 	}
-	maxPayload := l.interfaceMTU - ipOverhead
+	l.maxPayload = clampMaxPayload(l.interfaceMTU - ipOverhead)
+}
+
+// clampMaxPayload enforces the conservativeMTU floor.
+func clampMaxPayload(maxPayload int) int {
 	if maxPayload < conservativeMTU {
-		maxPayload = conservativeMTU
+		return conservativeMTU
 	}
-	l.maxPayload = maxPayload
+	return maxPayload
 }
 
 func (l *Listener) HasActiveStreams() bool {
@@ -262,11 +264,12 @@ func (l *Listener) newConn(
 		pubKeyIdRcv:  pubKeyIdRcv,
 		listener:     l,
 		initMsgType:  initMsgType,
-		snd:          newSendBuffer(sndBufferCapacity),
-		rcv:          newReceiveBuffer(rcvBufferCapacity),
-		measurements: newMeasurements(conservativeMTU),
-		rcvWndSize:   rcvBufferCapacity,
-		mtu:          conservativeMTU,
+		snd:           newSendBuffer(sndBufferCapacity),
+		rcv:           newReceiveBuffer(rcvBufferCapacity),
+		measurements:  newMeasurements(),
+		rcvWndSize:    rcvBufferCapacity,
+		mtu:           conservativeMTU,
+		negotiatedMTU: conservativeMTU,
 	}
 
 	// Log keys for Wireshark debugging if enabled
@@ -289,14 +292,10 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
+// cleanupConn removes connection state. A stale round-robin cursor pointing
+// at the removed conn is fine: linkedMap.iterator falls back to the beginning.
 func (l *Listener) cleanupConn(connId uint64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	// Advance round-robin pointer if we're removing current connection
-	if l.currentConnID != nil && connId == *l.currentConnID {
-		tmp, _, _ := l.connMap.next(connId)
-		l.currentConnID = &tmp
-	}
 	l.connMap.remove(connId)
 }

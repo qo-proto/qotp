@@ -88,10 +88,10 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 * Max Payload: `interfaceMTU - 48` (typically 1452 for Ethernet; configurable via `WithMaxPayload`)
   * Connections start at `conservativeMTU` (1232) and negotiate up via the MTU update flag
 * Buffer capacity: 16MB send + 16MB receive (configurable constants)
-* Crypto sequence space: 48-bit sequence number + 47-bit epoch = 2^95 total space
+* Crypto sequence space: 48-bit sequence number per key
   * Separate from transport layer stream offsets
-  * Rollover at 2^48 packets (not bytes) increments epoch counter
-  * At 2^95 exhaustion: ~5 billion ZB sent, requires manual reconnection
+  * Key rotation is initiated at 2^46 packets and must complete by 2^47; the sequence number then resets under the new key
+  * Connection lifetime is unbounded via periodic rekeying (which also refreshes forward secrecy)
 * Transport sequence space: 48-bit stream offsets per stream
   * Multiple independent streams per connection
 
@@ -254,7 +254,7 @@ Note: The author is not a cryptographer. QOTP's approach was chosen for simplici
 
 1. **First Layer** (Payload):
    - Nonce: 12 bytes deterministic
-     - Bytes 0-5: Epoch (48-bit)
+     - Bytes 0-5: Zero
      - Bytes 6-11: Sequence number (48-bit)
      - Byte 0, bit 7 (MSB): 1=sender, 0=receiver (prevents nonce collision)
    - Encrypt payload with ChaCha20-Poly1305
@@ -272,15 +272,15 @@ Note: The author is not a cryptographer. QOTP's approach was chosen for simplici
 2. Use first 24 bytes of ciphertext as nonce
 3. Decrypt 6-byte sequence number with XChaCha20 (no MAC verification)
 4. Reconstruct deterministic nonce with decrypted sequence number
-5. Try decryption with epochs: current, current-1, current+1
+5. Try decryption with the current, previous, and next shared secrets (key rotation window)
 6. Verify MAC on payload - any tampering fails authentication
 
-**Epoch Handling**:
+**Sequence Number Exhaustion**:
 
-- Sequence number rolls over at 2^48 packets (not bytes)
-- Epoch increments on rollover (47-bit; bit 7 of byte 0 reserved for direction)
-- Decryption tries 3 epochs to handle reordering near boundaries
-- Total space: 2^95 ≈ 40 ZB (exhaustion would require resending all human data 28M times)
+- At 2^46 packets the sender initiates a key rotation (see Key Rotation)
+- Rotation must complete before 2^47 packets; the sequence number then resets to 0 under the new key
+- If rotation has not completed by 2^47, the connection closes with an error
+- Nonces never repeat under one key: the direction bit separates the peers, rotation bounds the packet count
 
 ### Key Rotation
 
@@ -594,7 +594,7 @@ where retransmitting stale data is worse than dropping it.
 - Handles: out-of-order delivery, overlapping segments
 - Per-stream segments stored in LinkedMap (sorted by offset)
 - Deduplication: checks against `nextInOrder`
-- Overlap handling: validates matching data in overlaps (panics on mismatch)
+- Overlap handling: overlapping bytes from an honest peer are identical; mismatches are logged and resolved to one copy
 - Tracks finished streams to reject data for cleaned-up streams
 
 **Packet Key Encoding** (64-bit):
@@ -650,7 +650,6 @@ All buffer operations protected by mutexes:
 **Crypto Errors**:
 - Authentication failures logged and dropped silently
 - Malformed packets logged and dropped
-- Epoch mismatches handled with ±1 epoch tolerance
 - Key rotation: tries current, previous, and next secrets during transition
 
 **Buffer Full**:
@@ -658,9 +657,9 @@ All buffer operations protected by mutexes:
 - Receive: Packet dropped with `RcvInsertBufferFull`
 
 **Connection Errors**:
-- RTO exhausted (5 attempts): Connection closed with error
+- RTO exhausted (5 retransmit attempts): Connection closed with error
 - 30-second inactivity: Connection closed
-- Sequence number exhaustion (2^95): Connection closed with error
+- Key rotation not completed before sequence overflow (2^47): Connection closed with error
 
 ## Usage Example
 

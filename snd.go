@@ -55,16 +55,14 @@ func (p packetKey) offset() uint64 {
 
 // sendPacket tracks an in-flight packet awaiting acknowledgment.
 type sendPacket struct {
-	data             []byte
-	packetSize       uint16 // Encrypted packet size (for RTT measurement)
-	sentTimeNano     uint64
-	deliveredAtSend  uint64 // totalDelivered snapshot when packet was sent
-	sentCount        uint   // Number of transmission attempts
-	isPing           bool
-	isClose          bool
-	isKeyUpdate      bool
-	isKeyUpdateAck   bool
-	needsReTx        bool
+	data            []byte
+	sentTimeNano    uint64
+	deliveredAtSend uint64 // totalDelivered snapshot when packet was sent
+	sentCount       uint   // Number of transmission attempts
+	isClose         bool
+	isKeyUpdate     bool
+	isKeyUpdateAck  bool
+	needsReTx       bool
 }
 
 // =============================================================================
@@ -172,7 +170,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	if stream.pingRequested {
 		stream.pingRequested = false
 		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.inFlight.put(key, &sendPacket{isPing: true, isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
+		stream.inFlight.put(key, &sendPacket{isKeyUpdate: isKeyUpdate, isKeyUpdateAck: isKeyUpdateAck, needsReTx: false})
 		return []byte{}, key.offset(), false
 	}
 
@@ -374,8 +372,8 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uin
 	return ackStatusOk, pkt.sentTimeNano, pkt.deliveredAtSend
 }
 
-// updatePacketSize records encrypted size and delivery snapshot after packet is built.
-func (sb *sender) updatePacketSize(streamID uint32, offset uint64, length, packetSize uint16, nowNano uint64, deliveredAtSend uint64) {
+// markSent stamps send time and delivery snapshot after the packet is built.
+func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNano uint64, deliveredAtSend uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -386,7 +384,6 @@ func (sb *sender) updatePacketSize(streamID uint32, offset uint64, length, packe
 
 	key := createPacketKey(offset, length)
 	if pkt, ok := stream.inFlight.get(key); ok {
-		pkt.packetSize = packetSize
 		pkt.sentTimeNano = nowNano
 		pkt.deliveredAtSend = deliveredAtSend
 	}
@@ -446,22 +443,6 @@ func (sb *sender) ensureKeyFlagsTracked(streamID uint32, isKeyUpdate, isKeyUpdat
     }
     
     return stream.bytesSentOffset
-}
-
-func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	stream := sb.streams[streamID]
-	if stream == nil {
-		return 0
-	}
-
-	// Acked offset is where in-flight begins (everything before is acked)
-	if firstKey, _, ok := stream.inFlight.first(); ok {
-		return firstKey.offset()
-	}
-	return stream.bytesSentOffset
 }
 
 func (sb *sender) getOffsetClosedAt(streamID uint32) *uint64 {

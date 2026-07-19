@@ -104,26 +104,14 @@ type measurements struct {
 	roundBwBest          uint64 // best bw sample seen during the current round
 	prevRoundBwBest      uint64 // best bw sample from the previous round
 
-	// MTU
-	negotiatedMTU int // original negotiated value (for restoring after fallback)
-
-	// Stats
-	packetLossNr int
-	packetDupNr  int
 }
 
-func newMeasurements(mtu int) measurements {
+func newMeasurements() measurements {
 	return measurements{
 		isStartup:     true,
 		pacingGainPct: startupGain,
 		rttMinNano:    math.MaxUint64,
-		negotiatedMTU: mtu,
 	}
-}
-
-// updateMTU adjusts MTU-dependent fields without resetting congestion state.
-func (m *measurements) updateMTU(mtu int) {
-	m.negotiatedMTU = mtu
 }
 
 // =============================================================================
@@ -343,18 +331,6 @@ func backoff(rtoNano uint64, attempt uint) (uint64, error) {
 		}
 	}
 	return rtoNano, nil
-}
-
-// =============================================================================
-// Congestion events
-// =============================================================================
-
-func (m *measurements) onDuplicateAck() {
-	m.packetDupNr++
-}
-
-func (m *measurements) onPacketLoss() {
-	m.packetLossNr++
 }
 
 // =============================================================================

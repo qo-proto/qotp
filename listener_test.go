@@ -309,7 +309,7 @@ func TestListener_cleanupConn(t *testing.T) {
 	assert.False(t, listener.connMap.contains(connId))
 }
 
-func TestListener_cleanupConn_UpdatesCurrentConnID(t *testing.T) {
+func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 	listener, err := Listen(WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 	defer listener.Close()
@@ -317,14 +317,16 @@ func TestListener_cleanupConn_UpdatesCurrentConnID(t *testing.T) {
 	conn1, _ := listener.DialString("127.0.0.1:9000")
 	conn2, _ := listener.DialString("127.0.0.1:9001")
 
-	// Set current to first connection
+	// Cursor points at the connection being removed; the iterator's fallback
+	// (unknown start key -> begin from the front) makes this safe.
 	listener.currentConnID = &conn1.connId
-
-	// Cleanup first connection - should advance currentConnID
 	listener.cleanupConn(conn1.connId)
 
-	assert.NotNil(t, listener.currentConnID)
-	assert.Equal(t, conn2.connId, *listener.currentConnID)
+	var seen []uint64
+	for id := range listener.connMap.iterator(listener.currentConnID) {
+		seen = append(seen, id)
+	}
+	assert.Equal(t, []uint64{conn2.connId}, seen)
 }
 
 // =============================================================================

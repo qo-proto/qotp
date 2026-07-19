@@ -39,14 +39,13 @@ const (
 // =============================================================================
 
 type payloadHeader struct {
-	hasAck          bool
 	isMtuUpdate     bool
 	mtuUpdateValue  uint16 // max UDP payload when isMtuUpdate
 	isClose         bool
 	isKeyUpdate     bool
 	isKeyUpdateAck  bool
 	keyUpdatePub    []byte // 32 bytes when isKeyUpdate
-	keyUpdatePubAck []byte // 32 bytes when isKeyUpdate
+	keyUpdatePubAck []byte // 32 bytes when isKeyUpdateAck
 	needsReTx       bool
 	ack             *ack
 	streamId        uint32
@@ -208,7 +207,6 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	isExtend := flags&flagExtend != 0
 
 	p := &payloadHeader{
-		hasAck:         flags&flagHasAck != 0,
 		isMtuUpdate:    flags&flagMtuUpdate != 0,
 		isClose:        flags&flagClose != 0,
 		isKeyUpdate:    flags&flagKeyUpdate != 0,
@@ -217,7 +215,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	}
 	offset := 1
 
-	if p.hasAck {
+	if flags&flagHasAck != 0 {
 		ackSize := 4 + offsetSize(isExtend) + 2 + 1 // streamId + offset + len + rcvWnd
 		if len(data) < offset+ackSize {
 			return nil, nil, errors.New("payload too small for ack")

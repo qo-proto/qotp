@@ -14,7 +14,7 @@ import (
 
 func newTestConnection() *conn {
 	return &conn{
-		measurements: newMeasurements(testMaxPayload),
+		measurements: newMeasurements(),
 	}
 }
 
@@ -29,7 +29,7 @@ func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, deliveredAt
 // =============================================================================
 
 func TestMeasurements_New(t *testing.T) {
-	m := newMeasurements(testMaxPayload)
+	m := newMeasurements()
 
 	assert.True(t, m.isStartup)
 	assert.Equal(t, startupGain, m.pacingGainPct)
@@ -443,30 +443,6 @@ func TestMeasurements_RTO_Maximum(t *testing.T) {
 }
 
 // =============================================================================
-// CONGESTION EVENT TESTS
-// =============================================================================
-
-func TestMeasurements_OnDuplicateAck(t *testing.T) {
-	conn := newTestConnection()
-	conn.bwMax = 10000
-
-	conn.onDuplicateAck()
-
-	assert.Equal(t, uint64(10000), conn.bwMax, "bwMax should not change on dup ACK")
-	assert.Equal(t, 1, conn.packetDupNr, "should increment dup counter")
-}
-
-func TestMeasurements_OnPacketLoss(t *testing.T) {
-	conn := newTestConnection()
-	conn.bwMax = 10000
-
-	conn.onPacketLoss()
-
-	assert.Equal(t, uint64(10000), conn.bwMax, "bwMax should not change on loss")
-	assert.Equal(t, 1, conn.packetLossNr, "should increment loss counter")
-}
-
-// =============================================================================
 // PACING CALCULATION TESTS
 // =============================================================================
 
@@ -626,19 +602,6 @@ func TestMeasurements_DivisionByZeroProtection(t *testing.T) {
 }
 
 // =============================================================================
-// UPDATE MTU TESTS
-// =============================================================================
-
-func TestMeasurements_UpdateMTU_Basic(t *testing.T) {
-	m := newMeasurements(1400)
-	assert.Equal(t, 1400, m.negotiatedMTU)
-
-	m.updateMTU(1300)
-
-	assert.Equal(t, 1300, m.negotiatedMTU)
-}
-
-// =============================================================================
 // CONCURRENT ACCESS TESTS
 // =============================================================================
 
@@ -667,7 +630,7 @@ func TestMeasurements_ConcurrentAccess(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 5; i++ {
-			conn.onPacketLoss()
+			conn.rtoNano()
 			time.Sleep(time.Microsecond * 2)
 		}
 	}()

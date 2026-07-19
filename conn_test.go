@@ -1091,7 +1091,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 		snd:          newSendBuffer(1000),
 		streams:      newLinkedMap[uint32, *Stream](),
 		mtu:          conservativeMTU,
-		measurements: newMeasurements(conservativeMTU),
+		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
@@ -1175,7 +1175,7 @@ func TestConn_MtuSent_SetAfterInitCryptoSnd(t *testing.T) {
 	c.listener.localConn = NewConnPair("a", "b").Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
@@ -1190,7 +1190,7 @@ func TestConn_MtuSent_SetOnInitSnd(t *testing.T) {
 	c.listener.localConn = NewConnPair("a", "b").Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
@@ -1205,7 +1205,7 @@ func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
@@ -1232,7 +1232,7 @@ func TestConn_EncodeAndWrite_InjectsMtuForInitCryptoSnd(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
@@ -1250,7 +1250,7 @@ func TestConn_EncodeAndWrite_SkipsMtuOnClose(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
@@ -1266,7 +1266,7 @@ func TestConn_EncodeAndWrite_SkipsMtuOnKeyUpdate(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 	c.sndKeys.prvKeyEpNext = prvEpNew
 
@@ -1300,7 +1300,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 		snd:          newSendBuffer(1000),
 		streams:      newLinkedMap[uint32, *Stream](),
 		mtu:          conservativeMTU,
-		measurements: newMeasurements(conservativeMTU),
+		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
@@ -1353,7 +1353,7 @@ func TestConn_FlushStream_RetransmitBypassesRwnd(t *testing.T) {
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
 	c.mtuSent = true
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 
 	// Simulate rwnd-blocked: receiver has zero window
 	c.rcvWndSize = 0
@@ -1402,7 +1402,7 @@ func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
 	c.mtuSent = true
-	c.measurements = newMeasurements(testMaxPayload)
+	c.measurements = newMeasurements()
 
 	// Simulate rwnd-blocked
 	c.rcvWndSize = 0

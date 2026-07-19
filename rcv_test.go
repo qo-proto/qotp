@@ -229,13 +229,21 @@ func TestReceiveBuffer_Insert_ExactCapacity(t *testing.T) {
 // OVERLAP TESTS - PREVIOUS SEGMENT
 // =============================================================================
 
-func TestReceiveBuffer_Insert_PreviousOverlap_PartialMismatch_Panics(t *testing.T) {
+func TestReceiveBuffer_Insert_PreviousOverlap_Mismatch_KeepsExisting(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.insert(1, 100, 0, []byte("ABCDE"))
 
-	assert.PanicsWithValue(t, "segment overlap mismatch - data integrity violation", func() {
-		rb.insert(1, 102, 0, []byte("XXFG"))
-	})
+	// Conflicting overlap must not panic; existing bytes win, tail is kept
+	status := rb.insert(1, 102, 0, []byte("XXFG"))
+
+	assert.Equal(t, rcvInsertOk, status)
+	stream := rb.streams[1]
+	existing, ok := stream.segments.get(100)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("ABCDE"), existing)
+	tail, ok := stream.segments.get(105)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("G"), tail)
 }
 
 func TestReceiveBuffer_Insert_PreviousOverlap_Complete(t *testing.T) {
@@ -266,13 +274,21 @@ func TestReceiveBuffer_Insert_PreviousOverlap_PartialMatch(t *testing.T) {
 // OVERLAP TESTS - NEXT SEGMENT
 // =============================================================================
 
-func TestReceiveBuffer_Insert_NextOverlap_Mismatch_Panics(t *testing.T) {
+func TestReceiveBuffer_Insert_NextOverlap_Mismatch_KeepsExisting(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.insert(1, 105, 0, []byte("EFGH"))
 
-	assert.PanicsWithValue(t, "segment overlap mismatch - data integrity violation", func() {
-		rb.insert(1, 100, 0, []byte("ABCDEF"))
-	})
+	// Conflicting overlap must not panic; incoming is trimmed, existing wins
+	status := rb.insert(1, 100, 0, []byte("ABCDEF"))
+
+	assert.Equal(t, rcvInsertOk, status)
+	stream := rb.streams[1]
+	head, ok := stream.segments.get(100)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("ABCDE"), head)
+	next, ok := stream.segments.get(105)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("EFGH"), next)
 }
 
 func TestReceiveBuffer_Insert_NextOverlap_Partial(t *testing.T) {
@@ -538,6 +554,16 @@ func TestReceiveBuffer_IsReadyToClose_ExactlyAtOffset(t *testing.T) {
 // =============================================================================
 // GETOFFSETCLOSEDAT TESTS
 // =============================================================================
+
+// getOffsetClosedAt is a test helper exposing the close offset of a stream.
+func (rb *receiver) getOffsetClosedAt(streamID uint32) *uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if s := rb.streams[streamID]; s != nil {
+		return s.closeAtOffset
+	}
+	return nil
+}
 
 func TestReceiveBuffer_GetOffsetClosedAt_NoStream(t *testing.T) {
 	rb := newReceiveBuffer(1000)

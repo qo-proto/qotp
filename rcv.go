@@ -2,6 +2,7 @@ package qotp
 
 import (
 	"bytes"
+	"log/slog"
 	"sync"
 )
 
@@ -105,7 +106,8 @@ func newRcvBuffer() *reassemblyBuffer {
 //
 // Handles: duplicates, out-of-order, overlapping segments, capacity limits.
 // Always ACKs received data (sender may be retransmitting due to lost ACK).
-// Overlapping data must match exactly or panics (data integrity violation).
+// Overlapping bytes from an honest peer are always identical; mismatches are
+// logged and resolved to one copy rather than treated as fatal.
 // =============================================================================
 
 func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) rcvInsertStatus {
@@ -165,7 +167,7 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 				return rcvInsertDuplicate
 			}
 			// Trim front: remove, adjust, re-insert
-			assertOverlap(prev[offset-prevOff:], userData[:overlapLen])
+			warnOverlapMismatch(prev[offset-prevOff:], userData[:overlapLen])
 			stream.segments.remove(offset)
 			rb.len -= dataLen
 			finalOffset = prevEnd
@@ -189,10 +191,10 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 				// We completely cover next - remove it
 				stream.segments.remove(nextOff)
 				rb.len -= len(next)
-				assertOverlap(next, finalData[overlapStart:overlapStart+uint64(len(next))])
+				warnOverlapMismatch(next, finalData[overlapStart:overlapStart+uint64(len(next))])
 			} else {
 				// Partial overlap - shorten our data
-				assertOverlap(next[:ourEnd-nextOff], finalData[overlapStart:])
+				warnOverlapMismatch(next[:ourEnd-nextOff], finalData[overlapStart:])
 				finalData = finalData[:overlapStart]
 			}
 
@@ -204,9 +206,12 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	return rcvInsertOk
 }
 
-func assertOverlap(existing, incoming []byte) {
+// warnOverlapMismatch logs when overlapping segments carry different bytes.
+// AEAD authenticates the peer, so a mismatch means a broken (or malicious)
+// peer - not worth crashing over. The overlap resolves to one of the copies.
+func warnOverlapMismatch(existing, incoming []byte) {
 	if !bytes.Equal(existing, incoming) {
-		panic("segment overlap mismatch - data integrity violation")
+		slog.Warn("segment overlap mismatch - peer sent conflicting data")
 	}
 }
 
@@ -318,15 +323,6 @@ func (rb *receiver) isReadyToClose(streamID uint32) bool {
 	defer rb.mu.Unlock()
 	s := rb.streams[streamID]
 	return s != nil && s.closeAtOffset != nil && s.nextInOrder >= *s.closeAtOffset
-}
-
-func (rb *receiver) getOffsetClosedAt(streamID uint32) *uint64 {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	if s := rb.streams[streamID]; s != nil {
-		return s.closeAtOffset
-	}
-	return nil
 }
 
 func (rb *receiver) removeStream(streamID uint32) {

@@ -63,7 +63,8 @@ type conn struct {
 	lastReadTimeNano uint64
 
 	// MTU negotiation
-	mtu               int  // negotiated max UDP payload (starts conservative, updated after handshake)
+	mtu               int  // current max UDP payload (starts conservative, may fall back on losses)
+	negotiatedMTU     int  // negotiated value (for restoring after fallback)
 	mtuSent           bool // whether we've sent our maxPayload to the peer
 	consecutiveLosses int
 	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
@@ -122,13 +123,11 @@ func (c *conn) closeAllStreams() {
 	}
 }
 
+// cleanupStream removes stream state. A stale round-robin cursor pointing at
+// the removed stream is fine: linkedMap.iterator falls back to the beginning.
 func (c *conn) cleanupStream(streamID uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.listener.currentStreamID != nil && streamID == *c.listener.currentStreamID {
-		tmp, _, _ := c.streams.next(streamID)
-		c.listener.currentStreamID = &tmp
-	}
 	c.streams.remove(streamID)
 	c.snd.removeStream(streamID)
 	c.rcv.removeStream(streamID)
@@ -146,7 +145,7 @@ func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
 		negotiated = conservativeMTU
 	}
 	c.mtu = negotiated
-	c.updateMTU(negotiated)
+	c.negotiatedMTU = negotiated
 }
 
 // =============================================================================
@@ -375,8 +374,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		ackStatus, sentTimeNano, deliveredAtSend := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
-		switch ackStatus {
-		case ackStatusOk:
+		if ackStatus == ackStatusOk {
 			c.dataInFlight -= int(p.ack.len)
 			if nowNano > sentTimeNano {
 				c.updateMeasurements(nowNano-sentTimeNano, p.ack.len, deliveredAtSend, nowNano)
@@ -397,8 +395,6 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed && c.snd.checkStreamFullyAcked(p.ack.streamId) {
 				ackStream.sndClosed = true
 			}
-		case ackDup:
-			c.onDuplicateAck()
 		}
 	}
 
@@ -533,10 +529,9 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	}
 
 	// Expired best-effort packets (unreliable data, pings) are dropped, not
-	// retransmitted: release their in-flight accounting and count the losses
-	droppedBytes, droppedPackets := c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
+	// retransmitted: release their in-flight accounting
+	droppedBytes, _ := c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
 	c.dataInFlight -= droppedBytes
-	c.packetLossNr += droppedPackets
 
 	// Skip receive gaps on unreliable streams whose reorder deadline passed
 	// (covers the case where the sender went silent mid-gap)
@@ -576,7 +571,6 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return 0, 0, err
 	}
 	if splitData != nil {
-		c.onPacketLoss()
 		c.consecutiveLosses++
 		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
 			c.mtu = conservativeMTU
@@ -627,20 +621,10 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// Include maxPayload via the MTU update field in the proto payload.
 	// Skipped on close/keyUpdate packets to keep them at their expected size
 	// (the overhead reservation in flushStream does not account for it there).
-	if !isClose && !isKeyUpdate && !isKeyUpdateAck {
-		switch c.msgType() {
-		case initCryptoSnd, initRcv, initCryptoRcv:
-			// Init packets carry proto payloads and are retransmitted until acknowledged.
-			p.isMtuUpdate = true
-			p.mtuUpdateValue = uint16(c.listener.maxPayload)
-		case initSnd:
-			// MTU is embedded in the initSnd fixed header; no proto payload needed.
-		default:
-			if !c.mtuSent {
-				p.isMtuUpdate = true
-				p.mtuUpdateValue = uint16(c.listener.maxPayload)
-			}
-		}
+	// InitSnd embeds MTU in its fixed crypto header instead (willInjectMtu is false).
+	if !isClose && !isKeyUpdate && !isKeyUpdateAck && c.willInjectMtu(c.msgType()) {
+		p.isMtuUpdate = true
+		p.mtuUpdateValue = uint16(c.listener.maxPayload)
 	}
 
 	if isKeyUpdate && c.sndKeys.prvKeyEpNext != nil {
@@ -659,7 +643,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	if data != nil {
-		c.snd.updatePacketSize(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano, c.totalDelivered)
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano, c.totalDelivered)
 	}
 
 	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)

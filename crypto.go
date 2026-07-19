@@ -153,7 +153,7 @@ func encryptPacket(
 		header = make([]byte, headerSize+connIdSize)
 		header[0] = (uint8(data) << 5) | cryptoVersion
 		putUint64(header[headerSize:], connId)
-		// Data messages use epochCrypto; init messages always use epoch 0
+		// Data messages set the nonce direction bit by role; init messages use isSender=false
 		return chainedEncrypt(snCrypto, isSender, sharedSecret, header, packetData)
 	default:
 		return nil, errors.New("unsupported message type")
@@ -171,8 +171,9 @@ func encryptPacket(
 // 1. Encrypt payload with ChaCha20-Poly1305 using deterministic nonce
 // 2. Encrypt sequence number with XChaCha20-Poly1305 using random nonce (from step 1)
 //
-// Nonce structure (12 bytes): [epoch (6 bytes)][snCrypto (6 bytes)]
-// Bit 0 of epoch: 1=sender, 0=receiver (prevents nonce collision)
+// Nonce structure (12 bytes): [zero padding (6 bytes)][snCrypto (6 bytes)]
+// Bit 7 (MSB) of byte 0: 1=sender, 0=receiver (prevents nonce collision).
+// Nonce reuse is prevented by key rotation before the sequence number overflows.
 func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, packetData []byte) ([]byte, error) {
 	// Build deterministic nonce
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
@@ -340,7 +341,7 @@ func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) (*msg, er
 }
 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
-// Tries current epoch ±1 to handle packets arriving during epoch rollover.
+// Tries all provided secrets (cur, plus prev/next during key rotation).
 func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) (
 	snConn uint64, packetData []byte, err error) {
 
