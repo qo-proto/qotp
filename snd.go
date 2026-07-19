@@ -267,9 +267,9 @@ func (sb *sender) readyToRetransmit(
 		return nil, 0, false, false, false, nil
 	}
 
-	// Ping packets: just remove, don't retransmit
+	// Best-effort packets (unreliable data, pings) are never retransmitted;
+	// expired ones are removed by drainExpiredBestEffort
 	if !pkt.needsReTx {
-		stream.inFlight.remove(key)
 		return nil, 0, false, false, false, nil
 	}
 
@@ -319,6 +319,34 @@ func (sb *sender) splitAndRetransmit(
 	stream.inFlight.replace(key, rightKey, pkt)
 
 	return leftData, key.offset(), false, pkt.isKeyUpdate, pkt.isKeyUpdateAck, nil
+}
+
+// drainExpiredBestEffort removes expired best-effort packets (needsReTx=false:
+// unreliable data, pings) from the head of the in-flight queue. They are not
+// retransmitted; the deadline is one RTO without backoff — after that the ACK
+// is not coming and the packet counts as lost. Returns dropped payload bytes
+// and dropped data-packet count so the caller can release in-flight accounting.
+func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNano uint64) (droppedBytes int, droppedPackets int) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return 0, 0
+	}
+
+	for {
+		key, pkt, ok := stream.inFlight.first()
+		if !ok || pkt.needsReTx || nowNano-pkt.sentTimeNano <= baseRTO {
+			return droppedBytes, droppedPackets
+		}
+		stream.inFlight.remove(key)
+		if len(pkt.data) > 0 {
+			droppedBytes += len(pkt.data)
+			droppedPackets++
+			sb.size -= len(pkt.data)
+		}
+	}
 }
 
 // =============================================================================

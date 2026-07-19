@@ -14,12 +14,13 @@ import (
 // =============================================================================
 
 type Stream struct {
-	streamID  uint32
-	conn      *conn
-	reliable  bool // Retransmit lost data (default true)
-	rcvClosed bool // Receive direction closed (received FIN)
-	sndClosed bool // Send direction closed (sent FIN and ACKed)
-	mu        sync.Mutex
+	streamID            uint32
+	conn                *conn
+	reliable            bool   // Retransmit lost data (default true)
+	reorderDeadlineNano uint64 // Max wait for reordered data before skipping a gap (unreliable streams)
+	rcvClosed           bool   // Receive direction closed (received FIN)
+	sndClosed           bool   // Send direction closed (sent FIN and ACKed)
+	mu                  sync.Mutex
 }
 
 // =============================================================================
@@ -115,11 +116,56 @@ func (s *Stream) SndClosed() bool {
 // =============================================================================
 
 // SetReliable controls whether lost data packets are retransmitted.
-// Default is true. Set to false for real-time streams where
-// retransmitting stale data is worse than dropping it.
-// Control packets (close, key updates) are always retransmitted.
+// Default is true. Set to false for real-time streams where retransmitting
+// stale data is worse than dropping it. Call before the first Write: the
+// receiver marks a stream unreliable on the first best-effort data packet
+// and the marking is sticky.
+//
+// On an unreliable stream the delivered byte stream may have lost ranges
+// silently removed (after the reorder deadline), so the application must do
+// its own message framing. Close (FIN) and key updates are always
+// retransmitted, and ACKs are best-effort in both modes.
 func (s *Stream) SetReliable(reliable bool) {
 	s.reliable = reliable
+}
+
+// SetReorderDeadlineNano sets how long the receiver waits for out-of-order
+// data to fill a gap on an unreliable stream before skipping it (default
+// 100ms). Lower values reduce added latency after a loss; higher values
+// tolerate more network reordering. RTTNano/RTTVarNano can guide tuning,
+// e.g. srtt/2 or 4*rttvar.
+func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64) {
+	s.reorderDeadlineNano = deadlineNano
+}
+
+// RTTNano returns the connection's smoothed RTT estimate in nanoseconds
+// (0 until the first RTT sample).
+func (s *Stream) RTTNano() uint64 {
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+	return s.conn.srtt
+}
+
+// RTTVarNano returns the connection's RTT variation (jitter) estimate in
+// nanoseconds (RFC 6298 rttvar).
+func (s *Stream) RTTVarNano() uint64 {
+	s.conn.mu.Lock()
+	defer s.conn.mu.Unlock()
+	return s.conn.rttvar
+}
+
+// LatePackets returns the number of packets on this stream that arrived
+// after their range had already been skipped as lost.
+func (s *Stream) LatePackets() uint64 {
+	packets, _ := s.conn.rcv.lateStats(s.streamID)
+	return packets
+}
+
+// LateBytes returns the number of bytes on this stream that arrived after
+// their range had already been skipped as lost.
+func (s *Stream) LateBytes() uint64 {
+	_, bytes := s.conn.rcv.lateStats(s.streamID)
+	return bytes
 }
 
 // =============================================================================

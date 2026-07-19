@@ -361,19 +361,69 @@ func TestSendBuffer_ReadyToRetransmit_Split_Right(t *testing.T) {
 }
 
 // =============================================================================
-// PING RETRANSMIT TESTS
+// BEST-EFFORT DRAIN TESTS
 // =============================================================================
 
-func TestSendBuffer_ReadyToRetransmit_PingRemoved(t *testing.T) {
+func TestSendBuffer_ReadyToRetransmit_PingNotRetransmitted(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queuePing(1)
 	sb.readyToSend(1, data, nil, 1000, false, false, true)
 
+	// Expired ping: not retransmitted, and left for drainExpiredBestEffort
 	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+}
+
+func TestSendBuffer_DrainBestEffort_ExpiredPing(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queuePing(1)
+	sb.readyToSend(1, data, nil, 1000, false, false, true)
+
+	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+
+	assert.Equal(t, 0, droppedBytes, "ping carries no data")
+	assert.Equal(t, 0, droppedPackets)
 	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+}
+
+func TestSendBuffer_DrainBestEffort_ExpiredUnreliableData(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test1"))
+	sb.readyToSend(1, data, nil, 1000, false, false, false) // reliable=false
+
+	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+
+	assert.Equal(t, 5, droppedBytes)
+	assert.Equal(t, 1, droppedPackets)
+	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.size, "sender capacity must be released")
+}
+
+func TestSendBuffer_DrainBestEffort_NotExpired(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test1"))
+	sb.readyToSend(1, data, nil, 1000, false, false, false)
+
+	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 100, 50)
+
+	assert.Equal(t, 0, droppedBytes)
+	assert.Equal(t, 0, droppedPackets)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+}
+
+func TestSendBuffer_DrainBestEffort_ReliableUntouched(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test1"))
+	sb.readyToSend(1, data, nil, 1000, false, false, true) // reliable
+
+	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+
+	assert.Equal(t, 0, droppedBytes)
+	assert.Equal(t, 0, droppedPackets)
+	assert.Equal(t, 1, sb.streams[1].inFlight.size())
 }
 
 // =============================================================================
@@ -840,10 +890,12 @@ func TestSendBuffer_Unreliable_PingNotRetransmitted(t *testing.T) {
 	sb.queuePing(1)
 	sb.readyToSend(1, data, nil, 1000, false, false, false)
 
+	// Expired ping is never retransmitted; removal is drainExpiredBestEffort's job
 	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
+	sb.drainExpiredBestEffort(1, 50, 200)
 	assert.Equal(t, 0, sb.streams[1].inFlight.size())
 }
 
@@ -852,10 +904,14 @@ func TestSendBuffer_Unreliable_DataNotRetransmitted(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false, false, false)
 
+	// Expired unreliable data is never retransmitted; drain removes it
 	d, _, _, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, 200)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
+	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+	assert.Equal(t, 4, droppedBytes)
+	assert.Equal(t, 1, droppedPackets)
 	assert.Equal(t, 0, sb.streams[1].inFlight.size())
 }
 

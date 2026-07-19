@@ -162,7 +162,7 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 	if v, exists := c.streams.get(streamID); exists {
 		return v
 	}
-	s := &Stream{streamID: streamID, conn: c, reliable: true}
+	s := &Stream{streamID: streamID, conn: c, reliable: true, reorderDeadlineNano: defaultReorderDeadlineNano}
 	c.streams.put(streamID, s)
 	return s
 }
@@ -423,7 +423,11 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
+		if !p.needsReTx {
+			c.rcv.markUnreliable(s.streamID)
+		}
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
+		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 	} else if userData != nil || p.isClose || p.isMtuUpdate || p.isKeyUpdate || p.isKeyUpdateAck {
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
@@ -431,6 +435,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	// Handle stream close
 	if p.isClose {
 		c.rcv.close(s.streamID, p.streamOffset+uint64(len(userData)))
+		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 	}
 
 	// Update stream close state
@@ -526,6 +531,16 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	if ack != nil {
 		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.size())
 	}
+
+	// Expired best-effort packets (unreliable data, pings) are dropped, not
+	// retransmitted: release their in-flight accounting and count the losses
+	droppedBytes, droppedPackets := c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
+	c.dataInFlight -= droppedBytes
+	c.packetLossNr += droppedPackets
+
+	// Skip receive gaps on unreliable streams whose reorder deadline passed
+	// (covers the case where the sender went silent mid-gap)
+	c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano

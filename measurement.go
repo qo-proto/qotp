@@ -61,6 +61,10 @@ var (
 
 	// Min-RTT filter: samples older than this can no longer be the minimum
 	rttMinTTLNano = uint64(10 * secondNano)
+
+	// Unreliable streams: how long a receive gap may wait for reordered data
+	// before being skipped. Per-stream override via Stream.SetReorderDeadlineNano.
+	defaultReorderDeadlineNano = uint64(100 * msNano)
 )
 
 // rttMinEntry is a min-RTT candidate: a sample that may become the window

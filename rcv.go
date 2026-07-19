@@ -61,6 +61,39 @@ type reassemblyBuffer struct {
 	segments      *linkedMap[uint64, []byte] // offset -> segment data
 	nextInOrder   uint64                     // Next expected offset for in-order delivery
 	closeAtOffset *uint64                    // Stream closes at this offset (FIN received)
+
+	// Unreliable (best-effort) stream state: lost data is never retransmitted,
+	// so head-of-line gaps are skipped after a reorder deadline
+	unreliable    bool
+	gapStartNano  uint64       // when the current head-of-line gap was first observed (0 = none)
+	skippedRanges [][2]uint64  // recently skipped [from, to) ranges, for late classification
+	latePackets   uint64       // packets that arrived after their range was skipped
+	lateBytes     uint64
+}
+
+const maxSkippedRanges = 16
+
+func (s *reassemblyBuffer) recordSkip(from, to uint64) {
+	if len(s.skippedRanges) == maxSkippedRanges {
+		s.skippedRanges = s.skippedRanges[1:]
+	}
+	s.skippedRanges = append(s.skippedRanges, [2]uint64{from, to})
+}
+
+// countIfLate counts data arriving for a range that was already skipped: it was
+// declared lost and delivery advanced past it, so it is dropped.
+func (s *reassemblyBuffer) countIfLate(offset, dataLen uint64) {
+	if !s.unreliable {
+		return
+	}
+	end := offset + dataLen
+	for _, r := range s.skippedRanges {
+		if offset < r[1] && end > r[0] {
+			s.latePackets++
+			s.lateBytes += dataLen
+			return
+		}
+	}
 }
 
 func newRcvBuffer() *reassemblyBuffer {
@@ -96,8 +129,9 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	// Always ACK (may be retransmit due to lost ACK)
 	rb.ackList = append(rb.ackList, &ack{streamId: streamID, offset: offset, len: uint16(dataLen)})
 
-	// Already delivered to application
+	// Already delivered to application (or skipped as lost)
 	if offset+uint64(dataLen) <= stream.nextInOrder {
+		stream.countIfLate(offset, uint64(dataLen))
 		return rcvInsertDuplicate
 	}
 
@@ -203,6 +237,67 @@ func (rb *receiver) removeOldestInOrder(streamID uint32) []byte {
 		stream.nextInOrder = off + uint64(len(val))
 	}
 	return result
+}
+
+// =============================================================================
+// Unreliable streams - gap skipping
+// =============================================================================
+
+// markUnreliable flags a stream as best-effort. Called when a data packet with
+// needsReTx=0 arrives; sticky for the stream's lifetime.
+func (rb *receiver) markUnreliable(streamID uint32) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.getOrCreateStream(streamID).unreliable = true
+}
+
+// checkGap skips the head-of-line gap on an unreliable stream once it has been
+// open longer than deadlineNano. Lost best-effort data is never retransmitted,
+// so waiting beyond a reorder window blocks delivery for nothing. The gap
+// target is the next buffered segment, or the close offset when the tail of
+// the stream was lost.
+func (rb *receiver) checkGap(streamID uint32, nowNano uint64, deadlineNano uint64) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+
+	stream := rb.streams[streamID]
+	if stream == nil || !stream.unreliable {
+		return
+	}
+
+	var target uint64
+	firstOff, _, ok := stream.segments.first()
+	switch {
+	case ok && firstOff > stream.nextInOrder:
+		target = firstOff
+	case !ok && stream.closeAtOffset != nil && *stream.closeAtOffset > stream.nextInOrder:
+		target = *stream.closeAtOffset
+	default:
+		stream.gapStartNano = 0 // no gap (or it filled naturally)
+		return
+	}
+
+	if stream.gapStartNano == 0 {
+		stream.gapStartNano = nowNano
+		return
+	}
+	if nowNano-stream.gapStartNano <= deadlineNano {
+		return
+	}
+
+	stream.recordSkip(stream.nextInOrder, target)
+	stream.nextInOrder = target
+	stream.gapStartNano = 0
+}
+
+// lateStats returns counters for data that arrived after its range was skipped.
+func (rb *receiver) lateStats(streamID uint32) (packets uint64, bytes uint64) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if s := rb.streams[streamID]; s != nil {
+		return s.latePackets, s.lateBytes
+	}
+	return 0, 0
 }
 
 // =============================================================================

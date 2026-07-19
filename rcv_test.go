@@ -709,3 +709,106 @@ func TestReceiveBuffer_Insert_Duplicate_StillGeneratesAck(t *testing.T) {
 	require.NotNil(t, ack)
 	assert.Equal(t, uint64(0), ack.offset)
 }
+
+// =============================================================================
+// UNRELIABLE STREAM - GAP SKIP TESTS
+// =============================================================================
+
+const testDeadline = uint64(100 * msNano)
+
+func TestReceiveBuffer_GapSkip_AfterDeadline(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	// Offset 0-9 lost; data at 10 arrives
+	rb.insert(1, 10, 1_000_000_000, []byte("later"))
+	rb.checkGap(1, 1_000_000_000, testDeadline) // observes the gap
+	require.Empty(t, rb.removeOldestInOrder(1), "gap not yet expired")
+
+	rb.checkGap(1, 1_000_000_000+testDeadline+1, testDeadline)
+
+	assert.Equal(t, []byte("later"), rb.removeOldestInOrder(1), "gap skipped, data deliverable")
+}
+
+func TestReceiveBuffer_GapSkip_NotBeforeDeadline(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	rb.insert(1, 10, 1_000_000_000, []byte("later"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	rb.checkGap(1, 1_000_000_000+testDeadline/2, testDeadline)
+
+	require.Empty(t, rb.removeOldestInOrder(1), "gap within deadline must not be skipped")
+}
+
+func TestReceiveBuffer_GapSkip_ReliableNeverSkips(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+
+	rb.insert(1, 10, 1_000_000_000, []byte("later"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	rb.checkGap(1, 5_000_000_000, testDeadline)
+
+	require.Empty(t, rb.removeOldestInOrder(1), "reliable stream waits for retransmission")
+}
+
+func TestReceiveBuffer_GapSkip_FilledNaturally(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	rb.insert(1, 5, 1_000_000_000, []byte("later"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	// Reordered data arrives in time
+	rb.insert(1, 0, 1_000_000_500, []byte("early"))
+	rb.checkGap(1, 1_000_000_500, testDeadline)
+
+	assert.Equal(t, []byte("earlylater"), rb.removeOldestInOrder(1))
+	// Gap timer must have been reset, not carried over
+	rb.insert(1, 20, 2_000_000_000, []byte("next"))
+	rb.checkGap(1, 2_000_000_000, testDeadline)
+	require.Empty(t, rb.removeOldestInOrder(1), "new gap starts a fresh deadline")
+}
+
+func TestReceiveBuffer_GapSkip_CloseBehindGap(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	// Tail of the stream (0-9) lost, FIN at offset 10, nothing buffered
+	rb.close(1, 10)
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	assert.False(t, rb.isReadyToClose(1))
+
+	rb.checkGap(1, 1_000_000_000+testDeadline+1, testDeadline)
+
+	assert.True(t, rb.isReadyToClose(1), "stream must close despite lost tail")
+}
+
+func TestReceiveBuffer_LateArrival_Counted(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	rb.insert(1, 10, 1_000_000_000, []byte("later"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	rb.checkGap(1, 1_000_000_000+testDeadline+1, testDeadline) // skips [0,10)
+
+	// The lost packet finally arrives - too late
+	status := rb.insert(1, 0, 2_000_000_000, []byte("0123456789"))
+
+	assert.Equal(t, rcvInsertDuplicate, status)
+	packets, bytes := rb.lateStats(1)
+	assert.Equal(t, uint64(1), packets)
+	assert.Equal(t, uint64(10), bytes)
+}
+
+func TestReceiveBuffer_LateArrival_DuplicateNotCounted(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	rb.insert(1, 0, 1_000_000_000, []byte("data"))
+	rb.removeOldestInOrder(1)
+
+	// True duplicate of delivered (not skipped) data
+	rb.insert(1, 0, 2_000_000_000, []byte("data"))
+
+	packets, _ := rb.lateStats(1)
+	assert.Equal(t, uint64(0), packets, "delivered data re-arriving is a duplicate, not late")
+}
