@@ -69,10 +69,16 @@ type conn struct {
 	consecutiveLosses int
 	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
 
-	// Key update retransmission: a pending KU rides on every outgoing packet;
-	// on an idle connection, KU-only packets are re-sent RTO-paced
+	// Key update retransmission: the pending KU is re-attached once per RTO
+	// until acked; on an idle connection, KU-only packets are re-sent
 	kuLastSentNano uint64 // last time a packet carrying the KU went out
 	kuSendCount    uint   // RTO-paced re-sends this round; errors past maxRetry
+
+	// Handshake retransmission: untracked init packets (InitSnd, empty
+	// crypto dials, InitRcv) are re-sent with backoff in phaseInitSent,
+	// same give-up as data retransmits (~5s)
+	initLastSentNano uint64
+	initSendCount    uint
 
 	measurements
 	mu sync.Mutex
@@ -390,12 +396,14 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackStatus, sentTimeNano, deliveredAtSend := c.snd.acknowledgeRange(p.ack)
+		ackStatus, sentTimeNano, deliveredAtSend, sentCount := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
 		if ackStatus == ackStatusOk {
 			c.dataInFlight -= int(p.ack.len)
-			if nowNano > sentTimeNano {
+			// Karn's algorithm: an ACK for retransmitted data is ambiguous
+			// (original or retransmit?) - never measure RTT/bandwidth from it
+			if sentCount == 0 && nowNano > sentTimeNano {
 				c.updateMeasurements(nowNano-sentTimeNano, p.ack.len, deliveredAtSend, nowNano)
 			}
 			if c.consecutiveLosses > 0 {
@@ -415,6 +423,12 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 				ackStream.sndClosed = true
 			}
 		}
+	}
+
+	// No stream header (ACK-only packet): streamId/offset are unset, so there
+	// is no stream to touch. The ACK above was the whole payload.
+	if userData == nil {
+		return nil, nil
 	}
 
 	// Get or create stream; nil if stream already finished
@@ -544,7 +558,13 @@ func (c *conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
 func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	ack := c.rcv.getSndAck()
 	if ack != nil {
-		ack.rcvWnd = uint64(c.rcv.capacity) - uint64(c.rcv.size())
+		// max(0): size can briefly exceed capacity when an in-order segment
+		// is accepted over the limit to break a reassembly deadlock
+		free := 0
+		if c.rcv.capacity > c.rcv.size() {
+			free = c.rcv.capacity - c.rcv.size()
+		}
+		ack.rcvWnd = uint64(free)
 	}
 
 	// Expired best-effort packets (unreliable data, pings) are dropped, not
@@ -561,11 +581,13 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// KEY_UPDATE_ACK arrives. On an idle connection a KU-only packet is sent
 	// instead. Gives up after maxRetry re-sends, like data retransmits.
 	// KUAck needs no timer: a lost ack is re-triggered by the peer's KU retransmit.
-	isKeyUpdate, isKeyUpdateAck := c.keyUpdateFlags()
-	if isKeyUpdate && c.kuSendCount >= maxRetry {
+	_, isKeyUpdateAck := c.keyUpdateFlags()
+	kuSendDue := c.kuAttachDue(nowNano)
+	// Give up only when the NEXT re-send would be due, so the final re-send
+	// gets its full response window before the error fires
+	if kuSendDue && c.kuSendCount >= maxRetry {
 		return 0, 0, errors.New("key update: max retry attempts exceeded")
 	}
-	kuSendDue := c.kuAttachDue(nowNano)
 
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
@@ -611,6 +633,30 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 			c.mtu = conservativeMTU
 		}
 		return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, false)
+	}
+
+	// Handshake re-send: in phaseInitSent the response hasn't arrived. Inits
+	// carrying tracked 0-RTT data retransmit via the in-flight buffer above;
+	// untracked inits (InitSnd, empty dials, InitRcv) are re-sent here with
+	// the same backoff and give-up as data retransmits.
+	if c.phase == phaseInitSent && !c.snd.hasInFlight(s.streamID) {
+		// Cap the backoff attempt so the final re-send gets its full response
+		// window; the error fires only once that window has also expired
+		attempt := c.initSendCount
+		if attempt > maxRetry-1 {
+			attempt = maxRetry - 1
+		}
+		waitNano, err := backoff(c.rtoNano(), attempt)
+		if err != nil {
+			return 0, 0, err
+		}
+		if nowNano-c.initLastSentNano > waitNano {
+			if c.initSendCount >= maxRetry {
+				return 0, 0, errors.New("handshake: max retry attempts exceeded")
+			}
+			c.initSendCount++
+			return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+		}
 	}
 
 	// Receive window blocks new data only. Retransmits are handled above;
@@ -698,6 +744,12 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 			c.kuSendCount++ // an RTO passed without a KUAck: this is a re-send
 		}
 		c.kuLastSentNano = nowNano
+	}
+
+	// encode() moved us to phaseInitSent for init packets: stamp for the
+	// handshake re-send timer
+	if c.phase == phaseInitSent {
+		c.initLastSentNano = nowNano
 	}
 
 	if isKeyUpdateAck {

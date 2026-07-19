@@ -217,7 +217,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, 0, sb.streams[1].inFlight.size())
@@ -229,7 +229,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackDup, status)
 }
@@ -237,7 +237,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
+	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
 
 	assert.Equal(t, ackNotFound, status)
 }
@@ -581,6 +581,59 @@ func TestSendBuffer_Close_RetransmitSplit_RightHasClose(t *testing.T) {
 // NEEDS RETX TESTS
 // =============================================================================
 
+func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test"))
+	sb.readyToSend(1, data, nil, 1000, true)
+	sb.readyToRetransmit(1, nil, 1000, 50, data, 200) // one retransmit
+
+	status, _, _, sentCount := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+
+	assert.Equal(t, ackStatusOk, status)
+	assert.Equal(t, uint(1), sentCount, "ack after retransmit must be flagged as ambiguous")
+}
+
+func TestSendBuffer_ReadyToRetransmit_FinalRetryGetsWindow(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("test1"))
+	sb.readyToSend(1, data, nil, 1000, true)
+
+	// Exhaust all retransmit attempts (sentCount reaches maxRetry)
+	for i := 1; i <= int(maxRetry); i++ {
+		d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, uint64(i*1000))
+		assert.NoError(t, err)
+		assert.NotNil(t, d, "retransmit %d", i)
+	}
+
+	// Immediately after the final retransmit: response window still open
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 50, data, uint64(int(maxRetry)*1000+10))
+	assert.NoError(t, err)
+	assert.Nil(t, d, "final retransmit must get its response window before the error")
+
+	// Window expired without an ACK: give up
+	_, _, _, err = sb.readyToRetransmit(1, nil, 1000, 50, data, uint64(int(maxRetry)*1000+10_000))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "max retry")
+}
+
+func TestSendBuffer_ReadyToSend_PingSkippedWhenClosePending(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queuePing(1)
+	sb.close(1)
+
+	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, true)
+
+	// The ping is dropped (its zero-length key would collide with the FIN's);
+	// the FIN goes out instead
+	assert.Equal(t, []byte{}, d)
+	assert.Equal(t, uint64(0), offset)
+	assert.True(t, isClose)
+	assert.False(t, sb.streams[1].pingRequested)
+	_, info, ok := sb.streams[1].inFlight.first()
+	assert.True(t, ok)
+	assert.True(t, info.isClose)
+}
+
 func TestSendBuffer_NeedsReTx_DataPacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
@@ -866,7 +919,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.markSent(1, 0, 4, 12345, 5000)
 
-	status, sentTime, deliveredAtSend := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, sentTime, deliveredAtSend, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, uint64(12345), sentTime)

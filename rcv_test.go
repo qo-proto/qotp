@@ -838,3 +838,67 @@ func TestReceiveBuffer_LateArrival_DuplicateNotCounted(t *testing.T) {
 	packets, _ := rb.lateStats(1)
 	assert.Equal(t, uint64(0), packets, "delivered data re-arriving is a duplicate, not late")
 }
+
+// =============================================================================
+// STRADDLING SEGMENT TESTS (prefix below nextInOrder must be trimmed)
+// =============================================================================
+
+func TestReceiveBuffer_Insert_StraddlesSkippedBoundary(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.markUnreliable(1)
+
+	// Data at 10 arrives, gap [0,10) expires and is skipped
+	rb.insert(1, 10, 1_000_000_000, []byte("world"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	rb.checkGap(1, 1_000_000_000+testDeadline+1, testDeadline)
+
+	// The lost packet arrives late, straddling the skipped boundary [8,12)
+	rb.insert(1, 8, 2_000_000_000, []byte("XXwo"))
+
+	// Delivery must not be blocked by a segment stored below nextInOrder
+	assert.Equal(t, []byte("world"), rb.removeOldestInOrder(1))
+	packets, lateBytes := rb.lateStats(1)
+	assert.Equal(t, uint64(1), packets)
+	assert.Equal(t, uint64(2), lateBytes, "only the skipped prefix counts as late")
+}
+
+func TestReceiveBuffer_Insert_StraddlesDelivered_Trimmed(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("ABCD"))
+	rb.removeOldestInOrder(1) // nextInOrder = 4
+
+	// Segment [2,6): prefix [2,4) already delivered, suffix [4,6) is new
+	status := rb.insert(1, 2, 0, []byte("CDEF"))
+
+	assert.Equal(t, rcvInsertOk, status)
+	assert.Equal(t, []byte("EF"), rb.removeOldestInOrder(1))
+}
+
+// =============================================================================
+// FULL-BUFFER IN-ORDER ACCEPTANCE (reassembly deadlock avoidance)
+// =============================================================================
+
+func TestReceiveBuffer_Insert_InOrderAcceptedWhenFull(t *testing.T) {
+	rb := newReceiveBuffer(10)
+
+	// Fill the buffer with an out-of-order segment (gap at [0,5))
+	rb.insert(1, 5, 0, []byte("ABCDEFGHIJ")) // 10 bytes at offset 5, buffer now full
+	assert.Equal(t, 10, rb.size())
+
+	// The in-order gap-filler must be accepted despite the buffer being full,
+	// otherwise the stream deadlocks
+	status := rb.insert(1, 0, 0, []byte("12345"))
+	assert.Equal(t, rcvInsertOk, status)
+
+	// It advances delivery, and reading drains everything
+	assert.Equal(t, []byte("12345ABCDEFGHIJ"), rb.removeOldestInOrder(1))
+}
+
+func TestReceiveBuffer_Insert_OutOfOrderRejectedWhenFull(t *testing.T) {
+	rb := newReceiveBuffer(10)
+	rb.insert(1, 5, 0, []byte("ABCDEFGHIJ")) // full
+
+	// A further out-of-order segment is still rejected
+	status := rb.insert(1, 20, 0, []byte("XX"))
+	assert.Equal(t, rcvInsertBufferFull, status)
+}

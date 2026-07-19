@@ -124,7 +124,12 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 		return rcvInsertDuplicate
 	}
 
-	if rb.len+dataLen > rb.capacity {
+	// In-order data (fills the head-of-line gap) is accepted even when full:
+	// it is immediately drainable, so accepting it frees space rather than
+	// growing the retained buffer. Rejecting it would deadlock - the buffer
+	// stays full and the one packet that would drain it can never land.
+	advancesDelivery := offset <= stream.nextInOrder && offset+uint64(dataLen) > stream.nextInOrder
+	if !advancesDelivery && rb.len+dataLen > rb.capacity {
 		return rcvInsertBufferFull
 	}
 
@@ -135,6 +140,16 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	if offset+uint64(dataLen) <= stream.nextInOrder {
 		stream.countIfLate(offset, uint64(dataLen))
 		return rcvInsertDuplicate
+	}
+
+	// Trim any prefix already delivered or skipped: a segment stored below
+	// nextInOrder would block in-order delivery forever
+	if offset < stream.nextInOrder {
+		trim := stream.nextInOrder - offset
+		stream.countIfLate(offset, trim)
+		offset += trim
+		userData = userData[trim:]
+		dataLen = len(userData)
 	}
 
 	// Exact offset match - keep larger segment

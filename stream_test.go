@@ -256,9 +256,15 @@ func TestStream_Retransmission_MaxRetriesRemovesConnection(t *testing.T) {
 	connPair.dropSender(0)
 
 	connA.listener.Flush(((200 + 400 + 800 + 1600 + 3200) * msNano) + 5)
+	connPair.dropSender(0)
 
-	// After max retries, connection should be removed
+	// The final retransmit keeps its full response window (2s, capped):
+	// the connection must not be removed yet
 	connA.listener.Flush((6210 * msNano) + 5)
+	assert.Equal(t, 1, connA.listener.connMap.size(), "final retransmit still has its response window")
+
+	// Window expired without an ACK: connection is removed
+	connA.listener.Flush((8250 * msNano) + 5)
 	assert.Equal(t, 0, connA.listener.connMap.size(), "connection should be removed after max retries")
 }
 

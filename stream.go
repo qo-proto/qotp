@@ -140,22 +140,24 @@ func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64) {
 
 // RTTNano returns the connection's smoothed RTT estimate in nanoseconds
 // (0 until the first RTT sample).
+//
+// Call this from the Loop callback: the RTT estimate is written by the event
+// loop without a lock (the send path is single-goroutine), so reading it from
+// another goroutine is a data race. No lock is taken here because a lock on
+// the reader alone would not make it safe.
 func (s *Stream) RTTNano() uint64 {
-	s.conn.mu.Lock()
-	defer s.conn.mu.Unlock()
 	return s.conn.srtt
 }
 
 // RTTVarNano returns the connection's RTT variation (jitter) estimate in
-// nanoseconds (RFC 6298 rttvar).
+// nanoseconds (RFC 6298 rttvar). Call from the Loop callback - see RTTNano.
 func (s *Stream) RTTVarNano() uint64 {
-	s.conn.mu.Lock()
-	defer s.conn.mu.Unlock()
 	return s.conn.rttvar
 }
 
 // LatePackets returns the number of packets on this stream that arrived
-// after their range had already been skipped as lost.
+// after their range had already been skipped as lost. Safe from any
+// goroutine (the counter is guarded by the receive buffer's lock).
 func (s *Stream) LatePackets() uint64 {
 	packets, _ := s.conn.rcv.lateStats(s.streamID)
 	return packets

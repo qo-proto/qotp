@@ -1290,6 +1290,28 @@ func TestConn_EncodeAndWrite_SkipsMtuOnKeyUpdate(t *testing.T) {
 	assert.False(t, c.mtuSent)
 }
 
+func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.rcvWndSize = rcvBufferCapacity
+
+	// Send something so the ACK references a real send stream (7)
+	s := c.getOrCreateStream(7)
+	c.snd.queueData(7, []byte("data"))
+	c.snd.readyToSend(7, data, nil, 1000, true)
+	c.snd.markSent(7, 0, 4, 1_000_000_000, 0)
+
+	// An ACK-only packet: no stream header, so streamId defaults to 0
+	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4, rcvWnd: 1000}}
+	got, err := c.processIncomingPayload(p, nil, 2_000_000_000)
+	assert.NoError(t, err)
+	assert.Nil(t, got, "ack-only packet returns no stream")
+
+	// Stream 0 must not have been conjured into existence
+	_, exists := c.streams.get(0)
+	assert.False(t, exists, "ack-only packet must not create a phantom stream 0")
+	_ = s
+}
+
 func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	lAlice := &Listener{
 		connMap:    newLinkedMap[uint64, *conn](),
@@ -1506,6 +1528,101 @@ func TestConn_FlushStream_KeyUpdate_AttachedOncePerRTO(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender())
 	assert.Equal(t, uint64(1*secondNano), c.kuLastSentNano, "KU must not re-attach within RTO")
+}
+
+// =============================================================================
+// KARN'S ALGORITHM TESTS (no RTT/bw samples from retransmitted packets)
+// =============================================================================
+
+func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+
+	// A packet that was sent, then retransmitted
+	c.snd.queueData(0, []byte("test"))
+	c.snd.readyToSend(0, data, nil, 1000, true)
+	c.snd.markSent(0, 0, 4, 1_000_000_000, 0)
+	c.snd.readyToRetransmit(0, nil, 1000, 50, data, 2_000_000_000)
+
+	// Its ACK is ambiguous (original or retransmit?) - must not be measured
+	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
+	_, err := c.processIncomingPayload(p, nil, 3_000_000_000)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), c.srtt, "no RTT sample from retransmitted packet")
+}
+
+func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+
+	// A packet sent exactly once
+	c.snd.queueData(0, []byte("test"))
+	c.snd.readyToSend(0, data, nil, 1000, true)
+	c.snd.markSent(0, 0, 4, 1_000_000_000, 0)
+
+	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
+	_, err := c.processIncomingPayload(p, nil, 1_100_000_000)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(100_000_000), c.srtt, "fresh packet yields an RTT sample")
+}
+
+// =============================================================================
+// FLUSHSTREAM HANDSHAKE RESEND TESTS (untracked init packets, ~5s give-up)
+// =============================================================================
+
+func newInitTestConn(connPair *ConnPair) (*conn, *Stream) {
+	c := createTestConn(true, false, false) // phaseCreated, initSnd
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+	return c, c.Stream(0)
+}
+
+func TestConn_FlushStream_InitResend_RTOPaced(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newInitTestConn(connPair)
+
+	// First flush sends the init and moves to phaseInitSent
+	_, _, err := c.flushStream(s, uint64(1*secondNano))
+	assert.NoError(t, err)
+	assert.Equal(t, phaseInitSent, c.phase)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
+	assert.Equal(t, uint64(1*secondNano), c.initLastSentNano)
+
+	// Within RTO: no re-send
+	_, _, err = c.flushStream(s, uint64(1*secondNano+50*msNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "within RTO: no init re-send")
+
+	// Past RTO: re-send
+	_, _, err = c.flushStream(s, uint64(1*secondNano+250*msNano))
+	assert.NoError(t, err)
+	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender(), "past RTO: init re-sent")
+}
+
+func TestConn_FlushStream_InitResend_GiveUp(t *testing.T) {
+	connPair := NewConnPair("a", "b")
+	c, s := newInitTestConn(connPair)
+
+	now := uint64(1 * secondNano)
+	_, _, err := c.flushStream(s, now) // initial send
+	assert.NoError(t, err)
+
+	// maxRetry re-sends with doubling backoff (200ms..2s cap), then error
+	for i := 0; i < int(maxRetry); i++ {
+		now += 2500 * msNano // beyond the max backoff step
+		_, _, err = c.flushStream(s, now)
+		assert.NoError(t, err)
+	}
+	assert.Equal(t, int(maxRetry)+1, connPair.nrOutgoingPacketsSender())
+
+	now += 2500 * msNano
+	_, _, err = c.flushStream(s, now)
+	assert.Error(t, err, "handshake must give up after maxRetry re-sends")
 }
 
 func TestConn_FlushStream_KeyUpdate_CompletedStopsSending(t *testing.T) {

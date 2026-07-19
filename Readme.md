@@ -413,6 +413,10 @@ RTTVAR = (3/4) × RTTVAR + (1/4) × |SRTT - RTT_sample|
 BW_sample = delivered_bytes_during_flight / RTT_sample  (delivery rate)
 ```
 
+**Karn's algorithm**: ACKs of retransmitted packets are never measured — they
+are ambiguous (original or retransmit?), and a wrong sample would stick in
+the extremal min/max filters below.
+
 **RTT_min filter**: time-windowed minimum with a 10-second TTL, kept as a
 monotonic staircase of candidates (oldest & smallest first). Higher samples
 during queue buildup never displace the minimum; when the minimum expires,
@@ -580,6 +584,9 @@ where retransmitting stale data is worse than dropping it.
 - 30 seconds of inactivity (no packets received)
 - Automatic cleanup after timeout
 - Configured via `ReadDeadLine` constant
+- Unanswered handshake: init packets are re-sent with RTO backoff and the
+  connection errors after `maxRetry` re-sends (~5s), same as data
+  retransmits. 0-RTT inits carrying data use the regular retransmit path.
 
 **Single Socket**: 
 - All connections share one UDP socket
@@ -665,6 +672,8 @@ All buffer operations protected by mutexes:
 
 **Connection Errors**:
 - RTO exhausted (5 retransmit attempts): Connection closed with error
+- Handshake unanswered after 5 init re-sends (~5s): Connection closed with error
+- Key update unanswered after 5 re-sends: Connection closed with error
 - 30-second inactivity: Connection closed
 - Key rotation not completed before sequence overflow (2^47): Connection closed with error
 

@@ -166,12 +166,17 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		return nil, 0, false
 	}
 
-	// Priority 1: Ping request (best-effort: dropped at RTO, never retransmitted)
+	// Priority 1: Ping request (best-effort: dropped at RTO, never
+	// retransmitted). Skipped once close is requested: a ping entry would
+	// collide with the FIN's zero-length packet key at the same offset, and
+	// a stale ping ACK could then be misattributed to the FIN.
 	if stream.pingRequested {
 		stream.pingRequested = false
-		key := createPacketKey(stream.bytesSentOffset, 0)
-		stream.inFlight.put(key, &sendPacket{needsReTx: false})
-		return []byte{}, key.offset(), false
+		if stream.closeAtOffset == nil {
+			key := createPacketKey(stream.bytesSentOffset, 0)
+			stream.inFlight.put(key, &sendPacket{needsReTx: false})
+			return []byte{}, key.offset(), false
+		}
 	}
 
 	// Priority 2: Queued data
@@ -255,7 +260,13 @@ func (sb *sender) readyToRetransmit(
 		return nil, 0, false, nil
 	}
 
-	rtoWithBackoff, err := backoff(baseRTO, pkt.sentCount)
+	// Cap the backoff attempt so the final retransmit gets its full response
+	// window; the give-up error fires only once that window has also expired
+	attempt := pkt.sentCount
+	if attempt > maxRetry-1 {
+		attempt = maxRetry - 1
+	}
+	rtoWithBackoff, err := backoff(baseRTO, attempt)
 	if err != nil {
 		return nil, 0, false, err
 	}
@@ -263,6 +274,10 @@ func (sb *sender) readyToRetransmit(
 	// Not expired yet
 	if nowNano-pkt.sentTimeNano <= rtoWithBackoff {
 		return nil, 0, false, nil
+	}
+
+	if pkt.sentCount >= maxRetry {
+		return nil, 0, false, errors.New("max retry attempts exceeded")
 	}
 
 	// Best-effort packets (unreliable data, pings) are never retransmitted;
@@ -350,24 +365,27 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // =============================================================================
 
 // acknowledgeRange processes an ACK for a sent packet.
-// Returns timing info for RTT and delivery rate measurement.
-func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uint64, deliveredAtSend uint64) {
+// Returns timing info for RTT and delivery rate measurement, plus the number
+// of retransmissions: an ACK for retransmitted data is ambiguous (it may
+// answer any of the transmissions), so callers must not measure from it
+// (Karn's algorithm).
+func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uint64, deliveredAtSend uint64, sentCount uint) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
-		return ackNotFound, 0, 0
+		return ackNotFound, 0, 0, 0
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
 	pkt, ok := stream.inFlight.remove(key)
 	if !ok {
-		return ackDup, 0, 0
+		return ackDup, 0, 0, 0
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt.sentTimeNano, pkt.deliveredAtSend
+	return ackStatusOk, pkt.sentTimeNano, pkt.deliveredAtSend, pkt.sentCount
 }
 
 // markSent stamps send time and delivery snapshot after the packet is built.
@@ -420,6 +438,19 @@ func (sb *sender) checkStreamFullyAcked(streamID uint32) bool {
 	// Must have no in-flight data AND sent up to close offset
 	_, _, hasInFlight := stream.inFlight.first()
 	return !hasInFlight && stream.bytesSentOffset >= *stream.closeAtOffset
+}
+
+// hasInFlight reports whether any packet is awaiting acknowledgment.
+func (sb *sender) hasInFlight(streamID uint32) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return false
+	}
+	_, _, ok := stream.inFlight.first()
+	return ok
 }
 
 // getSendOffset returns the stream's current send offset, used as the wire
