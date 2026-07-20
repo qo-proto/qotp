@@ -76,7 +76,7 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		listener:    &Listener{prvKeyId: prvIdAlice, maxPayload: testMaxPayload},
 		snd:         newSendBuffer(sndBufferCapacity),
 		rcv:         newReceiveBuffer(1000),
-		streams:     newLinkedMap[uint32, *Stream](),
+		streams:     newSharedLinkedMap[uint32, *Stream](),
 		sndKeys: &keyState{
 			cur:      sharedSecret,
 			prvKeyEp: prvEpAlice,
@@ -105,12 +105,12 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 
 func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdAlice,
 		maxPayload: testMaxPayload,
 	}
 	lBob := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: prvIdBob,
 		maxPayload: testMaxPayload,
 	}
@@ -520,7 +520,7 @@ func TestConnFullHandshake(t *testing.T) {
 		listener:    lAlice,
 		rcv:         newReceiveBuffer(1000),
 		snd:         newSendBuffer(1000),
-		streams:     newLinkedMap[uint32, *Stream](),
+		streams:     newSharedLinkedMap[uint32, *Stream](),
 		sndKeys: &keyState{
 			prvKeyEp: prvEpAlice,
 		},
@@ -1084,12 +1084,12 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 
 func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 	lAlice := &Listener{
-		connMap:    newLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *conn](),
 		prvKeyId:   prvIdAlice,
 		maxPayload: 1400,
 	}
 	lBob := &Listener{
-		connMap:    newLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *conn](),
 		prvKeyId:   prvIdBob,
 		maxPayload: 1300, // Bob has smaller maxPayload
 	}
@@ -1102,7 +1102,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 		listener:     lAlice,
 		rcv:          newReceiveBuffer(1000),
 		snd:          newSendBuffer(1000),
-		streams:      newLinkedMap[uint32, *Stream](),
+		streams:      newSharedLinkedMap[uint32, *Stream](),
 		mtu:          conservativeMTU,
 		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,
@@ -1314,12 +1314,12 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 
 func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	lAlice := &Listener{
-		connMap:    newLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *conn](),
 		prvKeyId:   prvIdAlice,
 		maxPayload: 8952, // jumbo frame Alice
 	}
 	lBob := &Listener{
-		connMap:    newLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *conn](),
 		prvKeyId:   prvIdBob,
 		maxPayload: 1452, // standard Ethernet Bob
 	}
@@ -1333,7 +1333,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 		pubKeyIdRcv:  prvIdBob.PublicKey(),
 		rcv:          newReceiveBuffer(1000),
 		snd:          newSendBuffer(1000),
-		streams:      newLinkedMap[uint32, *Stream](),
+		streams:      newSharedLinkedMap[uint32, *Stream](),
 		mtu:          conservativeMTU,
 		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,

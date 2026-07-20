@@ -3,6 +3,7 @@ package qotp
 import (
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -866,11 +867,13 @@ func TestLinkedMap_PutOrdered_IntegrityAfterRemoves(t *testing.T) {
 }
 
 // =============================================================================
-// CONCURRENT TESTS
+// CONCURRENT TESTS - sharedLinkedMap only. The raw linkedMap is not
+// goroutine-safe by design (owner synchronizes); concurrency guarantees
+// live in the shared wrapper.
 // =============================================================================
 
-func TestLinkedMap_Concurrent_Reads(t *testing.T) {
-	lm := newLinkedMap[string, int]()
+func TestSharedLinkedMap_Concurrent_Reads(t *testing.T) {
+	lm := newSharedLinkedMap[string, int]()
 	keys := make([]string, 100)
 	for i := 0; i < 100; i++ {
 		key := "key" + strconv.Itoa(i)
@@ -888,9 +891,6 @@ func TestLinkedMap_Concurrent_Reads(t *testing.T) {
 				_, _ = lm.get(key)
 				_ = lm.contains(key)
 				_ = lm.size()
-				_, _, _ = lm.next(key)
-				_, _, _ = lm.prev(key)
-				_, _, _ = lm.first()
 			}
 		}()
 	}
@@ -899,8 +899,8 @@ func TestLinkedMap_Concurrent_Reads(t *testing.T) {
 	assert.Equal(t, 100, lm.size())
 }
 
-func TestLinkedMap_Concurrent_Writes(t *testing.T) {
-	lm := newLinkedMap[string, int]()
+func TestSharedLinkedMap_Concurrent_Writes(t *testing.T) {
+	lm := newSharedLinkedMap[string, int]()
 	var wg sync.WaitGroup
 
 	for i := 0; i < 5; i++ {
@@ -919,8 +919,8 @@ func TestLinkedMap_Concurrent_Writes(t *testing.T) {
 	assert.Equal(t, 100, lm.size())
 }
 
-func TestLinkedMap_Concurrent_Mixed(t *testing.T) {
-	lm := newLinkedMap[string, int]()
+func TestSharedLinkedMap_Concurrent_Mixed(t *testing.T) {
+	lm := newSharedLinkedMap[string, int]()
 	keys := make([]string, 50)
 	for i := 0; i < 50; i++ {
 		key := "key" + strconv.Itoa(i)
@@ -966,34 +966,62 @@ func TestLinkedMap_Concurrent_Mixed(t *testing.T) {
 	assert.True(t, lm.size() <= 110)
 }
 
-func TestLinkedMap_Concurrent_PutOrdered(t *testing.T) {
-	sm := newLinkedMap[int, string]()
+// Racing getOrPut on the same keys: exactly one goroutine per key must
+// observe loaded=false (it inserted), all others loaded=true.
+func TestSharedLinkedMap_Concurrent_GetOrPut(t *testing.T) {
+	lm := newSharedLinkedMap[int, int]()
 	var wg sync.WaitGroup
+	var inserted atomic.Int64
 
-	for i := 0; i < 10; i++ {
+	for g := 0; g < 10; g++ {
 		wg.Add(1)
-		go func(base int) {
+		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				val := base*100 + j
-				sm.putOrdered(val, "value")
-			}
-		}(i)
-	}
-
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 100; j++ {
-				if j%2 == 0 {
-					sm.get(j)
-				} else {
-					sm.remove(j)
+			for key := 0; key < 100; key++ {
+				if _, loaded := lm.getOrPut(key, key*1000+id); !loaded {
+					inserted.Add(1)
 				}
+				_, _ = lm.get(key) // concurrent read, exercises the race detector
 			}
-		}()
+		}(g)
 	}
 
 	wg.Wait()
+	assert.Equal(t, int64(100), inserted.Load(), "each key inserted exactly once")
+	assert.Equal(t, 100, lm.size())
+}
+
+// Iterating while another goroutine appends: the cursor-hop iterator must
+// not deadlock or crash; entries appended behind the cursor may be missed,
+// which is acceptable round-robin semantics.
+func TestSharedLinkedMap_Concurrent_IterateWhileWriting(t *testing.T) {
+	lm := newSharedLinkedMap[int, int]()
+	for i := 0; i < 100; i++ {
+		lm.put(i, i)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 100; i < 200; i++ {
+			lm.put(i, i)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		seen := 0
+		for range lm.iterator(nil) {
+			seen++
+			// Re-entrancy: the body may call back into the map because no
+			// lock is held while it runs
+			_ = lm.size()
+		}
+		assert.GreaterOrEqual(t, seen, 100)
+	}()
+
+	wg.Wait()
+	assert.Equal(t, 200, lm.size())
 }

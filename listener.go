@@ -22,7 +22,7 @@ import (
 type Listener struct {
 	localConn    NetworkConn
 	prvKeyId     *ecdh.PrivateKey
-	connMap      *linkedMap[uint64, *conn]
+	connMap      *sharedLinkedMap[uint64, *conn]
 	keyLogWriter io.Writer
 	maxPayload   int
 
@@ -161,7 +161,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		prvKeyId:     o.prvKeyId,
 		maxPayload:   maxPayload,
 		keyLogWriter: o.keyLogWriter,
-		connMap:      newLinkedMap[uint64, *conn](),
+		connMap:      newSharedLinkedMap[uint64, *conn](),
 		interfaceMTU: interfaceMTU,
 		readBuf:      make([]byte, maxPayload),
 	}
@@ -250,7 +250,7 @@ func (l *Listener) newConn(
 
 	conn := &conn{
 		connId:     connId,
-		streams:    newLinkedMap[uint32, *Stream](),
+		streams:    newSharedLinkedMap[uint32, *Stream](),
 		remoteAddr: remoteAddr,
 		rcvKeys: &rcvKeyState{
 			pubKeyEp: pubKeyEpRcv,

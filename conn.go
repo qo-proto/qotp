@@ -57,7 +57,7 @@ type conn struct {
 	phase       connPhase
 
 	// Stream and buffer management
-	streams      *linkedMap[uint32, *Stream]
+	streams      *sharedLinkedMap[uint32, *Stream]
 	snd          *sender
 	rcv          *receiver
 	dataInFlight int
@@ -182,18 +182,29 @@ func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
 // getOrCreateStream returns or creates a stream. Returns nil if the stream
 // was already finished. Self-locking: callable from the event loop and from
 // user goroutines (conn.Stream).
+//
+// c.mu serializes the isFinished check against cleanupStream: without it, a
+// concurrent cleanup between the check and the insert could resurrect a
+// finished stream. The map itself is internally locked (sharedLinkedMap).
 func (c *conn) getOrCreateStream(streamID uint32) *Stream {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	// Fast path: existing stream, no allocation, no c.mu. The finished
+	// check must come first — a finished stream may still be in the map,
+	// and finished trumps presence.
 	if c.rcv.isFinished(streamID) {
 		return nil
 	}
 	if v, exists := c.streams.get(streamID); exists {
 		return v
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.rcv.isFinished(streamID) {
+		return nil
+	}
 	s := &Stream{streamID: streamID, conn: c, reliable: true, reorderDeadlineNano: defaultReorderDeadlineNano}
-	c.streams.put(streamID, s)
+	s, _ = c.streams.getOrPut(streamID, s)
 	return s
 }
 

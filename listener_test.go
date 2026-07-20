@@ -335,7 +335,7 @@ func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 
 func TestListener_Decode_EmptyBuffer(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -347,7 +347,7 @@ func TestListener_Decode_EmptyBuffer(t *testing.T) {
 
 func TestListener_Decode_TooSmall(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -359,7 +359,7 @@ func TestListener_Decode_TooSmall(t *testing.T) {
 
 func TestListener_Decode_InvalidVersion(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -374,7 +374,7 @@ func TestListener_Decode_InvalidVersion(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -389,7 +389,7 @@ func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -404,7 +404,7 @@ func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
 	l := &Listener{
-		connMap:  newLinkedMap[uint64, *conn](),
+		connMap:  newSharedLinkedMap[uint64, *conn](),
 		prvKeyId: testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
