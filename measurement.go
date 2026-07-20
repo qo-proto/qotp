@@ -37,6 +37,12 @@ var (
 	maxRetry      = uint(5)
 	rtoBackoffPct = uint64(200) // 2x per retry
 
+	// Fast retransmit: declare an original (gen-0) packet lost once this
+	// many later-sent packets have been ACKed. 3 is QUIC's kPacketThreshold
+	// (RFC 9002), inherited from TCP's three-dup-ACK rule — it tolerates
+	// mild reordering while detecting loss in ~1 RTT instead of an RTO.
+	fastRetxThreshold = uint8(3)
+
 	// BBR timing
 	probeMultiplier  = uint64(8) // Probe every 8x RTT_min
 	probeCycleRounds = uint64(2) // One probe round (probeGain) + one drain round (drainGain)
@@ -291,6 +297,28 @@ func (m *measurements) onRoundEnd() {
 	} else {
 		m.bwDec++
 	}
+}
+
+// onLossEvent applies a one-round drain (0.75x) after fast-retransmit loss
+// detection. Loss is the only congestion signal on shallow-buffer paths,
+// where the queue is too small to move srtt past the delay threshold in
+// updateNormal. BBRv2/v3 semantics: react once per congestion event with a
+// bounded reduction, and never touch bwMax — the max filter keeps the true
+// rate for windowSize rounds, so pacing snaps back when the drain round
+// ends (probeRoundsRemaining=1 -> round end restores normalGain).
+func (m *measurements) onLossEvent(nowNano uint64) {
+	// Startup overshoot is bounded by the BDP cap; bwDec handles its exit
+	if m.isStartup {
+		return
+	}
+	// Already draining (this event's round, or a probe's drain phase):
+	// all losses within one round count as a single congestion event
+	if m.pacingGainPct == drainGain {
+		return
+	}
+	m.pacingGainPct = drainGain
+	m.probeRoundsRemaining = 1
+	m.lastProbeTimeNano = nowNano // postpone the next bandwidth probe
 }
 
 func (m *measurements) updateBBRState(nowNano uint64) {

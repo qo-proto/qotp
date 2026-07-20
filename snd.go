@@ -71,6 +71,7 @@ type sendPacket struct {
 	deliveredTimeAtSend uint64 // measurements.deliveredTimeNano at send
 	firstSentTimeAtSend uint64 // measurements.firstSentTimeNano at send
 	sentCount           uint   // Number of transmission attempts
+	ackGap              uint8  // Later-sent gen-0 packets ACKed (fast retransmit, capped at threshold)
 	isClose             bool
 	needsReTx           bool
 }
@@ -323,13 +324,18 @@ func (sb *sender) readyToRetransmit(
 	var pkt *sendPacket
 	for g, m := range stream.inFlight {
 		k, p, ok := m.first()
-		if !ok {
-			continue
+		// Best-effort entries (unreliable data, pings; generation 0 only)
+		// are never retransmitted — step past them to the first reliable
+		// packet, so a parked ping (sent but its ACK lost) cannot block
+		// fast retransmit of data behind it. Expired best-effort entries
+		// are removed by drainExpiredBestEffort before this runs, so this
+		// walk is 0-1 hops in practice. The "non-expired head clears the
+		// generation" rule holds for the first reliable entry: the reliable
+		// subsequence is still in send order.
+		for ok && !p.needsReTx {
+			k, p, ok = m.next(k)
 		}
-		// Best-effort heads (unreliable data, pings; generation 0 only) are
-		// never retransmitted; expired ones are removed by
-		// drainExpiredBestEffort before this runs
-		if !p.needsReTx {
+		if !ok {
 			continue
 		}
 		// Cap the backoff attempt so the final retransmit gets its full
@@ -343,10 +349,13 @@ func (sb *sender) readyToRetransmit(
 		if err != nil {
 			return nil, 0, false, err
 		}
+		// Fast retransmit: a gen-0 packet declared lost by gap evidence is
+		// eligible immediately, no RTO wait
+		fastRetx := g == 0 && p.ackGap >= fastRetxThreshold
 		// sentTimeNano can be (slightly) in the future: it is stamped with
 		// send-completion time (now+elapsed). Guard the unsigned subtraction
 		// or a fresh packet would look instantly expired.
-		if p.sentTimeNano >= nowNano || nowNano-p.sentTimeNano <= rtoWithBackoff {
+		if !fastRetx && (p.sentTimeNano >= nowNano || nowNano-p.sentTimeNano <= rtoWithBackoff) {
 			continue // not expired yet
 		}
 		if pkt == nil || p.sentTimeNano < pkt.sentTimeNano {
@@ -378,6 +387,7 @@ func (sb *sender) readyToRetransmit(
 		stream.inFlight[gen].remove(key)
 		pkt.sentTimeNano = nowNano
 		pkt.sentCount++
+		pkt.ackGap = 0 // gap evidence consumed; gen 1+ is RTO-gated anyway
 		stream.inFlight[gen+1].put(key, pkt)
 		return pkt.data, key.offset(), pkt.isClose, nil
 	}
@@ -452,23 +462,47 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // status is ackStatusOk). Its sentCount matters for Karn's algorithm: an ACK
 // for retransmitted data is ambiguous (it may answer any of the
 // transmissions), so callers must not measure from it.
-func (sb *sender) acknowledgeRange(ack *ack) (ackStatus, *sendPacket) {
+//
+// lossDetected reports fast-retransmit loss detection: an ACK for a gen-0
+// packet is gap evidence for every older un-ACKed gen-0 packet (the map is
+// in send order); one whose ackGap reaches fastRetxThreshold is declared
+// lost this call. Only originals count — ACKs for retransmissions (gen 1+)
+// are transmission-ambiguous and contribute no gap evidence.
+func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPacket, lossDetected bool) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
-		return ackNotFound, nil
+		return ackNotFound, nil, false
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
+
+	// Gen-0 hit: walk the older un-ACKed originals (the hole) and count
+	// this ACK against each. Zero-length walk in the in-order common case
+	// (the ACKed packet is the head); bounded by the loss burst otherwise.
+	if pkt, ok := stream.inFlight[0].get(key); ok {
+		for k, p, more := stream.inFlight[0].first(); more && k != key; k, p, more = stream.inFlight[0].next(k) {
+			if p.needsReTx && p.ackGap < fastRetxThreshold {
+				p.ackGap++
+				if p.ackGap == fastRetxThreshold {
+					lossDetected = true
+				}
+			}
+		}
+		stream.inFlight[0].remove(key)
+		sb.size -= len(pkt.data)
+		return ackStatusOk, pkt, lossDetected
+	}
+
 	pkt, ok := stream.inFlightRemove(key)
 	if !ok {
-		return ackDup, nil
+		return ackDup, nil, false
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt
+	return ackStatusOk, pkt, false
 }
 
 // markSent stamps send time and delivery snapshots after the packet is built.

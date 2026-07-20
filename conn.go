@@ -416,7 +416,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackStatus, ackedPkt := c.snd.acknowledgeRange(p.ack)
+		ackStatus, ackedPkt, lossDetected := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
 		if ackStatus == ackStatusOk {
@@ -425,6 +425,9 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			// (original or retransmit?) - never measure RTT/bandwidth from it
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
 				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
+			}
+			if lossDetected {
+				c.onLossEvent(nowNano)
 			}
 			if c.consecutiveLosses > 0 {
 				c.consecutiveLosses = 0

@@ -217,7 +217,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	status, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
@@ -229,7 +229,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	status, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackDup, status)
 }
@@ -237,7 +237,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	status, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
+	status, _, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
 
 	assert.Equal(t, ackNotFound, status)
 }
@@ -587,7 +587,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, 1000, 50, data, 200) // one retransmit
 
-	status, ackedPkt := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, uint(1), ackedPkt.sentCount, "ack after retransmit must be flagged as ambiguous")
@@ -925,7 +925,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.markSent(1, 0, 4, 12345, 5000, 0, 0)
 
-	status, ackedPkt := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, uint64(12345), ackedPkt.sentTimeNano)
