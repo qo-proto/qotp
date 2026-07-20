@@ -396,15 +396,15 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackStatus, sentTimeNano, deliveredAtSend, sentCount := c.snd.acknowledgeRange(p.ack)
+		ackStatus, ackedPkt := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
 		if ackStatus == ackStatusOk {
 			c.dataInFlight -= int(p.ack.len)
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
 			// (original or retransmit?) - never measure RTT/bandwidth from it
-			if sentCount == 0 && nowNano > sentTimeNano {
-				c.updateMeasurements(nowNano-sentTimeNano, p.ack.len, deliveredAtSend, nowNano)
+			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
+				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
 			}
 			if c.consecutiveLosses > 0 {
 				c.consecutiveLosses = 0
@@ -743,13 +743,17 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		return 0, 0, err
 	}
 
-	if data != nil {
-		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano, c.totalDelivered)
-	}
-
-	err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
+	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
+	}
+
+	// Stamp with the send-completion time: the write can block (full socket
+	// buffer), and a pre-block stamp would inflate this packet's RTT sample
+	// by our own send stall
+	if data != nil {
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano+elapsedNano,
+			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
 	}
 
 	if !c.mtuSent && (p.isMtuUpdate || c.msgType() == initSnd) {

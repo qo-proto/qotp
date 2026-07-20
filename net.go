@@ -16,9 +16,16 @@ import (
 // Real implementation wraps net.UDPConn.
 // =============================================================================
 
+// Absolute time is always supplied by the caller (nowNano); implementations
+// never generate absolute timestamps. Blocking calls instead report how long
+// they blocked (elapsedNano, monotonic), so the caller can compute the
+// completion time as nowNano+elapsedNano — a pre-block timestamp must not be
+// used for events that happen after the block (RTT samples would come out
+// too small by the blocked duration). Mock implementations return synthetic
+// durations.
 type NetworkConn interface {
-	ReadFromUDPAddrPort(p []byte, timeoutNano uint64, nowNano uint64) (n int, remoteAddr netip.AddrPort, err error)
-	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowNano uint64) error
+	ReadFromUDPAddrPort(p []byte, timeoutNano uint64, nowNano uint64) (n int, remoteAddr netip.AddrPort, elapsedNano uint64, err error)
+	WriteToUDPAddrPort(p []byte, remoteAddr netip.AddrPort, nowNano uint64) (elapsedNano uint64, err error)
 	TimeoutReadNow() error
 	Close() error
 	LocalAddrString() string
@@ -37,16 +44,20 @@ func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	return &UDPNetworkConn{conn: conn}
 }
 
-func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint64) (int, netip.AddrPort, error) {
+func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint64) (int, netip.AddrPort, uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	deadline := time.Unix(0, int64(nowNano+timeoutNano))
 	if err := c.conn.SetReadDeadline(deadline); err != nil {
-		return 0, netip.AddrPort{}, err
+		return 0, netip.AddrPort{}, 0, err
 	}
 
-	return c.conn.ReadFromUDPAddrPort(p)
+	// time.Since is monotonic: a wall-clock jump during the blocked read
+	// cannot corrupt the elapsed duration
+	start := time.Now()
+	n, addr, err := c.conn.ReadFromUDPAddrPort(p)
+	return n, addr, uint64(time.Since(start)), err
 }
 
 // TimeoutReadNow cancels any pending Read by setting deadline to the past.
@@ -55,15 +66,17 @@ func (c *UDPNetworkConn) TimeoutReadNow() error {
 	return c.conn.SetReadDeadline(time.Unix(0, 1))
 }
 
-func (c *UDPNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, _ uint64) error {
+func (c *UDPNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, _ uint64) (uint64, error) {
+	start := time.Now()
 	n, err := c.conn.WriteToUDPAddrPort(b, remoteAddr)
+	elapsed := uint64(time.Since(start))
 	if err != nil {
-		return err
+		return elapsed, err
 	}
 	if n != len(b) {
-		return errors.New("short write")
+		return elapsed, errors.New("short write")
 	}
-	return nil
+	return elapsed, nil
 }
 
 func (c *UDPNetworkConn) Close() error {

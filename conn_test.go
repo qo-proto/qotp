@@ -1298,7 +1298,7 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 	s := c.getOrCreateStream(7)
 	c.snd.queueData(7, []byte("data"))
 	c.snd.readyToSend(7, data, nil, 1000, true)
-	c.snd.markSent(7, 0, 4, 1_000_000_000, 0)
+	c.snd.markSent(7, 0, 4, 1_000_000_000, 0, 0, 0)
 
 	// An ACK-only packet: no stream header, so streamId defaults to 0
 	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4, rcvWnd: 1000}}
@@ -1542,7 +1542,7 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	// A packet that was sent, then retransmitted
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0)
+	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
 	c.snd.readyToRetransmit(0, nil, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
@@ -1560,7 +1560,7 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 	// A packet sent exactly once
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0)
+	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
 
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
 	_, err := c.processIncomingPayload(p, nil, 1_100_000_000)

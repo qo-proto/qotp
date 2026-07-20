@@ -217,7 +217,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
@@ -229,7 +229,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackDup, status)
 }
@@ -237,7 +237,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
+	status, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
 
 	assert.Equal(t, ackNotFound, status)
 }
@@ -587,10 +587,10 @@ func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, 1000, 50, data, 200) // one retransmit
 
-	status, _, _, sentCount := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, ackedPkt := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
-	assert.Equal(t, uint(1), sentCount, "ack after retransmit must be flagged as ambiguous")
+	assert.Equal(t, uint(1), ackedPkt.sentCount, "ack after retransmit must be flagged as ambiguous")
 }
 
 func TestSendBuffer_ReadyToRetransmit_FinalRetryGetsWindow(t *testing.T) {
@@ -895,7 +895,7 @@ func TestSendBuffer_MarkSent(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	sb.markSent(1, 0, 4, 12345, 5000)
+	sb.markSent(1, 0, 4, 12345, 5000, 0, 0)
 
 	_, info, ok := sb.streams[1].inFlight[0].first()
 	assert.True(t, ok)
@@ -907,7 +907,7 @@ func TestSendBuffer_MarkSent_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
 	// Should not panic
-	sb.markSent(999, 0, 4, 12345, 0)
+	sb.markSent(999, 0, 4, 12345, 0, 0, 0)
 }
 
 func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
@@ -916,20 +916,20 @@ func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 
 	// Wrong offset - should not panic
-	sb.markSent(1, 100, 4, 12345, 0)
+	sb.markSent(1, 100, 4, 12345, 0, 0, 0)
 }
 
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.markSent(1, 0, 4, 12345, 5000)
+	sb.markSent(1, 0, 4, 12345, 5000, 0, 0)
 
-	status, sentTime, deliveredAtSend, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	status, ackedPkt := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
-	assert.Equal(t, uint64(12345), sentTime)
-	assert.Equal(t, uint64(5000), deliveredAtSend)
+	assert.Equal(t, uint64(12345), ackedPkt.sentTimeNano)
+	assert.Equal(t, uint64(5000), ackedPkt.deliveredAtSend)
 }
 
 // =============================================================================

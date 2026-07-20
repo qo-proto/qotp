@@ -54,6 +54,10 @@ var (
 	// In-flight cap: cwndGainPct/100 x BDP (see bdpCapBytes)
 	cwndGainPct = uint64(200)
 
+	// Queue feedback: srtt above rttMin x queueThresholdPct/100 means a
+	// standing queue is building at the bottleneck — drain instead of probe
+	queueThresholdPct = uint64(125)
+
 	// Pacing fallbacks
 	fallbackInterval = uint64(10 * msNano)
 	rttDivisor       = uint64(10)
@@ -104,8 +108,12 @@ type measurements struct {
 	probeRoundsRemaining uint64 // Rounds left in current probe cycle
 	pacingGainPct        uint64 // Current pacing multiplier
 
-	// Delivery rate tracking
-	totalDelivered uint64 // cumulative bytes ACK'd
+	// Delivery rate tracking (BBR delivery-rate estimation): each send
+	// snapshots these into the packet so its ACK can compute an honest
+	// sample interval — see updateBandwidth
+	totalDelivered    uint64 // cumulative bytes ACK'd
+	deliveredTimeNano uint64 // when the last delivery (measured ACK) happened
+	firstSentTimeNano uint64 // send time of the packet delivered last
 
 	// Round tracking (BBR packet-timed rounds)
 	roundDeliveredTarget uint64 // totalDelivered threshold to end current round
@@ -126,7 +134,7 @@ func newMeasurements() measurements {
 // RTT and bandwidth updates
 // =============================================================================
 
-func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, deliveredAtSend uint64, nowNano uint64) {
+func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, pkt *sendPacket, nowNano uint64) {
 	if rttNano == 0 || nowNano == 0 {
 		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
@@ -137,9 +145,13 @@ func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, deliver
 	}
 
 	m.totalDelivered += uint64(ackLen)
+	// Delivery-rate bookkeeping: future sends snapshot these to anchor
+	// their sample intervals
+	m.deliveredTimeNano = nowNano
+	m.firstSentTimeNano = pkt.sentTimeNano
 	m.updateRTT(rttNano)
 	m.updateMinRTT(rttNano, nowNano)
-	m.updateBandwidth(deliveredAtSend, rttNano)
+	m.updateBandwidth(pkt, nowNano)
 	m.updateBBRState(nowNano)
 }
 
@@ -194,18 +206,34 @@ func (m *measurements) updateMinRTT(rttNano uint64, nowNano uint64) {
 	m.rttMinNano = m.rttMinWin[0].rttNano
 }
 
-func (m *measurements) updateBandwidth(deliveredAtSend uint64, rttNano uint64) {
-	if rttNano == 0 || m.totalDelivered <= deliveredAtSend {
+func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
+	deliveredAtSend := pkt.deliveredAtSend
+	if m.totalDelivered <= deliveredAtSend {
 		return
 	}
-
 	delivered := m.totalDelivered - deliveredAtSend
-	bwCurrent := (delivered * secondNano) / rttNano
+
+	// Honest sample interval (BBR delivery-rate estimation): the counted
+	// bytes were ACK'd over ackElapsed but sent over sendElapsed. A rush of
+	// backlogged ACKs (the sender loop reads one ACK per iteration, so they
+	// can pile up in the socket buffer) compresses ackElapsed, but the
+	// backlogged ACKs belong to older packets, which stretches sendElapsed
+	// by the same amount — taking the larger of the two cancels the
+	// inflation, so samples can no longer exceed the true rate and the max
+	// filter latches onto capacity instead of measurement noise.
+	ackElapsed := nowNano - pkt.deliveredTimeAtSend
+	sendElapsed := pkt.sentTimeNano - pkt.firstSentTimeAtSend
+	elapsed := max(ackElapsed, sendElapsed)
+	if elapsed == 0 {
+		return
+	}
+	bwCurrent := (delivered * secondNano) / elapsed
 
 	slog.Debug("bwSample",
 		"bwCurrent_MBs", bwCurrent/1_000_000,
 		"delivered", delivered,
-		"rtt_us", rttNano/1000,
+		"ackElapsed_us", ackElapsed/1000,
+		"sendElapsed_us", sendElapsed/1000,
 		"deliveredAtSend", deliveredAtSend,
 		"totalDelivered", m.totalDelivered,
 	)
@@ -294,10 +322,25 @@ func (m *measurements) updateStartup() {
 }
 
 func (m *measurements) updateNormal(nowNano uint64) {
-	if m.probeRoundsRemaining == 0 && nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
-		m.pacingGainPct = probeGain
-		m.probeRoundsRemaining = probeCycleRounds
+	// Queue feedback: a standing queue means we pace faster than the link
+	// drains (estimator over-report, probe residue). Drain at 0.75x until
+	// the delay falls back toward rttMin; also postpone probing, which
+	// would only refill the queue. Safety net independent of the estimator.
+	isQueueBuilding := m.rttMinNano != math.MaxUint64 &&
+		m.srtt > (m.rttMinNano*queueThresholdPct)/100
+	if isQueueBuilding {
+		m.pacingGainPct = drainGain
+		m.probeRoundsRemaining = 0
 		m.lastProbeTimeNano = nowNano
+	} else if m.probeRoundsRemaining == 0 {
+		// Not draining, not probing: restore steady state (also the exit
+		// path from a queue-drain episode)
+		m.pacingGainPct = normalGain
+		if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
+			m.pacingGainPct = probeGain
+			m.probeRoundsRemaining = probeCycleRounds
+			m.lastProbeTimeNano = nowNano
+		}
 	}
 
 	slog.Debug("updateNormal",

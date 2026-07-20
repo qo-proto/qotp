@@ -66,9 +66,13 @@ type sendPacket struct {
 	data            []byte
 	sentTimeNano    uint64
 	deliveredAtSend uint64 // totalDelivered snapshot when packet was sent
-	sentCount       uint   // Number of transmission attempts
-	isClose         bool
-	needsReTx       bool
+	// Delivery-rate snapshots (BBR delivery-rate estimation): anchor the
+	// ACK- and send-side sample intervals for this packet's bw sample
+	deliveredTimeAtSend uint64 // measurements.deliveredTimeNano at send
+	firstSentTimeAtSend uint64 // measurements.firstSentTimeNano at send
+	sentCount           uint   // Number of transmission attempts
+	isClose             bool
+	needsReTx           bool
 }
 
 // =============================================================================
@@ -339,7 +343,10 @@ func (sb *sender) readyToRetransmit(
 		if err != nil {
 			return nil, 0, false, err
 		}
-		if nowNano-p.sentTimeNano <= rtoWithBackoff {
+		// sentTimeNano can be (slightly) in the future: it is stamped with
+		// send-completion time (now+elapsed). Guard the unsigned subtraction
+		// or a fresh packet would look instantly expired.
+		if p.sentTimeNano >= nowNano || nowNano-p.sentTimeNano <= rtoWithBackoff {
 			continue // not expired yet
 		}
 		if pkt == nil || p.sentTimeNano < pkt.sentTimeNano {
@@ -419,10 +426,12 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 	}
 
 	// Best-effort packets are never retransmitted, so they only ever live
-	// in generation 0
+	// in generation 0. sentTimeNano may be slightly in the future
+	// (send-completion stamp) — guard the unsigned subtraction.
 	for {
 		key, pkt, ok := stream.inFlight[0].first()
-		if !ok || pkt.needsReTx || nowNano-pkt.sentTimeNano <= baseRTO {
+		if !ok || pkt.needsReTx || pkt.sentTimeNano >= nowNano ||
+			nowNano-pkt.sentTimeNano <= baseRTO {
 			return droppedBytes, droppedPackets
 		}
 		stream.inFlight[0].remove(key)
@@ -439,31 +448,32 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // =============================================================================
 
 // acknowledgeRange processes an ACK for a sent packet.
-// Returns timing info for RTT and delivery rate measurement, plus the number
-// of retransmissions: an ACK for retransmitted data is ambiguous (it may
-// answer any of the transmissions), so callers must not measure from it
-// (Karn's algorithm).
-func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uint64, deliveredAtSend uint64, sentCount uint) {
+// Returns the acked packet for RTT and delivery rate measurement (nil unless
+// status is ackStatusOk). Its sentCount matters for Karn's algorithm: an ACK
+// for retransmitted data is ambiguous (it may answer any of the
+// transmissions), so callers must not measure from it.
+func (sb *sender) acknowledgeRange(ack *ack) (ackStatus, *sendPacket) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
-		return ackNotFound, 0, 0, 0
+		return ackNotFound, nil
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
 	pkt, ok := stream.inFlightRemove(key)
 	if !ok {
-		return ackDup, 0, 0, 0
+		return ackDup, nil
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt.sentTimeNano, pkt.deliveredAtSend, pkt.sentCount
+	return ackStatusOk, pkt
 }
 
-// markSent stamps send time and delivery snapshot after the packet is built.
-func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNano uint64, deliveredAtSend uint64) {
+// markSent stamps send time and delivery snapshots after the packet is built.
+func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNano uint64,
+	deliveredAtSend uint64, deliveredTimeNano uint64, firstSentTimeNano uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -476,6 +486,16 @@ func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNan
 	if pkt, ok := stream.inFlightGet(key); ok {
 		pkt.sentTimeNano = nowNano
 		pkt.deliveredAtSend = deliveredAtSend
+		// First flight: no delivery event yet — anchor the intervals at
+		// this send, so the first samples fall back to delivered/RTT
+		if deliveredTimeNano == 0 {
+			deliveredTimeNano = nowNano
+		}
+		if firstSentTimeNano == 0 {
+			firstSentTimeNano = nowNano
+		}
+		pkt.deliveredTimeAtSend = deliveredTimeNano
+		pkt.firstSentTimeAtSend = firstSentTimeNano
 	}
 }
 
