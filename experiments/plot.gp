@@ -15,6 +15,7 @@ http3_color = "#2ca02c"
 
 # ── Discover unique scenarios from column 4 (skip header) ───────────────────
 scenarios = system(sprintf("awk -F, 'NR>1{print $4}' '%s' | sort -u", csv))
+num_sizes = int(system(sprintf("awk -F, 'NR>1{print $2}' '%s' | sort -nu | wc -l", csv)))
 
 # ── Helper: extract per-protocol data into a temp file ───────────────────────
 # Columns: size_mb  total_ms
@@ -23,8 +24,13 @@ extract(proto, scen, tmpf) = system(sprintf( \
     proto, scen, csv, tmpf))
 
 # ── Chart 1: Transfer time vs data size, per scenario ───────────────────────
+# Needs at least two sizes: with a single size these would be one-point
+# "lines" — the scenario comparison chart below covers that case instead.
+# Implemented by emptying the loop list (gnuplot cannot nest an if-block
+# around a do-for block).
+chart1_scenarios = (num_sizes > 1) ? scenarios : ""
 
-do for [sc in scenarios] {
+do for [sc in chart1_scenarios] {
     tmp_tcp   = sprintf("%s/_tcp.dat",   outdir)
     tmp_qotp  = sprintf("%s/_qotp.dat",  outdir)
     tmp_http3 = sprintf("%s/_http3.dat",  outdir)
@@ -81,11 +87,13 @@ if (num_scenarios > 1) {
     # Extract transfer times into a temp file for bar plotting:
     #   scenario tcp_ms qotp_ms http3_ms
     tmpfile = sprintf("%s/_comparison.dat", outdir)
+    # Note: gnuplot needs "." to concatenate strings (no C-style adjacent
+    # literal merging)
     system(sprintf( \
-        "awk -F, 'NR>1 && $2==%s { data[$4][$1]=$3 } " \
-        "END { for(s in data) printf \"%%s %%s %%s %%s\\n\", s, " \
-        "(\"tcp\" in data[s] ? data[s][\"tcp\"] : 0), " \
-        "(\"qotp\" in data[s] ? data[s][\"qotp\"] : 0), " \
+        "awk -F, 'NR>1 && $2==%s { data[$4][$1]=$3 } " . \
+        "END { for(s in data) printf \"%%s %%s %%s %%s\\n\", s, " . \
+        "(\"tcp\" in data[s] ? data[s][\"tcp\"] : 0), " . \
+        "(\"qotp\" in data[s] ? data[s][\"qotp\"] : 0), " . \
         "(\"http3\" in data[s] ? data[s][\"http3\"] : 0) }' '%s' | sort > '%s'", \
         max_size, csv, tmpfile))
 

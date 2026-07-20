@@ -55,7 +55,14 @@ OPTIONS:
   --rates LIST        Comma-separated link rates (default: 100mbit,500mbit,1gbit)
   --delays LIST       Comma-separated one-way delays (default: 0ms,20ms,50ms,100ms)
   --jitters LIST      Comma-separated jitter values (default: 0ms,5ms,10ms)
+  --losses LIST       Comma-separated random loss rates (default: 0%)
+  --reorders LIST     Comma-separated reorder rates (default: 0%; needs delay > 0)
+  --queues LIST       Comma-separated bottleneck queues as burst:latency
+                      (default: 64kb:1ms; e.g. 64kb:1ms,256kb:50ms)
   --out DIR           Output directory (default: experiments/results)
+
+The scenario is the cross product of all lists — vary one dimension at a
+time to keep run counts manageable.
 EOF
   exit
 }
@@ -65,6 +72,9 @@ parse_params() {
   RATES="100mbit,500mbit,1gbit"
   DELAYS="0ms,20ms,50ms,100ms"
   JITTERS="0ms,5ms,10ms"
+  LOSSES="0%"
+  REORDERS="0%"
+  QUEUES="64kb:1ms"
   OUT_DIR="$SCRIPT_DIR/results"
 
   while :; do
@@ -87,12 +97,24 @@ parse_params() {
       JITTERS="${2-}"
       shift
       ;;
+    --losses)
+      LOSSES="${2-}"
+      shift
+      ;;
+    --reorders)
+      REORDERS="${2-}"
+      shift
+      ;;
+    --queues)
+      QUEUES="${2-}"
+      shift
+      ;;
     --out)
       OUT_DIR="${2-}"
       shift
       ;;
     -?*) die "Unknown option: $1" ;;
-    *) break ;;
+    *) break
     esac
     shift
   done
@@ -109,6 +131,9 @@ IFS=',' read -ra SIZE_ARR <<< "$SIZES"
 IFS=',' read -ra RATE_ARR <<< "$RATES"
 IFS=',' read -ra DELAY_ARR <<< "$DELAYS"
 IFS=',' read -ra JITTER_ARR <<< "$JITTERS"
+IFS=',' read -ra LOSS_ARR <<< "$LOSSES"
+IFS=',' read -ra REORDER_ARR <<< "$REORDERS"
+IFS=',' read -ra QUEUE_ARR <<< "$QUEUES"
 
 # Clean up stale namespaces from previous runs
 ip netns del "$NS_SRV" 2>/dev/null || true
@@ -139,21 +164,40 @@ echo "protocol,size_mb,total_ms,scenario" > "$OUT_DIR/combined.csv"
 for rate in "${RATE_ARR[@]}"; do
   for delay in "${DELAY_ARR[@]}"; do
     for jitter in "${JITTER_ARR[@]}"; do
-      scenario="${rate}_${delay}_${jitter}"
+      for loss in "${LOSS_ARR[@]}"; do
+        for reorder in "${REORDER_ARR[@]}"; do
+          for queue in "${QUEUE_ARR[@]}"; do
+            burst="${queue%%:*}"
+            qlat="${queue##*:}"
 
-      # netem for delay/jitter, then tbf for rate shaping
-      for dev_ns in "$NS_SRV:veth-srv" "$NS_CLI:veth-cli"; do
-        ns="${dev_ns%%:*}"
-        dev="${dev_ns##*:}"
-        ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem delay "$delay" "$jitter"
-        ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst 64kb latency 1ms
-      done
+            # Scenario label: base dims always, extra dims only when
+            # non-default — keeps labels comparable with older CSVs
+            scenario="${rate}_${delay}_${jitter}"
+            [[ "$loss" != "0%" ]] && scenario+="_l${loss%\%}"
+            [[ "$reorder" != "0%" ]] && scenario+="_r${reorder%\%}"
+            [[ "$queue" != "64kb:1ms" ]] && scenario+="_q${burst}-${qlat}"
 
-      for s in "${SIZE_ARR[@]}"; do
-        msg_info "Benchmark: ${s} MB @ ${scenario}"
-        ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
-          -addr=10.0.0.1 -size="$s" -scenario="$scenario" -v \
-          >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+            # netem for delay/jitter/loss/reorder, then tbf for rate
+            # shaping. reorder only takes effect with delay > 0: reordered
+            # packets jump the delay queue.
+            netem_args=(delay "$delay" "$jitter")
+            [[ "$loss" != "0%" ]] && netem_args+=(loss "$loss")
+            [[ "$reorder" != "0%" ]] && netem_args+=(reorder "$reorder")
+            for dev_ns in "$NS_SRV:veth-srv" "$NS_CLI:veth-cli"; do
+              ns="${dev_ns%%:*}"
+              dev="${dev_ns##*:}"
+              ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem "${netem_args[@]}"
+              ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst "$burst" latency "$qlat"
+            done
+
+            for s in "${SIZE_ARR[@]}"; do
+              msg_info "Benchmark: ${s} MB @ ${scenario}"
+              ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
+                -addr=10.0.0.1 -size="$s" -scenario="$scenario" \
+                >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+            done
+          done
+        done
       done
     done
   done

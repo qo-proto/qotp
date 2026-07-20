@@ -5,5 +5,5 @@ testdata
 examples/example?/example?
 experiments/server/server
 experiments/client/client
-experiments/results/
+experiments/results*/
 bench*
