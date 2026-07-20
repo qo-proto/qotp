@@ -17,14 +17,12 @@ http3_color = "#2ca02c"
 scenarios = system(sprintf("awk -F, 'NR>1{print $4}' '%s' | sort -u", csv))
 
 # ── Helper: extract per-protocol data into a temp file ───────────────────────
-# Columns: size_mb  total_ms  throughput_mbps
+# Columns: size_mb  total_ms
 extract(proto, scen, tmpf) = system(sprintf( \
-    "awk -F, 'NR>1 && $1==\"%s\" && $4==\"%s\" { printf \"%%s %%s %%s\\n\", $2, $3, ($2*8*1000)/$3 }' '%s' | sort -n > '%s'", \
+    "awk -F, 'NR>1 && $1==\"%s\" && $4==\"%s\" { printf \"%%s %%s\\n\", $2, $3 }' '%s' | sort -n > '%s'", \
     proto, scen, csv, tmpf))
 
-# ── Chart 1: Dual-axis per scenario ─────────────────────────────────────────
-# Left Y-axis:  Transfer Time (ms)   — dashed lines
-# Right Y-axis: Throughput (Mbps)    — solid lines
+# ── Chart 1: Transfer time vs data size, per scenario ───────────────────────
 
 do for [sc in scenarios] {
     tmp_tcp   = sprintf("%s/_tcp.dat",   outdir)
@@ -42,35 +40,31 @@ do for [sc in scenarios] {
     set title sprintf("Benchmark: %s", sc)
     set xlabel "Data Size (MB)"
     set ylabel "Transfer Time (ms)"
-    set y2label "Throughput (Mbps)"
 
-    set ytics nomirror
-    set y2tics
+    # Sizes and times both span orders of magnitude (1..64 MB) — log-log
+    # keeps small sizes readable and makes linear scaling show as a
+    # straight line
+    set logscale x 2
+    set logscale y 10
     set grid xtics ytics
 
     set key top left box opaque
 
-    # Solid lines for throughput
     set style line 1 lc rgb tcp_color   lw 2 pt 7 ps 1.2
     set style line 2 lc rgb qotp_color  lw 2 pt 5 ps 1.2
     set style line 3 lc rgb http3_color lw 2 pt 9 ps 1.2
-    # Dashed lines for time
-    set style line 4 lc rgb tcp_color   lw 2 pt 7 ps 1.2 dt 3
-    set style line 5 lc rgb qotp_color  lw 2 pt 5 ps 1.2 dt 3
-    set style line 6 lc rgb http3_color lw 2 pt 9 ps 1.2 dt 3
 
     set datafile separator " "
 
     plot \
-        tmp_tcp   using 1:3 axes x1y2 title "TCP throughput"    with linespoints ls 1, \
-        tmp_qotp  using 1:3 axes x1y2 title "QOTP throughput"   with linespoints ls 2, \
-        tmp_http3 using 1:3 axes x1y2 title "HTTP/3 throughput"  with linespoints ls 3, \
-        tmp_tcp   using 1:2 axes x1y1 title "TCP time"    with linespoints ls 4, \
-        tmp_qotp  using 1:2 axes x1y1 title "QOTP time"   with linespoints ls 5, \
-        tmp_http3 using 1:2 axes x1y1 title "HTTP/3 time"  with linespoints ls 6
+        tmp_tcp   using 1:2 title "TCP"    with linespoints ls 1, \
+        tmp_qotp  using 1:2 title "QOTP"   with linespoints ls 2, \
+        tmp_http3 using 1:2 title "HTTP/3" with linespoints ls 3
 
     unset output
     print sprintf("wrote %s", outfile)
+
+    unset logscale
 
     system(sprintf("rm -f '%s' '%s' '%s'", tmp_tcp, tmp_qotp, tmp_http3))
 }
@@ -84,11 +78,11 @@ if (num_scenarios > 1) {
     # Find the largest size in the CSV
     max_size = system(sprintf("awk -F, 'NR>1{print $2}' '%s' | sort -n | tail -1", csv))
 
-    # Extract throughput values into a temp file for bar plotting:
-    #   scenario tcp_tp qotp_tp http3_tp
+    # Extract transfer times into a temp file for bar plotting:
+    #   scenario tcp_ms qotp_ms http3_ms
     tmpfile = sprintf("%s/_comparison.dat", outdir)
     system(sprintf( \
-        "awk -F, 'NR>1 && $2==%s { tp=($2*8*1000)/$3; data[$4][$1]=tp } " \
+        "awk -F, 'NR>1 && $2==%s { data[$4][$1]=$3 } " \
         "END { for(s in data) printf \"%%s %%s %%s %%s\\n\", s, " \
         "(\"tcp\" in data[s] ? data[s][\"tcp\"] : 0), " \
         "(\"qotp\" in data[s] ? data[s][\"qotp\"] : 0), " \
@@ -99,11 +93,8 @@ if (num_scenarios > 1) {
     set terminal pngcairo size 900,550 font "sans,11" enhanced
     set output outfile
 
-    set title sprintf("Throughput Comparison at %s MB", max_size)
-    set ylabel "Throughput (Mbps)"
-    unset y2label
-    unset y2tics
-    set ytics mirror
+    set title sprintf("Transfer Time Comparison at %s MB", max_size)
+    set ylabel "Transfer Time (ms)"
 
     set style data histogram
     set style histogram clustered gap 1

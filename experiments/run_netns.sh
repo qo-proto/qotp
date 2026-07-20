@@ -146,7 +146,7 @@ for rate in "${RATE_ARR[@]}"; do
         ns="${dev_ns%%:*}"
         dev="${dev_ns##*:}"
         ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem delay "$delay" "$jitter"
-        ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst 64kb latency 1ms
+        ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst 128kb latency 50ms
       done
 
       for s in "${SIZE_ARR[@]}"; do

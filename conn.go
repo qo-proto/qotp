@@ -756,8 +756,26 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		c.phase = phaseReady
 	}
 
+	// Token-bucket pacing with burst allowance: schedule the next send
+	// relative to the previous nextWriteTime, not nowNano. The event loop
+	// sends one packet per wakeup and read deadlines quantize to ~1ms
+	// (epoll granularity), so scheduling from nowNano silently discards
+	// every send opportunity a late wakeup skipped — capping throughput at
+	// one packet per wakeup and locking the bw estimator onto that
+	// artifact. Carrying the pacing credit forward lets a late wakeup send
+	// a short back-to-back burst instead, so the achieved rate tracks the
+	// paced rate. The credit is floored at maxBurstPackets so a long-idle
+	// connection can't dump an unbounded burst into the queue.
 	pacingNano := c.calcPacing(uint64(len(encData)))
-	c.nextWriteTime = nowNano + pacingNano
+	base := c.nextWriteTime
+	floor := uint64(0)
+	if debt := maxBurstPackets * pacingNano; nowNano > debt {
+		floor = nowNano - debt
+	}
+	if base < floor {
+		base = floor
+	}
+	c.nextWriteTime = base + pacingNano
 
 	dataLen := len(data)
 	if trackInFlight && dataLen > 0 {

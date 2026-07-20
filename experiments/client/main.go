@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/qo-proto/qotp"
@@ -30,31 +29,29 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1", "server IP address")
 	sizeMB := flag.Int("size", 32, "data size in MB")
 	scenario := flag.String("scenario", "loopback", "scenario label for CSV")
+	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing; for congestion-control analysis only)")
 	flag.Parse()
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	// Benchmark mode: suppress qotp's per-ACK debug logging, which would
+	// otherwise penalize only qotp. Enable with -v for CC analysis.
+	level := slog.LevelWarn
+	if *verbose {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	data := make([]byte, *sizeMB*1024*1024)
-	rand.Read(data)
+	if _, err := rand.Read(data); err != nil {
+		log.Fatal(err)
+	}
 
-	results := make([]result, 3)
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	go func() {
-		defer wg.Done()
-		results[0] = runTCPClient(fmt.Sprintf("%s:9001", *addr), data)
-	}()
-	go func() {
-		defer wg.Done()
-		results[1] = runQOTPClient(fmt.Sprintf("%s:9000", *addr), data)
-	}()
-	go func() {
-		defer wg.Done()
-		results[2] = runHTTP3Client(fmt.Sprintf("%s:9002", *addr), data)
-	}()
-
-	wg.Wait()
+	// Run sequentially: concurrent runs would contend for the CPU and the
+	// loopback/link and corrupt each protocol's measurement.
+	results := []result{
+		runTCPClient(fmt.Sprintf("%s:9001", *addr), data),
+		runQOTPClient(fmt.Sprintf("%s:9000", *addr), data),
+		runHTTP3Client(fmt.Sprintf("%s:9002", *addr), data),
+	}
 
 	w := csv.NewWriter(os.Stdout)
 	defer w.Flush()
@@ -70,18 +67,23 @@ func main() {
 }
 
 func runTCPClient(addr string, data []byte) result {
+	// Time connection setup too, matching QOTP (handshake in Loop) and
+	// HTTP/3 (handshake in client.Do).
+	start := time.Now()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer conn.Close()
 
-	start := time.Now()
-	_, err = conn.Write(data)
-	if err != nil {
+	if _, err = conn.Write(data); err != nil {
 		log.Fatal(err)
 	}
 	conn.(*net.TCPConn).CloseWrite()
+	// Wait for the server to receive everything and close its side. Without
+	// this, CloseWrite returns locally and TCP would be timed on "handed to
+	// kernel", not "delivered" — unlike QOTP (FIN ack) and HTTP/3 (response).
+	io.Copy(io.Discard, conn)
 	dur := time.Since(start)
 
 	return result{"tcp", len(data), dur}

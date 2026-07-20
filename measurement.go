@@ -55,6 +55,11 @@ var (
 	fallbackInterval = uint64(10 * msNano)
 	rttDivisor       = uint64(10)
 
+	// Pacing burst allowance: how many unspent send opportunities may be
+	// carried across late wakeups (token-bucket depth, in packets). Lets a
+	// late wakeup catch up in a short burst instead of losing the slots.
+	maxBurstPackets = uint64(10)
+
 	// Timeouts
 	MinDeadLine  = uint64(100 * msNano)
 	ReadDeadLine = uint64(30 * secondNano)
