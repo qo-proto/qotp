@@ -57,12 +57,30 @@ var (
 	bwDecThreshold    = uint64(3)   // Exit startup after 3 non-increasing rounds
 	startupGrowthPct  = uint64(125) // Require 25% bandwidth growth per round
 
-	// In-flight cap: cwndGainPct/100 x BDP (see bdpCapBytes)
-	cwndGainPct = uint64(200)
-
 	// Queue feedback: srtt above rttMin x queueThresholdPct/100 means a
 	// standing queue is building at the bottleneck — drain instead of probe
 	queueThresholdPct = uint64(125)
+
+	// Fairness throttle: a persistent pacing multiplier with TCP-like
+	// dynamics (multiplicative decrease, gradual recovery), so loss-based
+	// flows sharing the bottleneck can claim their share. Engages only
+	// when a round's loss rate exceeds the threshold — random loss below
+	// it stays ignored (lossy-link performance is preserved). bwMax is
+	// never touched: policy lives here, the sensor stays truthful.
+	lossRateThresholdPct = uint64(2)  // congestion = >2% loss per window
+	throttleBetaPct      = uint64(70) // multiplicative decrease per event
+	throttleFloorPct     = uint64(30) // keep the flow alive
+	throttleRecoverPct   = uint64(10) // points regained per clean window
+	// Loss is judged over a multi-round window, not per round: single-round
+	// ratios are far too noisy (a round is one flight; detections for
+	// independent losses cluster into the round where their gap evidence
+	// completes, and Karn shrinks the denominator during recovery), which
+	// made random loss trigger spurious decreases. A window also gives
+	// episode semantics for free: at most one MD per window. Minimum-lost
+	// count protects small windows (low-rate phases) from small-sample
+	// flukes.
+	throttleWindowRounds = uint64(8)
+	throttleMinLost      = uint64(8)
 
 	// Pacing fallbacks
 	fallbackInterval = uint64(10 * msNano)
@@ -114,6 +132,12 @@ type measurements struct {
 	probeRoundsRemaining uint64 // Rounds left in current probe cycle
 	pacingGainPct        uint64 // Current pacing multiplier
 
+	// Fairness throttle state (see lossRateThresholdPct)
+	throttlePct           uint64 // persistent pacing multiplier, 100 = none
+	throttleWindowRound   uint64 // rounds completed in the current window
+	roundLostPackets      uint64 // fast-retx loss declarations this window
+	roundDeliveredPackets uint64 // measured ACKs this window
+
 	// Delivery rate tracking (BBR delivery-rate estimation): each send
 	// snapshots these into the packet so its ACK can compute an honest
 	// sample interval — see updateBandwidth
@@ -132,6 +156,7 @@ func newMeasurements() measurements {
 	return measurements{
 		isStartup:     true,
 		pacingGainPct: startupGain,
+		throttlePct:   100,
 		rttMinNano:    math.MaxUint64,
 	}
 }
@@ -151,6 +176,7 @@ func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, pkt *se
 	}
 
 	m.totalDelivered += uint64(ackLen)
+	m.roundDeliveredPackets++
 	// Delivery-rate bookkeeping: future sends snapshot these to anchor
 	// their sample intervals
 	m.deliveredTimeNano = nowNano
@@ -255,18 +281,25 @@ func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
 	// Round completion: all packets in-flight at round start have been ACK'd
 	if deliveredAtSend >= m.roundDeliveredTarget {
 		m.onRoundEnd()
+		m.updateThrottle()
 
 		// Retire the round into the max window; recompute so that maxima
-		// older than windowSize rounds can age out
-		m.bwRounds[m.bwRoundIdx] = m.roundBwBest
-		m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
-		var bwMax uint64
-		for _, s := range m.bwRounds {
-			if s > bwMax {
-				bwMax = s
+		// older than windowSize rounds can age out. Skipped while the
+		// fairness throttle is active: throttled rounds measure the
+		// throttled rate, and retiring them would decay bwMax to the
+		// policy level — the sensor must keep the last honest capacity
+		// reading until pacing is back at 100%.
+		if m.throttlePct >= 100 {
+			m.bwRounds[m.bwRoundIdx] = m.roundBwBest
+			m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
+			var bwMax uint64
+			for _, s := range m.bwRounds {
+				if s > bwMax {
+					bwMax = s
+				}
 			}
+			m.bwMax = bwMax
 		}
-		m.bwMax = bwMax
 
 		m.roundDeliveredTarget = m.totalDelivered
 		m.prevRoundBwBest = m.roundBwBest
@@ -296,6 +329,46 @@ func (m *measurements) onRoundEnd() {
 		m.bwDec = 0
 	} else {
 		m.bwDec++
+	}
+}
+
+// updateThrottle runs at each round end and evaluates once per
+// throttleWindowRounds: the fairness response with TCP-like dynamics. A
+// window whose loss rate exceeds lossRateThresholdPct (with at least
+// throttleMinLost losses as evidence) is a congestion event: multiplicative
+// decrease, at most once per window. A clean window ratchets the throttle
+// back toward 100%. Sustained loss during startup also ends startup: a full
+// pipe announces itself through loss (BBRv2-style exit; this replaces the
+// former static in-flight cap as overshoot protection).
+func (m *measurements) updateThrottle() {
+	m.throttleWindowRound++
+	if m.throttleWindowRound < throttleWindowRounds {
+		return
+	}
+	m.throttleWindowRound = 0
+
+	lost, delivered := m.roundLostPackets, m.roundDeliveredPackets
+	m.roundLostPackets, m.roundDeliveredPackets = 0, 0
+
+	total := lost + delivered
+	if total == 0 {
+		return
+	}
+
+	if lost >= throttleMinLost && lost*100 > total*lossRateThresholdPct {
+		m.throttlePct = (m.throttlePct * throttleBetaPct) / 100
+		if m.throttlePct < throttleFloorPct {
+			m.throttlePct = throttleFloorPct
+		}
+		if m.isStartup {
+			m.isStartup = false
+			m.pacingGainPct = normalGain
+		}
+	} else if m.throttlePct < 100 {
+		m.throttlePct += throttleRecoverPct
+		if m.throttlePct > 100 {
+			m.throttlePct = 100
+		}
 	}
 }
 
@@ -374,25 +447,11 @@ func (m *measurements) updateNormal(nowNano uint64) {
 	slog.Debug("updateNormal",
 		"bwMax_MBs", m.bwMax/1_000_000,
 		"gain_pct", m.pacingGainPct,
+		"throttle_pct", m.throttlePct,
 		"srtt_us", m.srtt/1000,
 		"rttMin_us", m.rttMinNano/1000,
 		"delivered_MB", m.totalDelivered/1_000_000,
 	)
-}
-
-// bdpCapBytes returns the in-flight byte limit: cwndGainPct/100 x BDP
-// (bwMax x rttMin). Pacing controls the send rate; this cap is the
-// BBR-style safety net that bounds queue buildup at the bottleneck when
-// the paced rate exceeds the link rate — notably during startup, whose
-// 2.77x gain deliberately overshoots until the estimator converges.
-// Returns 0 while bandwidth or RTT are still unmeasured (caller applies
-// a bootstrap floor).
-func (m *measurements) bdpCapBytes() uint64 {
-	if m.bwMax == 0 || m.rttMinNano == math.MaxUint64 {
-		return 0
-	}
-	bdp := (m.bwMax * m.rttMinNano) / secondNano
-	return (bdp * cwndGainPct) / 100
 }
 
 // =============================================================================
@@ -439,7 +498,9 @@ func (m *measurements) calcPacing(packetSize uint64) uint64 {
 		return fallbackInterval
 	}
 
-	adjustedBw := (m.bwMax * m.pacingGainPct) / 100
+	// bwMax (sensor) x pacingGainPct (BBR cycle, transient) x throttlePct
+	// (fairness policy, persistent)
+	adjustedBw := (m.bwMax * m.pacingGainPct * m.throttlePct) / 10_000
 	if adjustedBw == 0 {
 		return fallbackInterval
 	}

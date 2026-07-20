@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 )
 
 type keyState struct {
@@ -68,6 +69,11 @@ type conn struct {
 
 	// Activity tracking
 	lastReadTimeNano uint64
+
+	// Cumulative acked payload bytes, any order (unlike the contiguous
+	// acked offset, this does not freeze at head-of-line holes). Atomic:
+	// read by user goroutines for progress/rate sampling.
+	deliveredBytes atomic.Uint64
 
 	// MTU negotiation
 	mtu               int  // current max UDP payload (starts conservative, may fall back on losses)
@@ -416,18 +422,20 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackStatus, ackedPkt, lossDetected := c.snd.acknowledgeRange(p.ack)
+		ackStatus, ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack)
 		c.rcvWndSize = p.ack.rcvWnd
 
 		if ackStatus == ackStatusOk {
 			c.dataInFlight -= int(p.ack.len)
+			c.deliveredBytes.Add(uint64(p.ack.len))
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
 			// (original or retransmit?) - never measure RTT/bandwidth from it
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
 				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
 			}
-			if lossDetected {
+			if lostCount > 0 {
 				c.onLossEvent(nowNano)
+				c.roundLostPackets += uint64(lostCount)
 			}
 			if c.consecutiveLosses > 0 {
 				c.consecutiveLosses = 0
@@ -617,21 +625,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
 
-	// In-flight cap: min(peer receive window, cwndGainPct x BDP). The BDP
-	// cap bounds bottleneck queue buildup while pacing overshoots the link
-	// rate (startup/probe); floored at maxBurstPackets packets so the first
-	// flights can bootstrap the bandwidth measurement. Like rwnd, it blocks
-	// new data only — retransmits, ACKs and KU packets still pass.
-	wndCap := c.rcvWndSize
-	if bdpCap := c.bdpCapBytes(); bdpCap > 0 {
-		if floor := maxBurstPackets * uint64(c.mtu); bdpCap < floor {
-			bdpCap = floor
-		}
-		if bdpCap < wndCap {
-			wndCap = bdpCap
-		}
-	}
-	isBlockedByRwnd := c.dataInFlight+c.mtu > int(wndCap)
+	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
 
 	// Pacing blocks everything (including retransmits)
 	if isBlockedByPacing {

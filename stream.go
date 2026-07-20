@@ -179,6 +179,14 @@ func (s *Stream) BytesAcked() uint64 {
 	return s.conn.snd.getOffsetAcked(s.streamID)
 }
 
+// BytesDelivered returns the connection's cumulative acked payload bytes in
+// any order — unlike BytesAcked it does not freeze at head-of-line holes
+// during loss recovery, making it the better signal for rate sampling.
+// Connection-wide (all streams). Safe from any goroutine (atomic).
+func (s *Stream) BytesDelivered() uint64 {
+	return s.conn.deliveredBytes.Load()
+}
+
 func (s *Stream) ConnID() uint64 {
 	return s.conn.connId
 }

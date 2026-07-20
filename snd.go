@@ -463,18 +463,19 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // for retransmitted data is ambiguous (it may answer any of the
 // transmissions), so callers must not measure from it.
 //
-// lossDetected reports fast-retransmit loss detection: an ACK for a gen-0
+// lostCount reports fast-retransmit loss detections: an ACK for a gen-0
 // packet is gap evidence for every older un-ACKed gen-0 packet (the map is
-// in send order); one whose ackGap reaches fastRetxThreshold is declared
-// lost this call. Only originals count — ACKs for retransmissions (gen 1+)
-// are transmission-ambiguous and contribute no gap evidence.
-func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPacket, lossDetected bool) {
+// in send order); packets whose ackGap reaches fastRetxThreshold are
+// declared lost by this call. Only originals count — ACKs for
+// retransmissions (gen 1+) are transmission-ambiguous and contribute no
+// gap evidence.
+func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPacket, lostCount int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
-		return ackNotFound, nil, false
+		return ackNotFound, nil, 0
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
@@ -487,22 +488,22 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPa
 			if p.needsReTx && p.ackGap < fastRetxThreshold {
 				p.ackGap++
 				if p.ackGap == fastRetxThreshold {
-					lossDetected = true
+					lostCount++
 				}
 			}
 		}
 		stream.inFlight[0].remove(key)
 		sb.size -= len(pkt.data)
-		return ackStatusOk, pkt, lossDetected
+		return ackStatusOk, pkt, lostCount
 	}
 
 	pkt, ok := stream.inFlightRemove(key)
 	if !ok {
-		return ackDup, nil, false
+		return ackDup, nil, 0
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt, false
+	return ackStatusOk, pkt, 0
 }
 
 // markSent stamps send time and delivery snapshots after the packet is built.

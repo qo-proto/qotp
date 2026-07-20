@@ -183,7 +183,7 @@ func runConcurrent(protos []string, addr string, data []byte, ratelogPath string
 	samplerWg.Wait()
 
 	if ratelogPath != "" {
-		writeRatelog(ratelogPath, runners, samples)
+		writeRatelog(ratelogPath, runners, samples, durations)
 	}
 
 	results := make([]result, len(runners))
@@ -203,7 +203,7 @@ func startedAt(start <-chan struct{}) <-chan time.Time {
 	return ch
 }
 
-func writeRatelog(path string, runners []*runner, samples [][]rateSample) {
+func writeRatelog(path string, runners []*runner, samples [][]rateSample, durations []time.Duration) {
 	f, err := os.Create(path)
 	if err != nil {
 		log.Fatal(err)
@@ -212,8 +212,15 @@ func writeRatelog(path string, runners []*runner, samples [][]rateSample) {
 
 	fmt.Fprintln(f, "protocol,t_s,mbps,cum_mb")
 	for i, r := range runners {
+		// Truncate at this protocol's completion (plus one final catch-up
+		// sample): a finished flow's line should end, not crash to zero —
+		// that would read as starvation
+		cutoffMs := durations[i].Milliseconds() + sampleInterval.Milliseconds()
 		var prev rateSample
 		for _, s := range samples[i] {
+			if s.tMs > cutoffMs {
+				break
+			}
 			dtMs := s.tMs - prev.tMs
 			if dtMs <= 0 {
 				continue
@@ -232,15 +239,28 @@ func writeRatelog(path string, runners []*runner, samples [][]rateSample) {
 
 func newTCPRunner(addr string, data []byte) *runner {
 	var sent atomic.Uint64
+	var tconn atomic.Pointer[net.TCPConn]
 	return &runner{
-		name:     "tcp",
-		progress: sent.Load,
+		name: "tcp",
+		progress: func() uint64 {
+			// Prefer the kernel's acked-bytes counter (true wire delivery,
+			// TCP_INFO); the write-side counter is only the fallback — it
+			// measures socket-buffer refills, which paint a 0/full comb
+			// instead of the wire rate
+			if c := tconn.Load(); c != nil {
+				if acked, ok := tcpBytesAcked(c); ok {
+					return acked
+				}
+			}
+			return sent.Load()
+		},
 		run: func() error {
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
 				return err
 			}
 			defer conn.Close()
+			tconn.Store(conn.(*net.TCPConn))
 
 			// Chunked writes so the progress counter tracks backpressure
 			for off := 0; off < len(data); off += 64 * 1024 {
@@ -274,7 +294,7 @@ func newQOTPRunner(addr string, data []byte) *runner {
 
 	return &runner{
 		name:     "qotp",
-		progress: stream.BytesAcked,
+		progress: stream.BytesDelivered,
 		run: func() error {
 			defer listener.Close()
 			written := 0
