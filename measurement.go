@@ -51,6 +51,9 @@ var (
 	bwDecThreshold    = uint64(3)   // Exit startup after 3 non-increasing rounds
 	startupGrowthPct  = uint64(125) // Require 25% bandwidth growth per round
 
+	// In-flight cap: cwndGainPct/100 x BDP (see bdpCapBytes)
+	cwndGainPct = uint64(200)
+
 	// Pacing fallbacks
 	fallbackInterval = uint64(10 * msNano)
 	rttDivisor       = uint64(10)
@@ -304,6 +307,21 @@ func (m *measurements) updateNormal(nowNano uint64) {
 		"rttMin_us", m.rttMinNano/1000,
 		"delivered_MB", m.totalDelivered/1_000_000,
 	)
+}
+
+// bdpCapBytes returns the in-flight byte limit: cwndGainPct/100 x BDP
+// (bwMax x rttMin). Pacing controls the send rate; this cap is the
+// BBR-style safety net that bounds queue buildup at the bottleneck when
+// the paced rate exceeds the link rate — notably during startup, whose
+// 2.77x gain deliberately overshoots until the estimator converges.
+// Returns 0 while bandwidth or RTT are still unmeasured (caller applies
+// a bootstrap floor).
+func (m *measurements) bdpCapBytes() uint64 {
+	if m.bwMax == 0 || m.rttMinNano == math.MaxUint64 {
+		return 0
+	}
+	bdp := (m.bwMax * m.rttMinNano) / secondNano
+	return (bdp * cwndGainPct) / 100
 }
 
 // =============================================================================

@@ -134,7 +134,7 @@ func TestSendBuffer_ReadyToSend_TracksInFlight(t *testing.T) {
 	sb.queueData(1, []byte("hello"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	_, info, ok := sb.streams[1].inFlight.first()
+	_, info, ok := sb.streams[1].inFlight[0].first()
 
 	assert.True(t, ok)
 	assert.Equal(t, []byte("hello"), info.data)
@@ -165,7 +165,7 @@ func TestSendBuffer_ReadyToSend_Ping(t *testing.T) {
 	d, _, _ := sb.readyToSend(1, data, nil, 1000, true)
 
 	assert.Equal(t, []byte{}, d)
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_ReadyToSend_PingPriority(t *testing.T) {
@@ -220,7 +220,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	status, _, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
 	assert.Equal(t, ackStatusOk, status)
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
@@ -251,7 +251,7 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Middle(t *testing.T) {
 
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
 
-	assert.Equal(t, 2, sb.streams[1].inFlight.size())
+	assert.Equal(t, 2, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_Last(t *testing.T) {
@@ -264,7 +264,7 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Last(t *testing.T) {
 
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4})
 
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_First(t *testing.T) {
@@ -278,7 +278,7 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_First(t *testing.T) {
 
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
 // =============================================================================
@@ -374,7 +374,7 @@ func TestSendBuffer_ReadyToRetransmit_PingNotRetransmitted(t *testing.T) {
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_DrainBestEffort_ExpiredPing(t *testing.T) {
@@ -386,7 +386,7 @@ func TestSendBuffer_DrainBestEffort_ExpiredPing(t *testing.T) {
 
 	assert.Equal(t, 0, droppedBytes, "ping carries no data")
 	assert.Equal(t, 0, droppedPackets)
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_DrainBestEffort_ExpiredUnreliableData(t *testing.T) {
@@ -398,7 +398,7 @@ func TestSendBuffer_DrainBestEffort_ExpiredUnreliableData(t *testing.T) {
 
 	assert.Equal(t, 5, droppedBytes)
 	assert.Equal(t, 1, droppedPackets)
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 	assert.Equal(t, 0, sb.size, "sender capacity must be released")
 }
 
@@ -411,7 +411,7 @@ func TestSendBuffer_DrainBestEffort_NotExpired(t *testing.T) {
 
 	assert.Equal(t, 0, droppedBytes)
 	assert.Equal(t, 0, droppedPackets)
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_DrainBestEffort_ReliableUntouched(t *testing.T) {
@@ -423,7 +423,7 @@ func TestSendBuffer_DrainBestEffort_ReliableUntouched(t *testing.T) {
 
 	assert.Equal(t, 0, droppedBytes)
 	assert.Equal(t, 0, droppedPackets)
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
 // =============================================================================
@@ -629,7 +629,7 @@ func TestSendBuffer_ReadyToSend_PingSkippedWhenClosePending(t *testing.T) {
 	assert.Equal(t, uint64(0), offset)
 	assert.True(t, isClose)
 	assert.False(t, sb.streams[1].pingRequested)
-	_, info, ok := sb.streams[1].inFlight.first()
+	_, info, ok := sb.streams[1].inFlight[0].first()
 	assert.True(t, ok)
 	assert.True(t, info.isClose)
 }
@@ -639,7 +639,7 @@ func TestSendBuffer_NeedsReTx_DataPacket(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	_, info, _ := sb.streams[1].inFlight.first()
+	_, info, _ := sb.streams[1].inFlight[0].first()
 	assert.True(t, info.needsReTx)
 }
 
@@ -648,7 +648,7 @@ func TestSendBuffer_NeedsReTx_PingPacket(t *testing.T) {
 	sb.queuePing(1)
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	_, info, _ := sb.streams[1].inFlight.first()
+	_, info, _ := sb.streams[1].inFlight[0].first()
 	assert.False(t, info.needsReTx)
 }
 
@@ -657,7 +657,7 @@ func TestSendBuffer_NeedsReTx_ClosePacket(t *testing.T) {
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	_, info, _ := sb.streams[1].inFlight.first()
+	_, info, _ := sb.streams[1].inFlight[0].first()
 	assert.True(t, info.needsReTx)
 }
 
@@ -666,7 +666,7 @@ func TestSendBuffer_NeedsReTx_UnreliableDataPacket(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, false)
 
-	_, info, _ := sb.streams[1].inFlight.first()
+	_, info, _ := sb.streams[1].inFlight[0].first()
 	assert.False(t, info.needsReTx)
 }
 
@@ -675,7 +675,7 @@ func TestSendBuffer_NeedsReTx_UnreliableCloseStillRetransmits(t *testing.T) {
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, false)
 
-	_, info, _ := sb.streams[1].inFlight.first()
+	_, info, _ := sb.streams[1].inFlight[0].first()
 	assert.True(t, info.needsReTx)
 }
 
@@ -690,7 +690,7 @@ func TestSendBuffer_Unreliable_PingNotRetransmitted(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Nil(t, d)
 	sb.drainExpiredBestEffort(1, 50, 200)
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
 func TestSendBuffer_Unreliable_DataNotRetransmitted(t *testing.T) {
@@ -706,7 +706,7 @@ func TestSendBuffer_Unreliable_DataNotRetransmitted(t *testing.T) {
 	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
 	assert.Equal(t, 4, droppedBytes)
 	assert.Equal(t, 1, droppedPackets)
-	assert.Equal(t, 0, sb.streams[1].inFlight.size())
+	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
 // =============================================================================
@@ -791,10 +791,16 @@ func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
 	if stream == nil {
 		return 0
 	}
-	if firstKey, _, ok := stream.inFlight.first(); ok {
-		return firstKey.offset()
+	// In-flight begins at the lowest offset across the generation heads:
+	// packets are sent (gen 0) and retransmitted (gen 1+) in ascending
+	// offset order, so each head is its generation's lowest offset
+	acked := stream.bytesSentOffset
+	for _, m := range stream.inFlight {
+		if firstKey, _, ok := m.first(); ok && firstKey.offset() < acked {
+			acked = firstKey.offset()
+		}
 	}
-	return stream.bytesSentOffset
+	return acked
 }
 
 func TestSendBuffer_GetOffsetAcked_NoStream(t *testing.T) {
@@ -875,9 +881,9 @@ func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
 
 	sb.acknowledgeRange(&ack{streamId: 2, offset: 0, len: 7})
 
-	assert.Equal(t, 1, sb.streams[1].inFlight.size())
-	assert.Equal(t, 0, sb.streams[2].inFlight.size())
-	assert.Equal(t, 1, sb.streams[3].inFlight.size())
+	assert.Equal(t, 1, sb.streams[1].inFlightSize())
+	assert.Equal(t, 0, sb.streams[2].inFlightSize())
+	assert.Equal(t, 1, sb.streams[3].inFlightSize())
 }
 
 // =============================================================================
@@ -891,7 +897,7 @@ func TestSendBuffer_MarkSent(t *testing.T) {
 
 	sb.markSent(1, 0, 4, 12345, 5000)
 
-	_, info, ok := sb.streams[1].inFlight.first()
+	_, info, ok := sb.streams[1].inFlight[0].first()
 	assert.True(t, ok)
 	assert.Equal(t, uint64(12345), info.sentTimeNano)
 	assert.Equal(t, uint64(5000), info.deliveredAtSend)

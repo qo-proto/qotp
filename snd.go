@@ -10,10 +10,16 @@ import (
 //
 // Per-stream buffer tracks:
 //   - queuedData: data waiting to be sent (not yet transmitted)
-//   - dataInFlightMap: sent but not yet acknowledged (keyed by offset+length)
+//   - inFlight: sent but not yet acknowledged (keyed by offset+length),
+//     one map per retransmission generation (index = sentCount)
 //
 // Packet tracking uses packetKey (offset << 16 | length) for O(1) ACK lookup.
-// Retransmission triggered when RTO expires on oldest in-flight packet.
+// Retransmission triggered when RTO expires on the oldest packet of any
+// generation; a retransmitted packet moves to the next generation's map.
+// Within a generation all packets share the same backoff multiplier, so each
+// map stays ordered by expiry time and only the heads need checking — a loss
+// burst retransmits one packet per event-loop iteration instead of stalling
+// an RTT behind the just-retransmitted head.
 // =============================================================================
 
 const sndBufferCapacity = 16 * 1024 * 1024 // 16MB
@@ -98,7 +104,7 @@ func (sb *sender) getOrCreateStream(streamID uint32) *transmitBuffer {
 // =============================================================================
 
 type transmitBuffer struct {
-	inFlight        *linkedMap[packetKey, *sendPacket]
+	inFlight        []*linkedMap[packetKey, *sendPacket] // per generation, index = sentCount
 	queuedData      []byte
 	bytesSentOffset uint64  // Next offset to send
 	pingRequested   bool    // Pending ping request
@@ -107,7 +113,57 @@ type transmitBuffer struct {
 }
 
 func newStreamSendBuffer() *transmitBuffer {
-	return &transmitBuffer{inFlight: newLinkedMap[packetKey, *sendPacket]()}
+	// Generations 0..maxRetry: initial send plus one per retransmission
+	inFlight := make([]*linkedMap[packetKey, *sendPacket], maxRetry+1)
+	for i := range inFlight {
+		inFlight[i] = newLinkedMap[packetKey, *sendPacket]()
+	}
+	return &transmitBuffer{inFlight: inFlight}
+}
+
+// An ACK carries only offset+length, not the generation, so lookups by key
+// probe all generation maps — bounded by maxRetry+1, each O(1).
+
+func (t *transmitBuffer) inFlightGet(key packetKey) (*sendPacket, bool) {
+	for _, m := range t.inFlight {
+		if pkt, ok := m.get(key); ok {
+			return pkt, true
+		}
+	}
+	return nil, false
+}
+
+func (t *transmitBuffer) inFlightRemove(key packetKey) (*sendPacket, bool) {
+	for _, m := range t.inFlight {
+		if pkt, ok := m.remove(key); ok {
+			return pkt, true
+		}
+	}
+	return nil, false
+}
+
+func (t *transmitBuffer) inFlightContains(key packetKey) bool {
+	_, ok := t.inFlightGet(key)
+	return ok
+}
+
+// inFlightAny reports whether any generation holds an unacked packet.
+func (t *transmitBuffer) inFlightAny() bool {
+	for _, m := range t.inFlight {
+		if m.size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// inFlightSize returns the number of unacked packets across all generations.
+func (t *transmitBuffer) inFlightSize() int {
+	size := 0
+	for _, m := range t.inFlight {
+		size += m.size()
+	}
+	return size
 }
 
 // =============================================================================
@@ -174,7 +230,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		stream.pingRequested = false
 		if stream.closeAtOffset == nil {
 			key := createPacketKey(stream.bytesSentOffset, 0)
-			stream.inFlight.put(key, &sendPacket{needsReTx: false})
+			stream.inFlight[0].put(key, &sendPacket{needsReTx: false})
 			return []byte{}, key.offset(), false
 		}
 	}
@@ -190,12 +246,12 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		!stream.closeSent {
 
 		closeKey := createPacketKey(stream.bytesSentOffset, 0)
-		if stream.inFlight.contains(closeKey) {
+		if stream.inFlightContains(closeKey) {
 			return nil, 0, false
 		}
 
 		stream.closeSent = true
-		stream.inFlight.put(closeKey, &sendPacket{isClose: true, needsReTx: true})
+		stream.inFlight[0].put(closeKey, &sendPacket{isClose: true, needsReTx: true})
 		return []byte{}, closeKey.offset(), true
 	}
 
@@ -229,7 +285,7 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 
 	// Close always retransmits; data follows the stream setting
 	needsReTx := isClose || (len(data) > 0 && reliable)
-	stream.inFlight.put(key, &sendPacket{data: data, isClose: isClose, needsReTx: needsReTx})
+	stream.inFlight[0].put(key, &sendPacket{data: data, isClose: isClose, needsReTx: needsReTx})
 	stream.queuedData = stream.queuedData[length:]
 	stream.bytesSentOffset += length
 
@@ -255,35 +311,47 @@ func (sb *sender) readyToRetransmit(
 		return nil, 0, false, nil
 	}
 
-	key, pkt, ok := stream.inFlight.first()
-	if !ok {
-		return nil, 0, false, nil
+	// Oldest expired head across all generations. Within a generation the
+	// head is the oldest packet and shares its backoff with everything
+	// behind it, so a non-expired head clears its whole generation.
+	gen := -1
+	var key packetKey
+	var pkt *sendPacket
+	for g, m := range stream.inFlight {
+		k, p, ok := m.first()
+		if !ok {
+			continue
+		}
+		// Best-effort heads (unreliable data, pings; generation 0 only) are
+		// never retransmitted; expired ones are removed by
+		// drainExpiredBestEffort before this runs
+		if !p.needsReTx {
+			continue
+		}
+		// Cap the backoff attempt so the final retransmit gets its full
+		// response window; the give-up error fires only once that window
+		// has also expired
+		attempt := uint(g)
+		if attempt > maxRetry-1 {
+			attempt = maxRetry - 1
+		}
+		rtoWithBackoff, err := backoff(baseRTO, attempt)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if nowNano-p.sentTimeNano <= rtoWithBackoff {
+			continue // not expired yet
+		}
+		if pkt == nil || p.sentTimeNano < pkt.sentTimeNano {
+			gen, key, pkt = g, k, p
+		}
 	}
-
-	// Cap the backoff attempt so the final retransmit gets its full response
-	// window; the give-up error fires only once that window has also expired
-	attempt := pkt.sentCount
-	if attempt > maxRetry-1 {
-		attempt = maxRetry - 1
-	}
-	rtoWithBackoff, err := backoff(baseRTO, attempt)
-	if err != nil {
-		return nil, 0, false, err
-	}
-
-	// Not expired yet
-	if nowNano-pkt.sentTimeNano <= rtoWithBackoff {
+	if pkt == nil {
 		return nil, 0, false, nil
 	}
 
 	if pkt.sentCount >= maxRetry {
 		return nil, 0, false, errors.New("max retry attempts exceeded")
-	}
-
-	// Best-effort packets (unreliable data, pings) are never retransmitted;
-	// expired ones are removed by drainExpiredBestEffort
-	if !pkt.needsReTx {
-		return nil, 0, false, nil
 	}
 
 	// Calculate max data for current MTU
@@ -296,38 +364,42 @@ func (sb *sender) readyToRetransmit(
 		maxData = mtu - overhead
 	}
 
-	// Fits in current MTU - just retransmit
+	// Fits in current MTU - just retransmit, moving the packet to the next
+	// generation's map so every map stays ordered by send time.
+	// gen+1 is in bounds: sentCount < maxRetry was checked above.
 	if len(pkt.data) <= maxData {
+		stream.inFlight[gen].remove(key)
 		pkt.sentTimeNano = nowNano
 		pkt.sentCount++
+		stream.inFlight[gen+1].put(key, pkt)
 		return pkt.data, key.offset(), pkt.isClose, nil
 	}
 
 	// Need to split packet (MTU decreased)
-	return sb.splitAndRetransmit(stream, key, pkt, maxData, nowNano)
+	return sb.splitAndRetransmit(stream, gen, key, pkt, maxData, nowNano)
 }
 
 func (sb *sender) splitAndRetransmit(
-	stream *transmitBuffer, key packetKey, pkt *sendPacket,
+	stream *transmitBuffer, gen int, key packetKey, pkt *sendPacket,
 	maxData int, nowNano uint64,
 ) ([]byte, uint64, bool, error) {
 
 	leftData := pkt.data[:maxData]
 	rightData := pkt.data[maxData:]
 
-	// Left part: new entry
+	// Left part: retransmitted now, so it enters the next generation
 	leftKey := createPacketKey(key.offset(), uint16(maxData))
-	stream.inFlight.put(leftKey, &sendPacket{
+	stream.inFlight[gen+1].put(leftKey, &sendPacket{
 		data:         leftData,
 		sentTimeNano: nowNano,
 		sentCount:    pkt.sentCount + 1,
 		needsReTx:    pkt.needsReTx,
 	})
 
-	// Right part: replace original
+	// Right part: not resent yet — keeps its stamp, generation and position
 	rightKey := createPacketKey(key.offset()+uint64(maxData), uint16(len(rightData)))
 	pkt.data = rightData
-	stream.inFlight.replace(key, rightKey, pkt)
+	stream.inFlight[gen].replace(key, rightKey, pkt)
 
 	return leftData, key.offset(), false, nil
 }
@@ -346,12 +418,14 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 		return 0, 0
 	}
 
+	// Best-effort packets are never retransmitted, so they only ever live
+	// in generation 0
 	for {
-		key, pkt, ok := stream.inFlight.first()
+		key, pkt, ok := stream.inFlight[0].first()
 		if !ok || pkt.needsReTx || nowNano-pkt.sentTimeNano <= baseRTO {
 			return droppedBytes, droppedPackets
 		}
-		stream.inFlight.remove(key)
+		stream.inFlight[0].remove(key)
 		if len(pkt.data) > 0 {
 			droppedBytes += len(pkt.data)
 			droppedPackets++
@@ -379,7 +453,7 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, sentTimeNano uin
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
-	pkt, ok := stream.inFlight.remove(key)
+	pkt, ok := stream.inFlightRemove(key)
 	if !ok {
 		return ackDup, 0, 0, 0
 	}
@@ -399,7 +473,7 @@ func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNan
 	}
 
 	key := createPacketKey(offset, length)
-	if pkt, ok := stream.inFlight.get(key); ok {
+	if pkt, ok := stream.inFlightGet(key); ok {
 		pkt.sentTimeNano = nowNano
 		pkt.deliveredAtSend = deliveredAtSend
 	}
@@ -436,8 +510,7 @@ func (sb *sender) checkStreamFullyAcked(streamID uint32) bool {
 	}
 
 	// Must have no in-flight data AND sent up to close offset
-	_, _, hasInFlight := stream.inFlight.first()
-	return !hasInFlight && stream.bytesSentOffset >= *stream.closeAtOffset
+	return !stream.inFlightAny() && stream.bytesSentOffset >= *stream.closeAtOffset
 }
 
 // hasInFlight reports whether any packet is awaiting acknowledgment.
@@ -449,8 +522,7 @@ func (sb *sender) hasInFlight(streamID uint32) bool {
 	if stream == nil {
 		return false
 	}
-	_, _, ok := stream.inFlight.first()
-	return ok
+	return stream.inFlightAny()
 }
 
 // getSendOffset returns the stream's current send offset, used as the wire

@@ -1404,7 +1404,7 @@ func TestConn_FlushStream_RetransmitBypassesRwnd(t *testing.T) {
 	retransmitData := []byte("lost-packet-data")
 	pktKey := createPacketKey(0, uint16(len(retransmitData)))
 	c.snd.mu.Lock()
-	c.snd.streams[s.streamID].inFlight.put(pktKey, &sendPacket{
+	c.snd.streams[s.streamID].inFlight[0].put(pktKey, &sendPacket{
 		data:         retransmitData,
 		sentTimeNano: 0, // sent at time 0
 		sentCount:    0,

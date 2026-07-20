@@ -438,7 +438,8 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		if c.rcv.isFinished(p.streamId) {
 			if len(userData) > 0 {
 				c.rcv.queueAck(p.streamId, p.streamOffset, uint16(len(userData)))
-			} else if p.isClose || userData != nil || p.isKeyUpdate || p.isKeyUpdateAck {
+			} else {
+				// Empty packet (ping/close/key-update): still ACK it
 				c.rcv.queueAck(p.streamId, p.streamOffset, 0)
 			}
 		}
@@ -457,7 +458,8 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		}
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
 		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
-	} else if userData != nil || p.isClose || p.isMtuUpdate || p.isKeyUpdate || p.isKeyUpdateAck {
+	} else {
+		// Empty packet (ping/close/key-update): still ACK it
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
@@ -591,7 +593,22 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
-	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
+
+	// In-flight cap: min(peer receive window, cwndGainPct x BDP). The BDP
+	// cap bounds bottleneck queue buildup while pacing overshoots the link
+	// rate (startup/probe); floored at maxBurstPackets packets so the first
+	// flights can bootstrap the bandwidth measurement. Like rwnd, it blocks
+	// new data only — retransmits, ACKs and KU packets still pass.
+	wndCap := c.rcvWndSize
+	if bdpCap := c.bdpCapBytes(); bdpCap > 0 {
+		if floor := maxBurstPackets * uint64(c.mtu); bdpCap < floor {
+			bdpCap = floor
+		}
+		if bdpCap < wndCap {
+			wndCap = bdpCap
+		}
+	}
+	isBlockedByRwnd := c.dataInFlight+c.mtu > int(wndCap)
 
 	// Pacing blocks everything (including retransmits)
 	if isBlockedByPacing {

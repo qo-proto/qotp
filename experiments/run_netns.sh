@@ -152,7 +152,7 @@ for rate in "${RATE_ARR[@]}"; do
       for s in "${SIZE_ARR[@]}"; do
         msg_info "Benchmark: ${s} MB @ ${scenario}"
         ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
-          -addr=10.0.0.1 -size="$s" -scenario="$scenario" \
+          -addr=10.0.0.1 -size="$s" -scenario="$scenario" -v \
           >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
       done
     done
