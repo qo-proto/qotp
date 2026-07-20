@@ -129,7 +129,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 				return minPacing
 			}
 
-			if stream.rcvClosed && stream.sndClosed && !c.rcv.hasPendingAckForStream(stream.streamID) {
+			if stream.rcvClosed.Load() && stream.sndClosed.Load() && !c.rcv.hasPendingAckForStream(stream.streamID) {
 				if closeStreams == nil {
 					closeStreams = map[*conn][]uint32{}
 				}

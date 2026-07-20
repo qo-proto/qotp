@@ -785,8 +785,8 @@ func TestConnHasActiveStreams_WithActiveStream(t *testing.T) {
 func TestConnHasActiveStreams_AllClosed(t *testing.T) {
 	c := createTestConn(true, false, true)
 	s := c.Stream(1)
-	s.rcvClosed = true
-	s.sndClosed = true
+	s.rcvClosed.Store(true)
+	s.sndClosed.Store(true)
 
 	assert.False(t, c.HasActiveStreams())
 }
@@ -794,8 +794,8 @@ func TestConnHasActiveStreams_AllClosed(t *testing.T) {
 func TestConnHasActiveStreams_PartiallyClosed(t *testing.T) {
 	c := createTestConn(true, false, true)
 	s := c.Stream(1)
-	s.rcvClosed = true
-	s.sndClosed = false
+	s.rcvClosed.Store(true)
+	s.sndClosed.Store(false)
 
 	assert.True(t, c.HasActiveStreams(), "stream with only rcv closed should still be active")
 }

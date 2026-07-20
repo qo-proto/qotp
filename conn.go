@@ -33,7 +33,14 @@ const (
 
 // conn represents a QOTP connection to a remote peer.
 // A single conn can multiplex multiple streams.
-// Thread-safe: all public methods acquire mu.
+//
+// Concurrency model: all protocol state (measurements, pacing, MTU, phase,
+// dataInFlight, rcvWndSize, key state) is owned by the single event-loop
+// goroutine (Listener.Loop) and accessed without locks — do not touch it
+// from other goroutines. Cross-goroutine access is limited to: the streams
+// map (guarded by mu against user-goroutine Stream() calls; Flush iterates
+// it via the linkedMap's internal lock), the send/receive buffers (their
+// own locks), and the stream close flags (atomic).
 type conn struct {
 	connId     uint64
 	remoteAddr netip.AddrPort
@@ -89,8 +96,6 @@ type conn struct {
 // =============================================================================
 
 func (c *conn) Stream(streamID uint32) *Stream {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	return c.getOrCreateStream(streamID)
 }
 
@@ -98,7 +103,7 @@ func (c *conn) HasActiveStreams() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, val := range c.streams.iterator(nil) {
-		if val != nil && (!val.rcvClosed || !val.sndClosed) {
+		if val != nil && (!val.rcvClosed.Load() || !val.sndClosed.Load()) {
 			return true
 		}
 	}
@@ -174,9 +179,13 @@ func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
 // Stream management
 // =============================================================================
 
-// getOrCreateStream returns or creates a getOrCreateStream. Returns nil if getOrCreateStream was already finished.
-// Caller must hold c.mu.
+// getOrCreateStream returns or creates a stream. Returns nil if the stream
+// was already finished. Self-locking: callable from the event loop and from
+// user goroutines (conn.Stream).
 func (c *conn) getOrCreateStream(streamID uint32) *Stream {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.rcv.isFinished(streamID) {
 		return nil
 	}
@@ -377,10 +386,10 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 //   - nil: ACK-only packet, no stream data
 //   - []byte{} (empty): PING packet
 //   - []byte{...}: actual data
+// processIncomingPayload runs on the event-loop goroutine only; the protocol
+// state it touches is loop-owned (see conn doc). Stream-map access goes
+// through the self-locking getOrCreateStream.
 func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano uint64) (*Stream, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	// Handle key update from peer
 	if p.isKeyUpdate && len(p.keyUpdatePub) == pubKeySize {
 		if err := c.handlePeerKeyUpdate(p.keyUpdatePub); err != nil {
@@ -419,8 +428,8 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 					}
 				}
 			}
-			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed && c.snd.checkStreamFullyAcked(p.ack.streamId) {
-				ackStream.sndClosed = true
+			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed.Load() && c.snd.checkStreamFullyAcked(p.ack.streamId) {
+				ackStream.sndClosed.Store(true)
 			}
 		}
 	}
@@ -470,11 +479,11 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	}
 
 	// Update stream close state
-	if !s.rcvClosed && c.rcv.isReadyToClose(s.streamID) {
-		s.rcvClosed = true
+	if !s.rcvClosed.Load() && c.rcv.isReadyToClose(s.streamID) {
+		s.rcvClosed.Store(true)
 	}
-	if !s.sndClosed && c.snd.checkStreamFullyAcked(s.streamID) {
-		s.sndClosed = true
+	if !s.sndClosed.Load() && c.snd.checkStreamFullyAcked(s.streamID) {
+		s.sndClosed.Store(true)
 	}
 
 	return s, nil

@@ -829,7 +829,7 @@ func TestListener_Bidirectional_MultipleStreams(t *testing.T) {
 			allClosed := true
 			for i := 0; i < numStreams; i++ {
 				stream, exists := connAlice.streams.get(uint32(i))
-				if exists && stream != nil && !stream.sndClosed {
+				if exists && stream != nil && !stream.sndClosed.Load() {
 					allClosed = false
 					break
 				}

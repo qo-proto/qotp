@@ -2,7 +2,7 @@ package qotp
 
 import (
 	"io"
-	"sync"
+	"sync/atomic"
 )
 
 // =============================================================================
@@ -18,9 +18,12 @@ type Stream struct {
 	conn                *conn
 	reliable            bool   // Retransmit lost data (default true)
 	reorderDeadlineNano uint64 // Max wait for reordered data before skipping a gap (unreliable streams)
-	rcvClosed           bool   // Receive direction closed (received FIN)
-	sndClosed           bool   // Send direction closed (sent FIN and ACKed)
-	mu                  sync.Mutex
+
+	// Close flags are written by the event loop and by user-goroutine Read,
+	// and read lock-free by both sides — hence atomic. All other stream
+	// state is either loop-owned or guarded by the send/receive buffer locks.
+	rcvClosed atomic.Bool // Receive direction closed (received FIN)
+	sndClosed atomic.Bool // Send direction closed (sent FIN and ACKed)
 }
 
 // =============================================================================
@@ -31,17 +34,14 @@ type Stream struct {
 // Returns io.EOF after receiving FIN and delivering all data.
 // Returns nil data (not error) if no data available yet.
 func (s *Stream) Read() ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.rcvClosed {
+	if s.rcvClosed.Load() {
 		return nil, io.EOF
 	}
 
 	data := s.conn.rcv.removeOldestInOrder(s.streamID)
 
 	if s.conn.rcv.isReadyToClose(s.streamID) {
-		s.rcvClosed = true
+		s.rcvClosed.Store(true)
 	}
 
 	return data, nil
@@ -50,10 +50,7 @@ func (s *Stream) Read() ([]byte, error) {
 // Write queues data for transmission. May return less than len(userData)
 // if send buffer is full. Returns io.EOF if stream is closing.
 func (s *Stream) Write(userData []byte) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.sndClosed || s.IsCloseRequested() {
+	if s.sndClosed.Load() || s.IsCloseRequested() {
 		return 0, io.EOF
 	}
 
@@ -84,7 +81,7 @@ func (s *Stream) Close() {
 
 // IsClosed returns true when both directions are fully closed.
 func (s *Stream) IsClosed() bool {
-	return s.rcvClosed && s.sndClosed
+	return s.rcvClosed.Load() && s.sndClosed.Load()
 }
 
 // IsCloseRequested returns true if Close() has been called (FIN queued).
@@ -99,16 +96,12 @@ func (s *Stream) IsOpen() bool {
 
 // RcvClosed returns true if receive direction is closed.
 func (s *Stream) RcvClosed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.rcvClosed
+	return s.rcvClosed.Load()
 }
 
 // SndClosed returns true if send direction is fully closed (FIN ACKed).
 func (s *Stream) SndClosed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sndClosed
+	return s.sndClosed.Load()
 }
 
 // =============================================================================

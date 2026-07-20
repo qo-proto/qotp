@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
-	"sync"
 	"time"
 )
 
@@ -35,9 +34,11 @@ type NetworkConn interface {
 // UDPNetworkConn - Real UDP socket implementation
 // =============================================================================
 
+// No mutex: net.UDPConn is goroutine-safe, and reads are only issued by the
+// single event-loop goroutine. TimeoutReadNow intentionally runs concurrently
+// with a blocked read (that is its purpose).
 type UDPNetworkConn struct {
 	conn *net.UDPConn
-	mu   sync.Mutex
 }
 
 func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
@@ -45,9 +46,6 @@ func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 }
 
 func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint64) (int, netip.AddrPort, uint64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	deadline := time.Unix(0, int64(nowNano+timeoutNano))
 	if err := c.conn.SetReadDeadline(deadline); err != nil {
 		return 0, netip.AddrPort{}, 0, err
