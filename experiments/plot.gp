@@ -43,7 +43,7 @@ do for [sc in chart1_scenarios] {
     set terminal pngcairo size 900,550 font "sans,11" enhanced
     set output outfile
 
-    set title sprintf("Benchmark: %s", sc)
+    set title sprintf("Benchmark: %s", sc) noenhanced
     set xlabel "Data Size (MB)"
     set ylabel "Transfer Time (ms)"
 
@@ -112,7 +112,7 @@ if (num_scenarios > 1) {
     set datafile separator " "
     set grid ytics
     set key top right box opaque
-    set xtics rotate by -30
+    set xtics rotate by -30 noenhanced
 
     plot \
         tmpfile using 2:xtic(1) title "TCP"   lc rgb tcp_color, \
