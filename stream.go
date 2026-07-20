@@ -171,6 +171,14 @@ func (s *Stream) StreamID() uint32 {
 	return s.streamID
 }
 
+// BytesAcked returns the number of contiguous bytes the peer has
+// acknowledged on this stream's send direction. Safe from any goroutine
+// (guarded by the send buffer's lock); useful for progress and rate
+// sampling.
+func (s *Stream) BytesAcked() uint64 {
+	return s.conn.snd.getOffsetAcked(s.streamID)
+}
+
 func (s *Stream) ConnID() uint64 {
 	return s.conn.connId
 }

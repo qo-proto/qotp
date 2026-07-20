@@ -579,6 +579,28 @@ func (sb *sender) hasInFlight(streamID uint32) bool {
 	return stream.inFlightAny()
 }
 
+// getOffsetAcked returns the contiguous acked byte offset: where in-flight
+// begins (everything before it is acknowledged).
+func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return 0
+	}
+	// In-flight begins at the lowest offset across the generation heads:
+	// packets are sent (gen 0) and retransmitted (gen 1+) in ascending
+	// offset order, so each head is its generation's lowest offset
+	acked := stream.bytesSentOffset
+	for _, m := range stream.inFlight {
+		if firstKey, _, ok := m.first(); ok && firstKey.offset() < acked {
+			acked = firstKey.offset()
+		}
+	}
+	return acked
+}
+
 // getSendOffset returns the stream's current send offset, used as the wire
 // offset for packets that carry no data (ACK-only, key updates).
 func (sb *sender) getSendOffset(streamID uint32) uint64 {

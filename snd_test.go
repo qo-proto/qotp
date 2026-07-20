@@ -781,28 +781,6 @@ func TestSendBuffer_GetOffsetClosedAt_Closed(t *testing.T) {
 	assert.Equal(t, uint64(4), *result)
 }
 
-// getOffsetAcked is a test helper: the acked offset is where in-flight begins
-// (everything before is acked).
-func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-
-	stream := sb.streams[streamID]
-	if stream == nil {
-		return 0
-	}
-	// In-flight begins at the lowest offset across the generation heads:
-	// packets are sent (gen 0) and retransmitted (gen 1+) in ascending
-	// offset order, so each head is its generation's lowest offset
-	acked := stream.bytesSentOffset
-	for _, m := range stream.inFlight {
-		if firstKey, _, ok := m.first(); ok && firstKey.offset() < acked {
-			acked = firstKey.offset()
-		}
-	}
-	return acked
-}
-
 func TestSendBuffer_GetOffsetAcked_NoStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 

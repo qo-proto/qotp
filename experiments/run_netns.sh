@@ -59,6 +59,11 @@ OPTIONS:
   --reorders LIST     Comma-separated reorder rates (default: 0%; needs delay > 0)
   --queues LIST       Comma-separated bottleneck queues as burst:latency
                       (default: 64kb:1ms; e.g. 64kb:1ms,256kb:50ms)
+  --proto LIST        Protocols to run CONCURRENTLY through the same
+                      bottleneck (tcp,qotp,quic), with per-protocol rate
+                      timelines written to rates_*.csv. A single value runs
+                      that protocol standalone. Default: unset — all three
+                      run sequentially (isolated measurement).
   --out DIR           Output directory (default: experiments/results)
 
 The scenario is the cross product of all lists — vary one dimension at a
@@ -75,6 +80,7 @@ parse_params() {
   LOSSES="0%"
   REORDERS="0%"
   QUEUES="64kb:1ms"
+  PROTO=""
   OUT_DIR="$SCRIPT_DIR/results"
 
   while :; do
@@ -107,6 +113,10 @@ parse_params() {
       ;;
     --queues)
       QUEUES="${2-}"
+      shift
+      ;;
+    --proto)
+      PROTO="${2-}"
       shift
       ;;
     --out)
@@ -191,9 +201,18 @@ for rate in "${RATE_ARR[@]}"; do
             done
 
             for s in "${SIZE_ARR[@]}"; do
-              msg_info "Benchmark: ${s} MB @ ${scenario}"
+              # Concurrent mode: protocols share the bottleneck; label the
+              # scenario and record per-protocol rate timelines
+              extra_args=()
+              run_scenario="$scenario"
+              if [[ -n "$PROTO" ]]; then
+                [[ "$PROTO" == *,* ]] && run_scenario+="_conc"
+                extra_args=(-proto="$PROTO" -ratelog="$OUT_DIR/rates_${run_scenario}_${s}mb.csv")
+              fi
+
+              msg_info "Benchmark: ${s} MB @ ${run_scenario}"
               ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
-                -addr=10.0.0.1 -size="$s" -scenario="$scenario" \
+                -addr=10.0.0.1 -size="$s" -scenario="$run_scenario" "${extra_args[@]}" \
                 >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
             done
           done
@@ -210,6 +229,10 @@ msg_ok "CSV written to $OUT_DIR/combined.csv"
 
 if command -v gnuplot &>/dev/null; then
   gnuplot -e "csv='$OUT_DIR/combined.csv'; outdir='$OUT_DIR'" "$SCRIPT_DIR/plot.gp"
+  for rcsv in "$OUT_DIR"/rates_*.csv; do
+    [[ -e "$rcsv" ]] || continue
+    gnuplot -e "csv='$rcsv'; out='${rcsv%.csv}.png'" "$SCRIPT_DIR/plot_rates.gp"
+  done
   msg_ok "Plots written to $OUT_DIR/"
 else
   msg_info "Install gnuplot to generate charts automatically"
