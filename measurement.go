@@ -70,7 +70,10 @@ var (
 	lossRateThresholdPct = uint64(2)  // congestion = >2% loss per window
 	throttleBetaPct      = uint64(70) // multiplicative decrease per event
 	throttleFloorPct     = uint64(30) // keep the flow alive
-	throttleRecoverPct   = uint64(10) // points regained per clean window
+	throttleRecoverPct   = uint64(5) // points regained per clean window;
+	// deliberately modest so recovery after congestion stays comparable
+	// to TCP's additive increase — faster values let qotp out-regain
+	// loss-based flows after every shared-loss episode and skew fairness
 	// Loss is judged over a multi-round window, not per round: single-round
 	// ratios are far too noisy (a round is one flight; detections for
 	// independent losses cluster into the round where their gap evidence

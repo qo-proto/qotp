@@ -42,15 +42,15 @@ usage() {
   cat <<EOF
 Usage: sudo $(basename "${BASH_SOURCE[0]}") [OPTIONS]
 
-Run the full benchmark suite: solo baselines, lossy/RTT/reorder corners and
-concurrent fairness across 10/50/100/500 mbit, then generate a summary
-report (report.sh). Every measurement is repeated (default 3 runs) so
-plots and report show mean and standard deviation. Requires root.
-Takes ~45-60 minutes at 3 runs.
+Run the full benchmark suite: solo baselines, lossy/RTT/reorder/bufferbloat
+corners and concurrent fairness across 10/50/100/500/1000 mbit, then
+generate a summary report (report.sh). Every measurement is repeated
+(default 3 runs) so plots and report show mean and standard deviation.
+Requires root. Takes ~60-90 minutes at 3 runs.
 
-1gbit is deliberately excluded: three userspace stacks plus netem on one
-machine measure the CPU, not the protocols. Watch the 500mbit rows for
-early signs of CPU saturation instead.
+Caveat on the 1gbit rows: three userspace stacks plus netem share one
+machine's CPU, so those numbers partly measure the host, not the protocol.
+Read them relative to the 500mbit rows.
 
 OPTIONS:
   -h, --help    Print this help and exit
@@ -120,8 +120,28 @@ size_for() {
   50) echo 32 ;;
   100) echo 64 ;;
   500) echo 128 ;;
+  1000) echo 256 ;;
   *) die "no size mapping for rate $1" ;;
   esac
+}
+
+# burst_for RATE_MBIT -> tbf burst ~4ms of line rate. A fixed burst breaks
+# the geometry at the rate extremes: 64kb is ~1xBDP at 10mbit (absorbs whole
+# flights, favors paced senders) yet sub-millisecond at 1gbit
+burst_for() {
+  case "$1" in
+  10) echo 5kb ;;
+  50) echo 25kb ;;
+  100) echo 50kb ;;
+  500) echo 250kb ;;
+  1000) echo 500kb ;;
+  *) die "no burst mapping for rate $1" ;;
+  esac
+}
+
+# rate_str RATE_MBIT -> tc rate spec
+rate_str() {
+  if [[ "$1" == 1000 ]]; then echo "1gbit"; else echo "${1}mbit"; fi
 }
 
 # run NAME ARGS... -> one run_netns.sh invocation into its own subdir
@@ -136,63 +156,77 @@ run() {
 if [[ $QUICK -eq 1 ]]; then
   RATES=(100)
 else
-  RATES=(10 50 100 500)
+  RATES=(10 50 100 500 1000)
 fi
 
-# Queues are specified as burst:latency, so the byte size of the queue
-# (~rate x latency) scales with the link rate automatically:
-#   40ms ~ 1x BDP at 40ms RTT (typical), 5ms ~ shallow corner
-QUEUE_BDP="64kb:40ms"
-QUEUE_SHALLOW="64kb:5ms"
+# Queue geometry per rate: burst ~4ms of line rate (see burst_for), plus
+# latency-based queue depth that scales with rate automatically:
+#   40ms ~ 1x BDP at 40ms RTT (typical), 5ms ~ shallow corner,
+#   200ms ~ bufferbloat corner
+Q100_BDP="$(burst_for 100):40ms"
+Q100_SHALLOW="$(burst_for 100):5ms"
+Q100_BLOAT="$(burst_for 100):200ms"
 
 # ── Solo baselines: each rate, clean link, BDP queue ─────────────────────────
 for rate in "${RATES[@]}"; do
   run "solo_${rate}mbit" \
-    --sizes "$(size_for "$rate")" --rates "${rate}mbit" \
-    --delays 20ms --jitters 0ms --queues "$QUEUE_BDP"
+    --sizes "$(size_for "$rate")" --rates "$(rate_str "$rate")" \
+    --delays 20ms --jitters 0ms --queues "$(burst_for "$rate"):40ms"
 done
 
-# ── Solo corners (100mbit): loss, RTT extremes, jitter, reorder, queue ──────
+# ── Solo corners (100mbit): loss, RTT extremes, jitter, reorder, queues ─────
 run "solo_loss1" \
   --sizes 16 --rates 100mbit --delays 20ms --jitters 0ms \
-  --losses 1% --queues "$QUEUE_BDP"
+  --losses 1% --queues "$Q100_BDP"
 run "solo_loss3" \
   --sizes 16 --rates 100mbit --delays 20ms --jitters 0ms \
-  --losses 3% --queues "$QUEUE_BDP"
+  --losses 3% --queues "$Q100_BDP"
 run "solo_rtt_short" \
-  --sizes 64 --rates 100mbit --delays 5ms --jitters 0ms --queues "$QUEUE_BDP"
+  --sizes 64 --rates 100mbit --delays 5ms --jitters 0ms --queues "$Q100_BDP"
 run "solo_rtt_long" \
-  --sizes 32 --rates 100mbit --delays 100ms --jitters 0ms --queues "$QUEUE_BDP"
+  --sizes 32 --rates 100mbit --delays 100ms --jitters 0ms --queues "$Q100_BDP"
 run "solo_jitter" \
-  --sizes 32 --rates 100mbit --delays 20ms --jitters 5ms --queues "$QUEUE_BDP"
+  --sizes 32 --rates 100mbit --delays 20ms --jitters 5ms --queues "$Q100_BDP"
 run "solo_reorder2" \
   --sizes 16 --rates 100mbit --delays 20ms --jitters 0ms \
-  --reorders 2% --queues "$QUEUE_BDP"
+  --reorders 2% --queues "$Q100_BDP"
 run "solo_shallow_queue" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
-  --queues "$QUEUE_SHALLOW"
+  --queues "$Q100_SHALLOW"
+run "solo_bufferbloat" \
+  --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
+  --queues "$Q100_BLOAT"
+run "solo_smallfile" \
+  --sizes 1 --rates 100mbit --delays 20ms --jitters 0ms \
+  --queues "$Q100_BDP"
+run "solo_satellite" \
+  --sizes 32 --rates 100mbit --delays 100ms --jitters 0ms \
+  --losses 1% --queues "$Q100_BDP"
 
 # ── Fairness: 3-way concurrent at each rate, BDP queue ──────────────────────
 for rate in "${RATES[@]}"; do
   run "fair3_${rate}mbit" \
-    --sizes "$(size_for "$rate")" --rates "${rate}mbit" \
-    --delays 20ms --jitters 0ms --queues "$QUEUE_BDP" \
+    --sizes "$(size_for "$rate")" --rates "$(rate_str "$rate")" \
+    --delays 20ms --jitters 0ms --queues "$(burst_for "$rate"):40ms" \
     --proto tcp,qotp,quic
 done
 
-# ── Fairness corners (100mbit): shallow queue, lossy link, pairwise ─────────
+# ── Fairness corners (100mbit): queues, lossy link, pairwise ────────────────
 run "fair3_shallow" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
-  --queues "$QUEUE_SHALLOW" --proto tcp,qotp,quic
+  --queues "$Q100_SHALLOW" --proto tcp,qotp,quic
+run "fair3_bufferbloat" \
+  --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
+  --queues "$Q100_BLOAT" --proto tcp,qotp,quic
 run "fair3_loss1" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
-  --losses 1% --queues "$QUEUE_BDP" --proto tcp,qotp,quic
+  --losses 1% --queues "$Q100_BDP" --proto tcp,qotp,quic
 run "fair2_tcp_qotp" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
-  --queues "$QUEUE_BDP" --proto tcp,qotp
+  --queues "$Q100_BDP" --proto tcp,qotp
 run "fair2_quic_qotp" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
-  --queues "$QUEUE_BDP" --proto quic,qotp
+  --queues "$Q100_BDP" --proto quic,qotp
 
 msg ""
 msg_ok "All scenarios complete."
