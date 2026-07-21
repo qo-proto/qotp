@@ -19,6 +19,10 @@ import (
 // Listener - Manages UDP socket and connections
 // =============================================================================
 
+// socketBufferSize is the requested UDP send/receive buffer (same value
+// quic-go uses); the OS may cap it lower (Linux: net.core.rmem_max).
+const socketBufferSize = 7 * 1024 * 1024
+
 type Listener struct {
 	localConn    NetworkConn
 	prvKeyId     *ecdh.PrivateKey
@@ -138,6 +142,18 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		}
 		if err := setDontFragment(conn); err != nil {
 			return nil, err
+		}
+		// Large socket buffers: the default (~200KB on Linux) is only a
+		// few ms of headroom at high rates — any event-loop pause longer
+		// than that overflows the socket, dropping packets invisibly
+		// before they reach us. The OS caps the request (Linux:
+		// net.core.rmem_max/wmem_max); raise those limits for full
+		// effect, as QUIC stacks recommend.
+		if err := conn.SetReadBuffer(socketBufferSize); err != nil {
+			slog.Info("could not request UDP read buffer", "size", socketBufferSize, "err", err)
+		}
+		if err := conn.SetWriteBuffer(socketBufferSize); err != nil {
+			slog.Info("could not request UDP write buffer", "size", socketBufferSize, "err", err)
 		}
 		o.localConn = NewUDPNetworkConn(conn)
 	}

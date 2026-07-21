@@ -47,14 +47,15 @@ Run benchmarks locally on loopback (no rate limiting).
 OPTIONS:
   -h, --help        Print this help and exit
   --sizes LIST      Comma-separated data sizes in MB (default: 1,4,16,64,128)
-  --out DIR         Output directory (default: experiments/results)
+  --out DIR         Output directory; relative names are placed under
+                    experiments/results/ (default: results/manual)
 EOF
   exit
 }
 
 parse_params() {
   SIZES="1,4,16,64,128"
-  OUT_DIR="$SCRIPT_DIR/results"
+  OUT_DIR="manual"
 
   while :; do
     case "${1-}" in
@@ -78,6 +79,9 @@ parse_params() {
 setup_colors
 parse_params "$@"
 
+# All results live under experiments/results/: relative --out names are
+# placed there, absolute paths are respected
+[[ "$OUT_DIR" != /* ]] && OUT_DIR="$SCRIPT_DIR/results/$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 IFS=',' read -ra SIZE_ARR <<< "$SIZES"

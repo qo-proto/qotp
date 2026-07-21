@@ -284,12 +284,15 @@ func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
 		m.updateThrottle()
 
 		// Retire the round into the max window; recompute so that maxima
-		// older than windowSize rounds can age out. Skipped while the
-		// fairness throttle is active: throttled rounds measure the
-		// throttled rate, and retiring them would decay bwMax to the
-		// policy level — the sensor must keep the last honest capacity
-		// reading until pacing is back at 100%.
-		if m.throttlePct >= 100 {
+		// older than windowSize rounds can age out. Skipped while pacing
+		// is policy-reduced — fairness throttle active OR drain gain
+		// (queue feedback / loss event): reduced rounds measure the
+		// reduced rate, and retiring them would decay bwMax to the policy
+		// level, which then lowers pacing further (self-clamp spiral; hit
+		// this live on short-RTT paths where the drain runs long). The
+		// sensor keeps the last honest capacity reading until pacing is
+		// back at 100%.
+		if m.throttlePct >= 100 && m.pacingGainPct >= normalGain {
 			m.bwRounds[m.bwRoundIdx] = m.roundBwBest
 			m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
 			var bwMax uint64

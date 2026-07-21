@@ -7,6 +7,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 cleanup() {
   trap - SIGINT SIGTERM ERR EXIT
+  # Results must stay manageable by the invoking user, not root
+  if [[ $EUID -eq 0 && -n "${SUDO_UID-}" && -d "${OUT_DIR-}" ]]; then
+    chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT_DIR" 2>/dev/null || true
+  fi
 }
 
 setup_colors() {
@@ -49,14 +53,15 @@ early signs of CPU saturation instead.
 OPTIONS:
   -h, --help    Print this help and exit
   --quick       Reduced matrix (100mbit only) for iteration, ~4 minutes
-  --out DIR     Output directory (default: experiments/results-suite)
+  --out DIR     Output directory; relative names are placed under
+                experiments/results/ (default: results/suite)
 EOF
   exit
 }
 
 parse_params() {
   QUICK=0
-  OUT_DIR="$SCRIPT_DIR/results-suite"
+  OUT_DIR="suite"
 
   while :; do
     case "${1-}" in
@@ -80,6 +85,18 @@ parse_params "$@"
 [[ $EUID -ne 0 ]] && die "This script must be run as root (sudo)."
 [[ -x "$SCRIPT_DIR/client/client" ]] || die "Build first: ./build.sh"
 
+# All results live under experiments/results/: relative --out names are
+# placed there, absolute paths are respected
+[[ "$OUT_DIR" != /* ]] && OUT_DIR="$SCRIPT_DIR/results/$OUT_DIR"
+
+# Ask once for the whole tree; scenario runs then clear their own subdirs
+# via --yes without further prompting
+if [[ -d "$OUT_DIR" && -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]]; then
+  if [[ -t 0 ]]; then
+    read -r -p "Previous suite results in $OUT_DIR — remove them first? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] && rm -rf "${OUT_DIR:?}"/*
+  fi
+fi
 mkdir -p "$OUT_DIR"
 
 # size_for RATE_MBIT -> transfer size scaled so runs last ~5-20s per flow
@@ -98,7 +115,7 @@ run() {
   local name="$1"
   shift
   msg_info "=== scenario: $name"
-  "$SCRIPT_DIR/run_netns.sh" --no-color "$@" --out "$OUT_DIR/$name" \
+  "$SCRIPT_DIR/run_netns.sh" --no-color --yes "$@" --out "$OUT_DIR/$name" \
     2>>"$OUT_DIR/suite.log" || die "scenario $name failed (see $OUT_DIR/suite.log)"
 }
 

@@ -15,6 +15,14 @@ cleanup() {
   fi
   ip netns del "$NS_SRV" 2>/dev/null || true
   ip netns del "$NS_CLI" 2>/dev/null || true
+  # Restore the global socket buffer caps we raised
+  if [[ -n "${OLD_RMEM_MAX-}" ]]; then
+    sysctl -qw net.core.rmem_max="$OLD_RMEM_MAX" net.core.wmem_max="$OLD_WMEM_MAX" 2>/dev/null || true
+  fi
+  # Results must stay manageable by the invoking user, not root
+  if [[ $EUID -eq 0 && -n "${SUDO_UID-}" && -d "${OUT_DIR-}" ]]; then
+    chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT_DIR" 2>/dev/null || true
+  fi
 }
 
 setup_colors() {
@@ -64,7 +72,10 @@ OPTIONS:
                       timelines written to rates_*.csv. A single value runs
                       that protocol standalone. Default: unset — all three
                       run sequentially (isolated measurement).
-  --out DIR           Output directory (default: experiments/results)
+  --out DIR           Output directory; relative names are placed under
+                      experiments/results/ (default: results/manual)
+  --yes               Remove previous results in the output directory
+                      without asking (used by suite.sh)
 
 The scenario is the cross product of all lists — vary one dimension at a
 time to keep run counts manageable.
@@ -81,7 +92,8 @@ parse_params() {
   REORDERS="0%"
   QUEUES="64kb:1ms"
   PROTO=""
-  OUT_DIR="$SCRIPT_DIR/results"
+  OUT_DIR="manual"
+  ASSUME_YES=0
 
   while :; do
     case "${1-}" in
@@ -123,6 +135,7 @@ parse_params() {
       OUT_DIR="${2-}"
       shift
       ;;
+    --yes) ASSUME_YES=1 ;;
     -?*) die "Unknown option: $1" ;;
     *) break
     esac
@@ -135,6 +148,20 @@ parse_params "$@"
 
 [[ $EUID -ne 0 ]] && die "This script must be run as root (sudo)."
 
+# All results live under experiments/results/: relative --out names are
+# placed there, absolute paths are respected
+[[ "$OUT_DIR" != /* ]] && OUT_DIR="$SCRIPT_DIR/results/$OUT_DIR"
+
+# Stale artifacts (old rates_*.csv, plots) in a reused output directory mix
+# into reports — offer to clear them first
+if [[ -d "$OUT_DIR" && -n "$(ls -A "$OUT_DIR" 2>/dev/null)" ]]; then
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    rm -rf "${OUT_DIR:?}"/*
+  elif [[ -t 0 ]]; then
+    read -r -p "Previous results in $OUT_DIR — remove them first? [y/N] " ans
+    [[ "$ans" =~ ^[Yy] ]] && rm -rf "${OUT_DIR:?}"/*
+  fi
+fi
 mkdir -p "$OUT_DIR"
 
 IFS=',' read -ra SIZE_ARR <<< "$SIZES"
@@ -144,6 +171,14 @@ IFS=',' read -ra JITTER_ARR <<< "$JITTERS"
 IFS=',' read -ra LOSS_ARR <<< "$LOSSES"
 IFS=',' read -ra REORDER_ARR <<< "$REORDERS"
 IFS=',' read -ra QUEUE_ARR <<< "$QUEUES"
+
+# Raise the global UDP socket buffer caps so the stacks' 7MB requests are
+# honored (net.core.* is global, not per-namespace); restored in cleanup.
+# Default rmem_max (~200KB) is only ~3ms of headroom at 500mbit — process
+# scheduling pauses then overflow the socket, which looks like path loss.
+OLD_RMEM_MAX=$(sysctl -n net.core.rmem_max)
+OLD_WMEM_MAX=$(sysctl -n net.core.wmem_max)
+sysctl -qw net.core.rmem_max=8388608 net.core.wmem_max=8388608
 
 # Clean up stale namespaces from previous runs
 ip netns del "$NS_SRV" 2>/dev/null || true
