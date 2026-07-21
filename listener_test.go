@@ -447,7 +447,7 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 
 	for i := 0; i < maxIterations; i++ {
 		// Sender flushes
-		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		_, err = connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 		assert.NoError(t, err)
 		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
 		connPair.Conn1.localTime += max(minPacing, 10*msNano)
@@ -479,7 +479,7 @@ func runDataTransferTest(t *testing.T, testDataSize int, maxIterations int,
 		}
 
 		// Receiver processes incoming data
-		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		s, err := listenerB.Listen(minDeadline, connPair.Conn2.localTime)
 		assert.NoError(t, err)
 		if s != nil {
 			streamB = s
@@ -599,7 +599,7 @@ func TestListener_DataTransfer_Reordering(t *testing.T) {
 
 	for i := 0; i < maxIterations; i++ {
 		// Sender flushes
-		_, err = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		_, err = connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 		assert.NoError(t, err)
 		minPacing := connA.listener.Flush(connPair.Conn1.localTime)
 		connPair.Conn1.localTime += max(minPacing, 10*msNano)
@@ -622,7 +622,7 @@ func TestListener_DataTransfer_Reordering(t *testing.T) {
 		}
 
 		// Receiver processes
-		s, err := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		s, err := listenerB.Listen(minDeadline, connPair.Conn2.localTime)
 		assert.NoError(t, err)
 		if s != nil {
 			streamB = s
@@ -658,11 +658,11 @@ func TestListener_DataTransfer_Reordering(t *testing.T) {
 
 func TestListener_DataTransfer_ExtremeConditions(t *testing.T) {
 	maxRetry = 20
-	ReadDeadLine = uint64(300 * secondNano)
+	readDeadline = uint64(300 * secondNano)
 
 	defer func() {
 		maxRetry = 5
-		ReadDeadLine = uint64(30 * secondNano)
+		readDeadline = uint64(30 * secondNano)
 	}()
 
 	runDataTransferTest(t, 2*1024, 2000,

@@ -433,9 +433,11 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
 				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
 			}
+			// Losses feed the windowed fairness throttle (see
+			// updateThrottle); no per-event reaction — the throttle's
+			// window is the congestion-event granularity
 			if lostCount > 0 {
-				c.onLossEvent(nowNano)
-				c.roundLostPackets += uint64(lostCount)
+				c.windowLostPackets += uint64(lostCount)
 			}
 			if c.consecutiveLosses > 0 {
 				c.consecutiveLosses = 0
@@ -697,7 +699,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// ACKs and KU-only packets carry no data and may pass.
 	if isBlockedByRwnd {
 		if ack == nil && !kuSendDue {
-			return 0, MinDeadLine, nil
+			return 0, minDeadline, nil
 		}
 		return c.sendControlPacket(s, ack, nowNano)
 	}
@@ -719,7 +721,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return c.sendControlPacket(s, ack, nowNano)
 	}
 
-	return 0, MinDeadLine, nil
+	return 0, minDeadline, nil
 }
 
 func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {

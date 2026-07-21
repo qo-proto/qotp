@@ -97,7 +97,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 // Flush sends pending data for all connections using round-robin.
 // Returns minimum pacing interval until next send opportunity.
 func (l *Listener) Flush(nowNano uint64) uint64 {
-	minPacing := MinDeadLine
+	minPacing := minDeadline
 	if l.connMap.size() == 0 {
 		return minPacing
 	}
@@ -143,7 +143,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 				return 0
 			}
 
-			if c.lastReadTimeNano != 0 && nowNano > c.lastReadTimeNano+ReadDeadLine {
+			if c.lastReadTimeNano != 0 && nowNano > c.lastReadTimeNano+readDeadline {
 				slog.Info("close connection, timeout",
 					slog.Uint64("now", nowNano),
 					slog.Uint64("last", c.lastReadTimeNano))

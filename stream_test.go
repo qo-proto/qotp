@@ -43,7 +43,7 @@ func waitForStream(t *testing.T, listener *Listener, connPair *ConnPair, isRecip
 		localTime = connPair.Conn1.localTime
 	}
 	for i := 0; i < 100 && stream == nil; i++ {
-		stream, err = listener.Listen(MinDeadLine, localTime)
+		stream, err = listener.Listen(minDeadline, localTime)
 	}
 	assert.NotNil(t, stream, "timeout waiting for stream")
 	assert.Nil(t, err)
@@ -343,7 +343,7 @@ func TestStream_Close_SenderInitiated_FullClose(t *testing.T) {
 	// Alice receives Bob's FIN
 	streamA = nil
 	for i := 0; i < 100 && streamA == nil; i++ {
-		streamA, _ = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		streamA, _ = connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 	}
 	assert.NotNil(t, streamA)
 
@@ -383,7 +383,7 @@ func TestStream_Close_ReceiverInitiated(t *testing.T) {
 	// Alice receives FIN
 	streamA = nil
 	for i := 0; i < 100 && streamA == nil; i++ {
-		streamA, _ = connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		streamA, _ = connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 	}
 	assert.NotNil(t, streamA)
 
@@ -445,7 +445,7 @@ func TestStream_FlowControl_ReceiverWindowReduced(t *testing.T) {
 
 	// A receives - window reduced
 	for i := 0; i < 100; i++ {
-		s, _ := connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		s, _ := connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 		if s != nil {
 			break
 		}
@@ -523,7 +523,7 @@ func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
 	// Advance time by 50ms/iteration so both the sender RTO (drops the lost
 	// best-effort packet) and the receiver reorder deadline (100ms) elapse.
 	for i := 0; i < 80; i++ {
-		connA.listener.Listen(MinDeadLine, connPair.Conn1.localTime)
+		connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 		connA.listener.Flush(connPair.Conn1.localTime)
 		connPair.Conn1.localTime += 50 * msNano
 
@@ -541,7 +541,7 @@ func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
 			_, _ = connPair.senderToRecipient(0)
 		}
 
-		s, _ := listenerB.Listen(MinDeadLine, connPair.Conn2.localTime)
+		s, _ := listenerB.Listen(minDeadline, connPair.Conn2.localTime)
 		if s != nil {
 			streamB = s
 		}

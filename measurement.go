@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 )
 
 // =============================================================================
@@ -20,7 +21,7 @@ const (
 
 	mtuFallbackThreshold = 5  // consecutive losses before fallback to conservativeMTU
 	mtuFlapWarnThreshold = 3  // fallback→restore cycles before warning about a black hole
-	windowSize           = 10 // rolling window for min/max filters
+	windowSize           = 10 // rolling window for min-RTT and max-bandwidth filters
 )
 
 // =============================================================================
@@ -43,19 +44,17 @@ var (
 	// mild reordering while detecting loss in ~1 RTT instead of an RTO.
 	fastRetxThreshold = uint8(3)
 
-	// BBR timing
-	probeMultiplier  = uint64(8) // Probe every 8x RTT_min
-	probeCycleRounds = uint64(2) // One probe round (probeGain) + one drain round (drainGain)
-
 	// BBR pacing gains (percentage, 100 = 1.0x)
 	startupGain = uint64(277) // 2.77x aggressive growth
 	normalGain  = uint64(100) // 1.0x steady state
 	probeGain   = uint64(125) // 1.25x probe for spare bandwidth
 	drainGain   = uint64(75)  // 0.75x drain the queue the probe built
 
-	// BBR state transitions
-	bwDecThreshold    = uint64(3)   // Exit startup after 3 non-increasing rounds
-	startupGrowthPct  = uint64(125) // Require 25% bandwidth growth per round
+	// BBR probing and startup exit
+	probeIntervalRtts = uint64(8)   // probe for more bandwidth every 8x rttMin
+	probeCycleRounds  = uint64(2)   // one probe round + one drain round
+	startupGrowthPct  = uint64(125) // startup expects >=25% bandwidth growth per round
+	startupExitRounds = uint64(3)   // exit startup after this many rounds without growth
 
 	// Queue feedback: srtt above rttMin x queueThresholdPct/100 means a
 	// standing queue is building at the bottleneck — drain instead of probe
@@ -63,31 +62,32 @@ var (
 
 	// Fairness throttle: a persistent pacing multiplier with TCP-like
 	// dynamics (multiplicative decrease, gradual recovery), so loss-based
-	// flows sharing the bottleneck can claim their share. Engages only
-	// when a round's loss rate exceeds the threshold — random loss below
-	// it stays ignored (lossy-link performance is preserved). bwMax is
-	// never touched: policy lives here, the sensor stays truthful.
-	lossRateThresholdPct = uint64(2)  // congestion = >2% loss per window
-	throttleBetaPct      = uint64(70) // multiplicative decrease per event
-	throttleFloorPct     = uint64(30) // keep the flow alive
-	throttleRecoverPct   = uint64(5) // points regained per clean window;
-	// deliberately modest so recovery after congestion stays comparable
-	// to TCP's additive increase — faster values let qotp out-regain
-	// loss-based flows after every shared-loss episode and skew fairness
+	// flows sharing a bottleneck can claim their share. bwMax is never
+	// touched: policy lives here, the sensor stays truthful.
+	//
 	// Loss is judged over a multi-round window, not per round: single-round
 	// ratios are far too noisy (a round is one flight; detections for
 	// independent losses cluster into the round where their gap evidence
-	// completes, and Karn shrinks the denominator during recovery), which
-	// made random loss trigger spurious decreases. A window also gives
-	// episode semantics for free: at most one MD per window. Minimum-lost
-	// count protects small windows (low-rate phases) from small-sample
-	// flukes.
-	throttleWindowRounds = uint64(8)
-	throttleMinLost      = uint64(8)
+	// completes, and Karn shrinks the denominator during recovery). The
+	// window also gives episode semantics for free: at most one decrease
+	// per window. Random loss below the threshold stays ignored, which
+	// preserves lossy-link performance.
+	lossRateThresholdPct = uint64(2)  // congestion = >2% loss per window
+	throttleWindowRounds = uint64(8)  // rounds per evaluation window
+	throttleMinLost      = uint64(8)  // min losses to act (small-sample guard)
+	throttleBetaPct      = uint64(70) // multiplicative decrease per event
+	throttleFloorPct     = uint64(30) // keep the flow alive
+	// Recovery is deliberately modest so regaining bandwidth after
+	// congestion stays comparable to TCP's additive increase — faster
+	// values let qotp out-regain loss-based flows after every shared-loss
+	// episode and skew fairness.
+	throttleRecoverPct = uint64(5) // points regained per clean window
 
-	// Pacing fallbacks
-	fallbackInterval = uint64(10 * msNano)
-	rttDivisor       = uint64(10)
+	// Cold-start pacing, used until the first bandwidth sample exists:
+	// one packet per srtt/coldStartRttDivisor, or per coldStartInterval
+	// before the first RTT sample
+	coldStartInterval   = uint64(10 * msNano)
+	coldStartRttDivisor = uint64(10)
 
 	// Pacing burst allowance: how many unspent send opportunities may be
 	// carried across late wakeups (token-bucket depth, in packets). Lets a
@@ -95,8 +95,8 @@ var (
 	maxBurstPackets = uint64(10)
 
 	// Timeouts
-	MinDeadLine  = uint64(100 * msNano)
-	ReadDeadLine = uint64(30 * secondNano)
+	minDeadline  = uint64(100 * msNano)
+	readDeadline = uint64(30 * secondNano)
 
 	// Min-RTT filter: samples older than this can no longer be the minimum
 	rttMinTTLNano = uint64(10 * secondNano)
@@ -113,6 +113,31 @@ type rttMinEntry struct {
 	timeNano uint64
 }
 
+// ccState is the congestion-control pacing state. Transitions go through
+// setState only, which also derives the pacing gain — one auditable place.
+type ccState uint8
+
+const (
+	ccStartup  ccState = iota // exponential growth (2.77x) until bandwidth flattens
+	ccSteady                  // pace at measured bandwidth (1.0x)
+	ccProbing                 // probe for spare bandwidth (1.25x, one round)
+	ccDraining                // drain the bottleneck queue (0.75x): probe-cycle
+	                          // drain phase or queue/delay feedback
+)
+
+func gainFor(s ccState) uint64 {
+	switch s {
+	case ccStartup:
+		return startupGain
+	case ccProbing:
+		return probeGain
+	case ccDraining:
+		return drainGain
+	default:
+		return normalGain
+	}
+}
+
 // =============================================================================
 // Measurements - RTT estimation and BBR congestion control
 // =============================================================================
@@ -122,42 +147,47 @@ type measurements struct {
 	srtt   uint64 // Smoothed RTT
 	rttvar uint64 // RTT variation
 
-	// BBR state
-	isStartup         bool
-	rttMinWin         [windowSize]rttMinEntry // Min-RTT candidates, ascending: [0] = oldest & smallest
-	rttMinCount       int                     // Number of valid entries in rttMinWin
-	rttMinNano        uint64                  // rttMinWin[0].rttNano (cached)
-	bwRounds          [windowSize]uint64 // Best bw sample of each of the last completed rounds
-	bwRoundIdx        int                // Next write index into bwRounds
-	bwMax             uint64             // Max of bwRounds and the in-progress round (cached)
-	bwDec             uint64             // Consecutive samples without bandwidth increase
-	lastProbeTimeNano    uint64 // When we last probed for more bandwidth
-	probeRoundsRemaining uint64 // Rounds left in current probe cycle
-	pacingGainPct        uint64 // Current pacing multiplier
+	// Min-RTT filter (time-windowed)
+	rttMinWin   [windowSize]rttMinEntry // candidates, ascending: [0] = oldest & smallest
+	rttMinCount int                     // number of valid entries in rttMinWin
+	rttMinNano  uint64                  // rttMinWin[0].rttNano (cached)
 
-	// Fairness throttle state (see lossRateThresholdPct)
-	throttlePct           uint64 // persistent pacing multiplier, 100 = none
-	throttleWindowRound   uint64 // rounds completed in the current window
-	roundLostPackets      uint64 // fast-retx loss declarations this window
-	roundDeliveredPackets uint64 // measured ACKs this window
+	// Bandwidth filter (round-windowed max)
+	bwRounds   [windowSize]uint64 // best bw sample of each of the last completed rounds
+	bwRoundIdx int                // next write index into bwRounds
+	bwMax      uint64             // max of bwRounds and the in-progress round (cached)
 
-	// Delivery rate tracking (BBR delivery-rate estimation): each send
+	// BBR state machine (transitions via setState only)
+	state                ccState
+	noGrowthRounds       uint64 // consecutive rounds without startup-level bw growth
+	pacingGainPct        uint64 // gain for state, kept in sync by setState (tests may override)
+	probeRoundsRemaining uint64 // rounds left in the current probe cycle
+	lastProbeTimeNano    uint64 // when we last probed for more bandwidth
+
+	// Fairness throttle (see lossRateThresholdPct)
+	throttlePct        uint64 // persistent pacing multiplier, 100 = none
+	windowRoundsDone   uint64 // rounds completed in the current evaluation window
+	windowLostPackets  uint64 // fast-retx loss declarations in the current window
+	windowAckedPackets uint64 // measured ACKs in the current window
+
+	// Delivery-rate tracking (BBR delivery-rate estimation): each send
 	// snapshots these into the packet so its ACK can compute an honest
-	// sample interval — see updateBandwidth
+	// sample interval — see deliveryRateSample
 	totalDelivered    uint64 // cumulative bytes ACK'd
 	deliveredTimeNano uint64 // when the last delivery (measured ACK) happened
 	firstSentTimeNano uint64 // send time of the packet delivered last
 
 	// Round tracking (BBR packet-timed rounds)
-	roundDeliveredTarget uint64 // totalDelivered threshold to end current round
+	roundDeliveredTarget uint64 // totalDelivered threshold to end the current round
 	roundBwBest          uint64 // best bw sample seen during the current round
 	prevRoundBwBest      uint64 // best bw sample from the previous round
-
 }
 
 func newMeasurements() measurements {
+	// The one place besides setState that pairs state and gain: struct
+	// literals cannot call methods
 	return measurements{
-		isStartup:     true,
+		state:         ccStartup,
 		pacingGainPct: startupGain,
 		throttlePct:   100,
 		rttMinNano:    math.MaxUint64,
@@ -173,17 +203,18 @@ func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, pkt *se
 		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
 	}
-	if rttNano > ReadDeadLine {
+	if rttNano > readDeadline {
 		slog.Warn("suspiciously high RTT", "rtt_seconds", rttNano/secondNano)
 		return
 	}
 
 	m.totalDelivered += uint64(ackLen)
-	m.roundDeliveredPackets++
+	m.windowAckedPackets++
 	// Delivery-rate bookkeeping: future sends snapshot these to anchor
 	// their sample intervals
 	m.deliveredTimeNano = nowNano
 	m.firstSentTimeNano = pkt.sentTimeNano
+
 	m.updateRTT(rttNano)
 	m.updateMinRTT(rttNano, nowNano)
 	m.updateBandwidth(pkt, nowNano)
@@ -241,100 +272,112 @@ func (m *measurements) updateMinRTT(rttNano uint64, nowNano uint64) {
 	m.rttMinNano = m.rttMinWin[0].rttNano
 }
 
+// updateBandwidth feeds one ACK's delivery-rate sample into the filters and
+// closes the current round once all packets in flight at its start are ACK'd.
 func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
-	deliveredAtSend := pkt.deliveredAtSend
-	if m.totalDelivered <= deliveredAtSend {
+	bwSample, valid := m.deliveryRateSample(pkt, nowNano)
+	if !valid {
 		return
 	}
-	delivered := m.totalDelivered - deliveredAtSend
 
-	// Honest sample interval (BBR delivery-rate estimation): the counted
-	// bytes were ACK'd over ackElapsed but sent over sendElapsed. A rush of
-	// backlogged ACKs (the sender loop reads one ACK per iteration, so they
-	// can pile up in the socket buffer) compresses ackElapsed, but the
-	// backlogged ACKs belong to older packets, which stretches sendElapsed
-	// by the same amount — taking the larger of the two cancels the
-	// inflation, so samples can no longer exceed the true rate and the max
-	// filter latches onto capacity instead of measurement noise.
+	// Track the best sample of the round; bwMax reacts to increases
+	// immediately (decreases only age in via round retirement)
+	if bwSample > m.roundBwBest {
+		m.roundBwBest = bwSample
+	}
+	if bwSample > m.bwMax {
+		m.bwMax = bwSample
+	}
+
+	// Round completion: all packets in flight at round start have been ACK'd
+	if pkt.deliveredAtSend >= m.roundDeliveredTarget {
+		m.finishRound()
+	}
+}
+
+// deliveryRateSample computes an honest bandwidth sample for one ACKed
+// packet (BBR delivery-rate estimation): the counted bytes were ACK'd over
+// ackElapsed but sent over sendElapsed. A rush of backlogged ACKs (the
+// sender loop reads one ACK per iteration, so they can pile up in the
+// socket buffer) compresses ackElapsed, but the backlogged ACKs belong to
+// older packets, which stretches sendElapsed by the same amount — taking
+// the larger of the two cancels the inflation, so samples cannot exceed
+// the true rate and the max filter latches onto capacity, not noise.
+func (m *measurements) deliveryRateSample(pkt *sendPacket, nowNano uint64) (uint64, bool) {
+	if m.totalDelivered <= pkt.deliveredAtSend {
+		return 0, false
+	}
+	delivered := m.totalDelivered - pkt.deliveredAtSend
+
 	ackElapsed := nowNano - pkt.deliveredTimeAtSend
 	sendElapsed := pkt.sentTimeNano - pkt.firstSentTimeAtSend
 	elapsed := max(ackElapsed, sendElapsed)
 	if elapsed == 0 {
-		return
+		return 0, false
 	}
-	bwCurrent := (delivered * secondNano) / elapsed
+	bwSample := (delivered * secondNano) / elapsed
 
 	slog.Debug("bwSample",
-		"bwCurrent_MBs", bwCurrent/1_000_000,
+		"bwCurrent_MBs", bwSample/1_000_000,
 		"delivered", delivered,
 		"ackElapsed_us", ackElapsed/1000,
 		"sendElapsed_us", sendElapsed/1000,
-		"deliveredAtSend", deliveredAtSend,
+		"deliveredAtSend", pkt.deliveredAtSend,
 		"totalDelivered", m.totalDelivered,
 	)
+	return bwSample, true
+}
 
-	// Track best bandwidth in current round; bwMax reacts to increases immediately
-	if bwCurrent > m.roundBwBest {
-		m.roundBwBest = bwCurrent
+// finishRound closes a BBR round: growth tracking, fairness-throttle
+// evaluation, retiring the round into the max filter, and advancing the
+// probe gain cycle.
+func (m *measurements) finishRound() {
+	m.trackGrowth()
+	m.updateThrottle()
+
+	// Retire the round into the max window; recompute so that maxima older
+	// than windowSize rounds can age out. Skipped while pacing is
+	// policy-reduced (fairness throttle active, or draining from queue
+	// feedback): reduced rounds measure the reduced rate, and retiring
+	// them would decay bwMax to the policy level, which then lowers pacing
+	// further — a self-clamp spiral (hit live on short-RTT paths where the
+	// drain runs long). The sensor keeps the last honest capacity reading
+	// until pacing is back at 100%.
+	if m.throttlePct >= 100 && m.state != ccDraining {
+		m.bwRounds[m.bwRoundIdx] = m.roundBwBest
+		m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
+		m.bwMax = slices.Max(m.bwRounds[:])
 	}
-	if bwCurrent > m.bwMax {
-		m.bwMax = bwCurrent
-	}
 
-	// Round completion: all packets in-flight at round start have been ACK'd
-	if deliveredAtSend >= m.roundDeliveredTarget {
-		m.onRoundEnd()
-		m.updateThrottle()
+	m.roundDeliveredTarget = m.totalDelivered
+	m.prevRoundBwBest = m.roundBwBest
+	m.roundBwBest = 0
 
-		// Retire the round into the max window; recompute so that maxima
-		// older than windowSize rounds can age out. Skipped while pacing
-		// is policy-reduced — fairness throttle active OR drain gain
-		// (queue feedback / loss event): reduced rounds measure the
-		// reduced rate, and retiring them would decay bwMax to the policy
-		// level, which then lowers pacing further (self-clamp spiral; hit
-		// this live on short-RTT paths where the drain runs long). The
-		// sensor keeps the last honest capacity reading until pacing is
-		// back at 100%.
-		if m.throttlePct >= 100 && m.pacingGainPct >= normalGain {
-			m.bwRounds[m.bwRoundIdx] = m.roundBwBest
-			m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
-			var bwMax uint64
-			for _, s := range m.bwRounds {
-				if s > bwMax {
-					bwMax = s
-				}
-			}
-			m.bwMax = bwMax
-		}
-
-		m.roundDeliveredTarget = m.totalDelivered
-		m.prevRoundBwBest = m.roundBwBest
-		m.roundBwBest = 0
-
-		// Probe gain cycle: probe (1.25x) -> drain (0.75x) -> normal (1.0x)
-		if m.probeRoundsRemaining > 0 {
-			m.probeRoundsRemaining--
-			switch m.probeRoundsRemaining {
-			case 1:
-				m.pacingGainPct = drainGain
-			case 0:
-				m.pacingGainPct = normalGain
-			}
+	// Probe gain cycle: probe (1.25x) -> drain (0.75x) -> steady (1.0x)
+	if m.probeRoundsRemaining > 0 {
+		m.probeRoundsRemaining--
+		switch m.probeRoundsRemaining {
+		case 1:
+			m.setState(ccDraining)
+		case 0:
+			m.setState(ccSteady)
 		}
 	}
 }
 
-// onRoundEnd checks bandwidth growth over the completed round.
-func (m *measurements) onRoundEnd() {
+// trackGrowth counts consecutive rounds without startup-level bandwidth
+// growth; updateStartup exits startup once the count reaches
+// startupExitRounds.
+func (m *measurements) trackGrowth() {
 	if m.prevRoundBwBest == 0 {
 		return
 	}
 	// Did bandwidth grow by at least 25% this round?
 	threshold := (m.prevRoundBwBest * startupGrowthPct) / 100
 	if m.roundBwBest >= threshold {
-		m.bwDec = 0
+		m.noGrowthRounds = 0
 	} else {
-		m.bwDec++
+		m.noGrowthRounds++
 	}
 }
 
@@ -344,60 +387,51 @@ func (m *measurements) onRoundEnd() {
 // throttleMinLost losses as evidence) is a congestion event: multiplicative
 // decrease, at most once per window. A clean window ratchets the throttle
 // back toward 100%. Sustained loss during startup also ends startup: a full
-// pipe announces itself through loss (BBRv2-style exit; this replaces the
-// former static in-flight cap as overshoot protection).
+// pipe announces itself through loss (BBRv2-style exit).
 func (m *measurements) updateThrottle() {
-	m.throttleWindowRound++
-	if m.throttleWindowRound < throttleWindowRounds {
+	m.windowRoundsDone++
+	if m.windowRoundsDone < throttleWindowRounds {
 		return
 	}
-	m.throttleWindowRound = 0
+	m.windowRoundsDone = 0
 
-	lost, delivered := m.roundLostPackets, m.roundDeliveredPackets
-	m.roundLostPackets, m.roundDeliveredPackets = 0, 0
+	lost, acked := m.windowLostPackets, m.windowAckedPackets
+	m.windowLostPackets, m.windowAckedPackets = 0, 0
 
-	total := lost + delivered
+	total := lost + acked
 	if total == 0 {
 		return
 	}
 
-	if lost >= throttleMinLost && lost*100 > total*lossRateThresholdPct {
-		m.throttlePct = (m.throttlePct * throttleBetaPct) / 100
-		if m.throttlePct < throttleFloorPct {
-			m.throttlePct = throttleFloorPct
+	isCongested := lost >= throttleMinLost && lost*100 > total*lossRateThresholdPct
+	switch {
+	case isCongested:
+		m.throttlePct = max((m.throttlePct*throttleBetaPct)/100, throttleFloorPct)
+		if m.inStartup() {
+			m.exitStartup()
 		}
-		if m.isStartup {
-			m.isStartup = false
-			m.pacingGainPct = normalGain
-		}
-	} else if m.throttlePct < 100 {
-		m.throttlePct += throttleRecoverPct
-		if m.throttlePct > 100 {
-			m.throttlePct = 100
-		}
+	case m.throttlePct < 100:
+		m.throttlePct = min(m.throttlePct+throttleRecoverPct, 100)
 	}
 }
 
-// onLossEvent applies a one-round drain (0.75x) after fast-retransmit loss
-// detection. Loss is the only congestion signal on shallow-buffer paths,
-// where the queue is too small to move srtt past the delay threshold in
-// updateNormal. BBRv2/v3 semantics: react once per congestion event with a
-// bounded reduction, and never touch bwMax — the max filter keeps the true
-// rate for windowSize rounds, so pacing snaps back when the drain round
-// ends (probeRoundsRemaining=1 -> round end restores normalGain).
-func (m *measurements) onLossEvent(nowNano uint64) {
-	// Startup overshoot is bounded by the BDP cap; bwDec handles its exit
-	if m.isStartup {
-		return
-	}
-	// Already draining (this event's round, or a probe's drain phase):
-	// all losses within one round count as a single congestion event
-	if m.pacingGainPct == drainGain {
-		return
-	}
-	m.pacingGainPct = drainGain
-	m.probeRoundsRemaining = 1
-	m.lastProbeTimeNano = nowNano // postpone the next bandwidth probe
+// =============================================================================
+// BBR state machine
+// =============================================================================
+
+// setState is the only writer of the pacing state; it derives the matching
+// gain, so state and gain cannot drift apart.
+func (m *measurements) setState(s ccState) {
+	m.state = s
+	m.pacingGainPct = gainFor(s)
+}
+
+func (m *measurements) inStartup() bool {
+	return m.state == ccStartup
+}
+
+func (m *measurements) exitStartup() {
+	m.setState(ccSteady)
 }
 
 func (m *measurements) updateBBRState(nowNano uint64) {
@@ -405,7 +439,7 @@ func (m *measurements) updateBBRState(nowNano uint64) {
 		m.lastProbeTimeNano = nowNano
 	}
 
-	if m.isStartup {
+	if m.inStartup() {
 		m.updateStartup()
 	} else {
 		m.updateNormal(nowNano)
@@ -417,14 +451,13 @@ func (m *measurements) updateStartup() {
 		"bwMax_MBs", m.bwMax/1_000_000,
 		"roundBwBest_MBs", m.roundBwBest/1_000_000,
 		"prevRoundBwBest_MBs", m.prevRoundBwBest/1_000_000,
-		"bwDec", m.bwDec,
+		"noGrowthRounds", m.noGrowthRounds,
 		"roundTarget", m.roundDeliveredTarget,
 		"delivered", m.totalDelivered,
 		"gain_pct", m.pacingGainPct,
 	)
-	if m.bwDec >= bwDecThreshold {
-		m.isStartup = false
-		m.pacingGainPct = normalGain
+	if m.noGrowthRounds >= startupExitRounds {
+		m.exitStartup()
 	}
 }
 
@@ -436,15 +469,15 @@ func (m *measurements) updateNormal(nowNano uint64) {
 	isQueueBuilding := m.rttMinNano != math.MaxUint64 &&
 		m.srtt > (m.rttMinNano*queueThresholdPct)/100
 	if isQueueBuilding {
-		m.pacingGainPct = drainGain
+		m.setState(ccDraining)
 		m.probeRoundsRemaining = 0
 		m.lastProbeTimeNano = nowNano
 	} else if m.probeRoundsRemaining == 0 {
 		// Not draining, not probing: restore steady state (also the exit
 		// path from a queue-drain episode)
-		m.pacingGainPct = normalGain
-		if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeMultiplier {
-			m.pacingGainPct = probeGain
+		m.setState(ccSteady)
+		if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeIntervalRtts {
+			m.setState(ccProbing)
 			m.probeRoundsRemaining = probeCycleRounds
 			m.lastProbeTimeNano = nowNano
 		}
@@ -497,19 +530,20 @@ func backoff(rtoNano uint64, attempt uint) (uint64, error) {
 // =============================================================================
 
 func (m *measurements) calcPacing(packetSize uint64) uint64 {
+	// Cold start: no bandwidth sample yet
 	if m.bwMax == 0 {
 		if m.srtt > 0 {
-			return m.srtt / rttDivisor
+			return m.srtt / coldStartRttDivisor
 		}
-		return fallbackInterval
+		return coldStartInterval
 	}
 
 	// bwMax (sensor) x pacingGainPct (BBR cycle, transient) x throttlePct
 	// (fairness policy, persistent)
-	adjustedBw := (m.bwMax * m.pacingGainPct * m.throttlePct) / 10_000
-	if adjustedBw == 0 {
-		return fallbackInterval
+	pacedBw := (m.bwMax * m.pacingGainPct * m.throttlePct) / 10_000
+	if pacedBw == 0 {
+		return coldStartInterval
 	}
 
-	return (packetSize * secondNano) / adjustedBw
+	return (packetSize * secondNano) / pacedBw
 }
