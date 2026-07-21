@@ -58,9 +58,9 @@ setup_colors
 parse_params "$@"
 
 msg "Building server..."
-go build -o "$SCRIPT_DIR/server/server" "$SCRIPT_DIR/server/main.go"
+go build -o "$SCRIPT_DIR/server/server" "$SCRIPT_DIR/server/"
 
 msg "Building client..."
-go build -o "$SCRIPT_DIR/client/client" "$SCRIPT_DIR/client/main.go"
+go build -o "$SCRIPT_DIR/client/client" "$SCRIPT_DIR/client/"
 
 msg_ok "Done."
