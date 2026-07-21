@@ -18,9 +18,13 @@ scenarios = system(sprintf("awk -F, 'NR>1{print $4}' '%s' | sort -u", csv))
 num_sizes = int(system(sprintf("awk -F, 'NR>1{print $2}' '%s' | sort -nu | wc -l", csv)))
 
 # ── Helper: extract per-protocol data into a temp file ───────────────────────
-# Columns: size_mb  total_ms
+# Aggregates repeated runs: columns are size_mb, mean total_ms, stddev.
+# No printf in the awk (format strings are fragile across escape layers).
 extract(proto, scen, tmpf) = system(sprintf( \
-    "awk -F, 'NR>1 && $1==\"%s\" && $4==\"%s\" { printf \"%%s %%s\\n\", $2, $3 }' '%s' | sort -n > '%s'", \
+    "awk -F, -v p='%s' -v s='%s' '$1==p && $4==s { n[$2]++; su[$2]+=$3; sq[$2]+=$3*$3 } " . \
+    "END { for (k in n) { m = su[k]/n[k]; " . \
+    "sd = (n[k] > 1) ? sqrt((sq[k] - su[k]*su[k]/n[k]) / (n[k]-1)) : 0; " . \
+    "print k, m, sd } }' '%s' | sort -n > '%s'", \
     proto, scen, csv, tmpf))
 
 # ── Chart 1: Transfer time vs data size, per scenario ───────────────────────
@@ -63,9 +67,9 @@ do for [sc in chart1_scenarios] {
     set datafile separator " "
 
     plot \
-        tmp_tcp   using 1:2 title "TCP"    with linespoints ls 1, \
-        tmp_qotp  using 1:2 title "QOTP"   with linespoints ls 2, \
-        tmp_http3 using 1:2 title "HTTP/3" with linespoints ls 3
+        tmp_tcp   using 1:2:3 title "TCP"    with yerrorlines ls 1, \
+        tmp_qotp  using 1:2:3 title "QOTP"   with yerrorlines ls 2, \
+        tmp_http3 using 1:2:3 title "HTTP/3" with yerrorlines ls 3
 
     unset output
     print sprintf("wrote %s", outfile)
@@ -84,17 +88,19 @@ if (num_scenarios > 1) {
     # Find the largest size in the CSV
     max_size = system(sprintf("awk -F, 'NR>1{print $2}' '%s' | sort -n | tail -1", csv))
 
-    # Extract transfer times into a temp file for bar plotting:
-    #   scenario tcp_ms qotp_ms http3_ms
+    # Extract transfer times into a temp file for bar plotting, aggregating
+    # repeated runs: scenario tcp_mean tcp_sd qotp_mean qotp_sd h3_mean h3_sd
+    # (no printf in the awk: format strings are fragile across escape layers)
     tmpfile = sprintf("%s/_comparison.dat", outdir)
-    # Note: gnuplot needs "." to concatenate strings (no C-style adjacent
-    # literal merging)
     system(sprintf( \
-        "awk -F, 'NR>1 && $2==%s { data[$4][$1]=$3 } " . \
-        "END { for(s in data) printf \"%%s %%s %%s %%s\\n\", s, " . \
-        "(\"tcp\" in data[s] ? data[s][\"tcp\"] : 0), " . \
-        "(\"qotp\" in data[s] ? data[s][\"qotp\"] : 0), " . \
-        "(\"http3\" in data[s] ? data[s][\"http3\"] : 0) }' '%s' | sort > '%s'", \
+        "awk -F, -v ms='%s' 'NR>1 && $2==ms { k=$4 SUBSEP $1; n[k]++; su[k]+=$3; sq[k]+=$3*$3; seen[$4]=1 } " . \
+        "END { split(\"tcp qotp http3\", P, \" \"); " . \
+        "for (s in seen) { line = s; " . \
+        "for (i = 1; i <= 3; i++) { k = s SUBSEP P[i]; " . \
+        "if (n[k] > 0) { m = su[k]/n[k]; sd = (n[k] > 1) ? sqrt((sq[k] - su[k]*su[k]/n[k]) / (n[k]-1)) : 0 } " . \
+        "else { m = 0; sd = 0 } " . \
+        "line = line \" \" m \" \" sd }; " . \
+        "print line } }' '%s' | sort > '%s'", \
         max_size, csv, tmpfile))
 
     outfile = sprintf("%s/comparison.png", outdir)
@@ -102,10 +108,11 @@ if (num_scenarios > 1) {
     set output outfile
 
     set title sprintf("Transfer Time Comparison at %s MB", max_size)
+    set xlabel "Scenario"
     set ylabel "Transfer Time (ms)"
 
     set style data histogram
-    set style histogram clustered gap 1
+    set style histogram errorbars gap 1 lw 1
     set style fill solid 0.8 border -1
     set boxwidth 0.9
 
@@ -115,9 +122,9 @@ if (num_scenarios > 1) {
     set xtics rotate by -30 noenhanced
 
     plot \
-        tmpfile using 2:xtic(1) title "TCP"   lc rgb tcp_color, \
-        tmpfile using 3         title "QOTP"  lc rgb qotp_color, \
-        tmpfile using 4         title "HTTP/3" lc rgb http3_color
+        tmpfile using 2:3:xtic(1) title "TCP"    lc rgb tcp_color, \
+        tmpfile using 4:5         title "QOTP"   lc rgb qotp_color, \
+        tmpfile using 6:7         title "HTTP/3" lc rgb http3_color
 
     unset output
     print sprintf("wrote %s", outfile)

@@ -74,6 +74,8 @@ OPTIONS:
                       run sequentially (isolated measurement).
   --out DIR           Output directory; relative names are placed under
                       experiments/results/ (default: results/manual)
+  --runs N            Repeat each measurement N times (default: 1); plots
+                      and reports then show mean and standard deviation
   --yes               Remove previous results in the output directory
                       without asking (used by suite.sh)
 
@@ -94,6 +96,7 @@ parse_params() {
   PROTO=""
   OUT_DIR="manual"
   ASSUME_YES=0
+  RUNS=1
 
   while :; do
     case "${1-}" in
@@ -133,6 +136,10 @@ parse_params() {
       ;;
     --out)
       OUT_DIR="${2-}"
+      shift
+      ;;
+    --runs)
+      RUNS="${2-}"
       shift
       ;;
     --yes) ASSUME_YES=1 ;;
@@ -236,19 +243,21 @@ for rate in "${RATE_ARR[@]}"; do
             done
 
             for s in "${SIZE_ARR[@]}"; do
-              # Concurrent mode: protocols share the bottleneck; label the
-              # scenario and record per-protocol rate timelines
-              extra_args=()
-              run_scenario="$scenario"
-              if [[ -n "$PROTO" ]]; then
-                [[ "$PROTO" == *,* ]] && run_scenario+="_conc"
-                extra_args=(-proto="$PROTO" -ratelog="$OUT_DIR/rates_${run_scenario}_${s}mb.csv")
-              fi
+              for ((run_i = 1; run_i <= RUNS; run_i++)); do
+                # Concurrent mode: protocols share the bottleneck; label
+                # the scenario and record per-protocol rate timelines
+                extra_args=()
+                run_scenario="$scenario"
+                if [[ -n "$PROTO" ]]; then
+                  [[ "$PROTO" == *,* ]] && run_scenario+="_conc"
+                  extra_args=(-proto="$PROTO" -ratelog="$OUT_DIR/rates_${run_scenario}_${s}mb_r${run_i}.csv")
+                fi
 
-              msg_info "Benchmark: ${s} MB @ ${run_scenario}"
-              ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
-                -addr=10.0.0.1 -size="$s" -scenario="$run_scenario" "${extra_args[@]}" \
-                >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+                msg_info "Benchmark: ${s} MB @ ${run_scenario} (run ${run_i}/${RUNS})"
+                ip netns exec "$NS_CLI" "$SCRIPT_DIR/client/client" \
+                  -addr=10.0.0.1 -size="$s" -scenario="$run_scenario" "${extra_args[@]}" \
+                  >> "$OUT_DIR/combined.csv" 2>/tmp/qotp_debug.log
+              done
             done
           done
         done

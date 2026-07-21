@@ -44,7 +44,9 @@ Usage: sudo $(basename "${BASH_SOURCE[0]}") [OPTIONS]
 
 Run the full benchmark suite: solo baselines, lossy/RTT/reorder corners and
 concurrent fairness across 10/50/100/500 mbit, then generate a summary
-report (report.sh). Requires root. Takes ~15-20 minutes.
+report (report.sh). Every measurement is repeated (default 3 runs) so
+plots and report show mean and standard deviation. Requires root.
+Takes ~45-60 minutes at 3 runs.
 
 1gbit is deliberately excluded: three userspace stacks plus netem on one
 machine measure the CPU, not the protocols. Watch the 500mbit rows for
@@ -52,7 +54,9 @@ early signs of CPU saturation instead.
 
 OPTIONS:
   -h, --help    Print this help and exit
-  --quick       Reduced matrix (100mbit only) for iteration, ~4 minutes
+  --quick       Reduced matrix (100mbit only, single run) for iteration,
+                ~4 minutes
+  --runs N      Measurement repetitions per scenario (default: 3, quick: 1)
   --out DIR     Output directory; relative names are placed under
                 experiments/results/ (default: results/suite)
 EOF
@@ -61,6 +65,7 @@ EOF
 
 parse_params() {
   QUICK=0
+  RUNS=""
   OUT_DIR="suite"
 
   while :; do
@@ -68,6 +73,10 @@ parse_params() {
     -h | --help) usage ;;
     --no-color) NO_COLOR=1 ;;
     --quick) QUICK=1 ;;
+    --runs)
+      RUNS="${2-}"
+      shift
+      ;;
     --out)
       OUT_DIR="${2-}"
       shift
@@ -77,6 +86,11 @@ parse_params() {
     esac
     shift
   done
+
+  # Explicit --runs wins; otherwise 3 for the full suite, 1 for --quick
+  if [[ -z "$RUNS" ]]; then
+    RUNS=$(( QUICK == 1 ? 1 : 3 ))
+  fi
 }
 
 setup_colors
@@ -115,7 +129,7 @@ run() {
   local name="$1"
   shift
   msg_info "=== scenario: $name"
-  "$SCRIPT_DIR/run_netns.sh" --no-color --yes "$@" --out "$OUT_DIR/$name" \
+  "$SCRIPT_DIR/run_netns.sh" --no-color --yes --runs "$RUNS" "$@" --out "$OUT_DIR/$name" \
     2>>"$OUT_DIR/suite.log" || die "scenario $name failed (see $OUT_DIR/suite.log)"
 }
 
