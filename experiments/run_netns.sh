@@ -72,6 +72,9 @@ OPTIONS:
                       timelines written to rates_*.csv. A single value runs
                       that protocol standalone. Default: unset — all three
                       run sequentially (isolated measurement).
+  --aqm NAME          Queue management at the bottleneck: none (tail-drop,
+                      default) or fq_codel (modern AQM, per-flow fairness
+                      enforced by the queue)
   --out DIR           Output directory; relative names are placed under
                       experiments/results/ (default: results/manual)
   --runs N            Repeat each measurement N times (default: 1); plots
@@ -94,6 +97,7 @@ parse_params() {
   REORDERS="0%"
   QUEUES="64kb:1ms"
   PROTO=""
+  AQM="none"
   OUT_DIR="manual"
   ASSUME_YES=0
   RUNS=1
@@ -132,6 +136,10 @@ parse_params() {
       ;;
     --proto)
       PROTO="${2-}"
+      shift
+      ;;
+    --aqm)
+      AQM="${2-}"
       shift
       ;;
     --out)
@@ -228,6 +236,7 @@ for rate in "${RATE_ARR[@]}"; do
             [[ "$loss" != "0%" ]] && scenario+="_l${loss%\%}"
             [[ "$reorder" != "0%" ]] && scenario+="_r${reorder%\%}"
             [[ "$queue" != "64kb:1ms" ]] && scenario+="_q${burst}-${qlat}"
+            [[ "$AQM" != "none" ]] && scenario+="_${AQM}"
 
             # netem for delay/jitter/loss/reorder, then tbf for rate
             # shaping. reorder only takes effect with delay > 0: reordered
@@ -240,6 +249,12 @@ for rate in "${RATE_ARR[@]}"; do
               dev="${dev_ns##*:}"
               ip netns exec "$ns" tc qdisc replace dev "$dev" root handle 1: netem "${netem_args[@]}"
               ip netns exec "$ns" tc qdisc replace dev "$dev" parent 1: handle 2: tbf rate "$rate" burst "$burst" latency "$qlat"
+              if [[ "$AQM" == "fq_codel" ]]; then
+                # Modern AQM as the bottleneck queue discipline (child of
+                # the tbf rate limiter): per-flow fair queuing + CoDel
+                # drop policy instead of tail-drop
+                ip netns exec "$ns" tc qdisc replace dev "$dev" parent 2:1 handle 3: fq_codel
+              fi
             done
 
             for s in "${SIZE_ARR[@]}"; do

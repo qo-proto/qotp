@@ -227,6 +227,17 @@ run "fair2_tcp_qotp" \
 run "fair2_quic_qotp" \
   --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
   --queues "$Q100_BDP" --proto quic,qotp
+# Incumbents against each other: the baseline for how uneven "normal"
+# heterogeneous congestion control is (calibrates the qotp pairings)
+run "fair2_tcp_quic" \
+  --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
+  --queues "$Q100_BDP" --proto tcp,quic
+# Modern AQM at the bottleneck: fq_codel enforces per-flow fairness in the
+# queue itself — all protocols should share ~equally regardless of their
+# congestion control (the tail-drop rows show the legacy-queue contrast)
+run "fair3_fq_codel" \
+  --sizes 64 --rates 100mbit --delays 20ms --jitters 0ms \
+  --queues "$Q100_BDP" --aqm fq_codel --proto tcp,qotp,quic
 
 msg ""
 msg_ok "All scenarios complete."
