@@ -12,9 +12,12 @@ tcp_color   = "#1f77b4"
 qotp_color  = "#ff7f0e"
 http3_color = "#2ca02c"
 
-# Extract one protocol's samples into a temp file: t_s mbps
+# Extract one protocol's samples into a temp file: t_s mbps.
+# No printf/%%-escaping in the awk program: nested format strings proved
+# fragile across sprintf/shell layers (a suite run under sudo produced a
+# corrupted format string); plain print is escape-proof.
 extract(proto, tmpf) = system(sprintf( \
-    "awk -F, 'NR>1 && $1==\"%s\" { printf \"%%s %%s\\n\", $2, $3 }' '%s' > '%s'", \
+    "awk -F, -v p='%s' '$1==p { print $2, $3 }' '%s' > '%s'", \
     proto, csv, tmpf))
 
 tmp_tcp   = out . "_tcp.dat"
