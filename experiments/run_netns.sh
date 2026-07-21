@@ -227,11 +227,15 @@ column -t -s, "$OUT_DIR/combined.csv"
 msg ""
 msg_ok "CSV written to $OUT_DIR/combined.csv"
 
+# Plots are auxiliary: a plotting failure must not fail the benchmark run
+# (the CSVs are already written)
 if command -v gnuplot &>/dev/null; then
-  gnuplot -e "csv='$OUT_DIR/combined.csv'; outdir='$OUT_DIR'" "$SCRIPT_DIR/plot.gp"
+  gnuplot -e "csv='$OUT_DIR/combined.csv'; outdir='$OUT_DIR'" "$SCRIPT_DIR/plot.gp" ||
+    msg_info "plot.gp failed for $OUT_DIR/combined.csv (data unaffected)"
   for rcsv in "$OUT_DIR"/rates_*.csv; do
     [[ -e "$rcsv" ]] || continue
-    gnuplot -e "csv='$rcsv'; out='${rcsv%.csv}.png'" "$SCRIPT_DIR/plot_rates.gp"
+    gnuplot -e "csv='$rcsv'; out='${rcsv%.csv}.png'" "$SCRIPT_DIR/plot_rates.gp" ||
+      msg_info "plot_rates.gp failed for $rcsv (data unaffected)"
   done
   msg_ok "Plots written to $OUT_DIR/"
 else
