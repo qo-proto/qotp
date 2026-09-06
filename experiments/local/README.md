@@ -32,7 +32,7 @@ A sweep is a shell loop; each run writes its own directory:
         --out "sweep/${r}mbit"
     done
 
-Each run prints its own aggregate (median, spread, share, Jain, CPU) and
+Each run prints its own aggregate (median, spread, share, Jain, per-phase CPU for both sides) and
 writes `result.json` next to it for plotting.
 
 Both modes drive the same `qotp-bench` binary; `run.sh` exists only because

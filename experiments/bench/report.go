@@ -101,15 +101,16 @@ func fetchServerReportTimeout(addr string, timeout time.Duration) (*bench.Server
 // =============================================================================
 
 type jsonMeasurement struct {
-	Run     int     `json:"run"`
-	Mode    string  `json:"mode"`
-	Dir     string  `json:"dir"`
-	Proto   string  `json:"proto"`
-	Mbps    float64 `json:"mbps"`
-	Bytes   uint64  `json:"bytes"`
-	Seconds float64 `json:"seconds"`
-	Cores   float64 `json:"cores_busy"`
-	Error   string  `json:"error,omitempty"`
+	Run      int     `json:"run"`
+	Mode     string  `json:"mode"`
+	Dir      string  `json:"dir"`
+	Proto    string  `json:"proto"`
+	Mbps     float64 `json:"mbps"`
+	Bytes    uint64  `json:"bytes"`
+	Seconds  float64 `json:"seconds"`
+	Cores    float64 `json:"cores_busy"`
+	SrvCores float64 `json:"server_cores_busy,omitempty"`
+	Error    string  `json:"error,omitempty"`
 }
 
 type jsonSample struct {
@@ -152,6 +153,7 @@ func writeJSON(cfg config, all []outcome, samples []sample, srv *bench.ServerRep
 		m := jsonMeasurement{
 			Run: o.run, Mode: o.mode, Dir: o.dir.String(), Proto: o.proto,
 			Mbps: o.mbps(), Bytes: o.bytes, Seconds: o.dur.Seconds(), Cores: o.cores,
+			SrvCores: o.srvCores,
 		}
 		if o.err != nil {
 			m.Error = o.err.Error()

@@ -12,8 +12,8 @@ import (
 // not the link. Sampling is system-wide because client, server and any qdisc
 // all compete on the same host in a loopback or netns setup.
 type CPU struct {
-	busy, total float64
-	ok          bool
+	Busy, Total float64
+	OK          bool
 }
 
 // ReadCPU samples /proc/stat. Returns ok=false off Linux, and callers then
@@ -39,31 +39,31 @@ func ReadCPU() CPU {
 			idle += n
 		}
 	}
-	return CPU{busy: total - idle, total: total, ok: true}
+	return CPU{Busy: total - idle, Total: total, OK: true}
 }
 
 // CoresBusy reports the average number of cores busy between two samples.
 func CoresBusy(start, end CPU) (float64, bool) {
-	if !start.ok || !end.ok {
+	if !start.OK || !end.OK {
 		return 0, false
 	}
-	dt := end.total - start.total
+	dt := end.Total - start.Total
 	if dt <= 0 {
 		return 0, false
 	}
-	return (end.busy - start.busy) / dt * float64(runtime.NumCPU()), true
+	return (end.Busy - start.Busy) / dt * float64(runtime.NumCPU()), true
 }
 
 // NumCPU is the core count the fractions above are measured against.
 func NumCPU() int { return runtime.NumCPU() }
 
 // CPUBound reports whether the measurement says more about the CPU than about
-// the network. Two ways that happens: the whole machine is saturated, or a
-// single flow is burning about a core of its own — on a 32-core box the latter
-// is only 3% of the machine, so a machine-wide threshold alone misses it.
+// the network. The test that matters is a core per flow, not the machine
+// total: both userspace stacks here process a connection on one goroutine, so
+// a pinned core caps throughput while the box still looks 85% idle.
 func CPUBound(cores float64, flows int) bool {
 	if flows < 1 {
 		flows = 1
 	}
-	return cores > 0.9*float64(runtime.NumCPU()) || cores/float64(flows) >= 0.9
+	return cores/float64(flows) >= 0.9 || cores > 0.9*float64(runtime.NumCPU())
 }

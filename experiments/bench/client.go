@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,16 +66,19 @@ func deadline() time.Time {
 func warmupOf(d time.Duration) time.Duration { return d / 5 }
 
 type outcome struct {
-	run     int
-	proto   string
-	dir     bench.Dir
-	mode    string // "solo" | "parallel"
-	dur     time.Duration
-	bytes   uint64
-	contBps float64 // bytes/s over the measured window
-	cores   float64 // system-wide cores busy during the measurement
-	coresOK bool
-	err     error
+	run       int
+	proto     string
+	dir       bench.Dir
+	mode      string // "solo" | "parallel"
+	dur       time.Duration
+	bytes     uint64
+	contBps   float64 // bytes/s over the measured window
+	cores     float64 // cores busy on this side during the measurement
+	coresOK   bool
+	srvCores  float64 // cores busy on the responder during the same phase
+	srvNumCPU int
+	srvOK     bool
+	err       error
 }
 
 func (o outcome) mbps() float64 { return o.contBps * 8 / 1e6 }
@@ -123,6 +127,7 @@ func runClient(cfg config) {
 
 	fmt.Fprintf(os.Stderr, "checking %s ...\n", cfg.addr)
 	preflight(cfg.addr)
+	mark := markServer(cfg.addr) // responder CPU baseline
 
 	var all []outcome
 	var samples []sample
@@ -131,21 +136,24 @@ func runClient(cfg config) {
 			for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
 				for _, p := range bench.Protocols {
 					fmt.Fprintf(os.Stderr, "run %d/%d  solo %-8s %s ...\n", r, cfg.runs, dir, p)
-					all = append(all, runSolo(p, *addr, dir, size, r))
+					o, ss := runSolo(p, *addr, dir, size, r)
+					mark = attachServerCPU(cfg.addr, mark, o)
+					all = append(all, o...)
+					samples = append(samples, ss...)
 				}
 			}
 		}
 		for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
 			fmt.Fprintf(os.Stderr, "run %d/%d  parallel %-8s qotp+tcp+quic ...\n", r, cfg.runs, dir)
 			outs, ss := runParallel(*addr, dir, size, r)
+			mark = attachServerCPU(cfg.addr, mark, outs)
 			all = append(all, outs...)
 			samples = append(samples, ss...)
 		}
 	}
 
-	// The responder counted every byte it actually received, and knows its own
-	// CPU load. Both are things this side can only guess at, so ask for them
-	// over qotp rather than leaving the operator to read two consoles.
+	// The responder counted every byte it actually received. Ask for the final
+	// totals over qotp rather than leaving the operator to read two consoles.
 	srv, err := fetchServerReport(target(cfg.addr, "qotp"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not collect the responder's report: %v\n", err)
@@ -161,13 +169,31 @@ func runClient(cfg config) {
 	}
 }
 
+// /proc/stat advances in 10 ms ticks, so a phase shorter than this yields a
+// CPU figure that is mostly quantisation. Better no column than a wrong one.
+const minCPUWindow = 500 * time.Millisecond
+
+// srvMark is a responder CPU reading and when it was taken; two of them
+// difference to the responder's load during the phase between.
+type srvMark struct {
+	rep *bench.ServerReport
+	at  time.Time
+}
+
+func markServer(addr string) srvMark {
+	r, err := fetchServerReport(target(addr, "qotp"))
+	if err != nil {
+		return srvMark{}
+	}
+	return srvMark{rep: r, at: time.Now()}
+}
+
 func target(addr string, proto string) string {
 	return fmt.Sprintf("%s:%d", addr, bench.Port(portBase, proto))
 }
 
-func runSolo(proto, addr string, dir bench.Dir, size uint64, run int) outcome {
-	outs, _ := runGroup([]string{proto}, addr, dir, size, "solo", run)
-	return outs[0]
+func runSolo(proto, addr string, dir bench.Dir, size uint64, run int) ([]outcome, []sample) {
+	return runGroup([]string{proto}, addr, dir, size, "solo", run)
 }
 
 // runParallel starts all three at the same instant, so the shares are measured
@@ -189,7 +215,7 @@ func runGroup(protos []string, addr string, dir bench.Dir, size uint64, mode str
 	start := make(chan struct{})
 	done := make(chan struct{}, len(protos))
 	stopAt := deadline()
-	cpu0 := bench.ReadCPU()
+	cpu0, groupStart := bench.ReadCPU(), time.Now()
 	stopSampler := make(chan struct{})
 	var samples []sample
 	var mu sync.Mutex
@@ -240,6 +266,9 @@ func runGroup(protos []string, addr string, dir bench.Dir, size uint64, mode str
 	close(done)
 
 	cores, coresOK := bench.CoresBusy(cpu0, bench.ReadCPU())
+	if time.Since(groupStart) < minCPUWindow {
+		coresOK = false
+	}
 
 	// Measurement window. In duration mode every flow runs the whole time, so
 	// the window is [warmup, end] and all three are measured over the same
@@ -318,7 +347,11 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 				continue
 			}
 			fmt.Printf("\n== %s / %s ==\n", mode, dir)
-			fmt.Printf("  %-5s %10s %-16s %8s %8s %s\n", "proto", "Mbps", "[min-max]", "share", "vs solo", "cpu")
+			flows := 1
+			if mode == "parallel" {
+				flows = len(bench.Protocols)
+			}
+			fmt.Printf("  %-5s %10s %-16s %8s %8s %s\n", "proto", "Mbps", "[min-max]", "share", "vs solo", "cpu (here / responder)")
 
 			var meds []float64
 			for _, p := range bench.Protocols {
@@ -355,7 +388,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 					fmt.Printf("  !! spread %.3f across runs: too unstable to compare protocols — raise -runs and check the bottleneck queue\n", jhi-jlo)
 				}
 			}
-			warnCPU(rows)
+			warnCPU(rows, flows)
 		}
 	}
 
@@ -364,12 +397,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 		for _, p := range bench.Protocols {
 			fmt.Printf("  %-5s received %8.1f MB\n", p, float64(srv.ReceivedBytes[p])/1e6)
 		}
-		if srv.CoresKnown {
-			fmt.Printf("  cpu   %.1f/%d cores over %.0fs\n", srv.CoresBusy, srv.NumCPU, srv.SessionSecs)
-			if bench.CPUBound(srv.CoresBusy, len(bench.Protocols)) {
-				fmt.Printf("  !! the responder was CPU-bound: it, not the path, may be the limit\n")
-			}
-		}
+		fmt.Printf("  session %.0fs, %d cores\n", srv.SessionSecs, srv.NumCPU)
 	}
 
 	fmt.Println("\nMbps is measured over the steady-state window: after a warm-up, and")
@@ -383,6 +411,30 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 	fmt.Println("counter (qotp BytesDelivered, TCP tcpi_bytes_acked); QUIC has no")
 	fmt.Println("acked-bytes counter, so its upload samples lag by up to one flow-control")
 	fmt.Println("window. Download progress is counted on receipt for all three.")
+	fmt.Println("\nThe cpu column is cores busy on each side during that phase alone. A")
+	fmt.Println("flagged phase is a CPU measurement, not a protocol comparison: qotp and")
+	fmt.Println("quic do per-packet work in userspace where tcp does it in the kernel, so")
+	fmt.Println("at a rate that pins a core the table ranks stacks by cost per packet.")
+	fmt.Println("Re-run at a rate that leaves headroom to compare the protocols instead.")
+}
+
+// attachServerCPU asks the responder for a fresh report and records how busy
+// it was since the previous one — that is, during the phase just finished.
+// Returns the new mark. A failure is not fatal: the column is simply omitted.
+func attachServerCPU(addr string, prev srvMark, outs []outcome) srvMark {
+	now := markServer(addr)
+	if now.rep == nil || prev.rep == nil || !now.rep.CPUKnown || !prev.rep.CPUKnown {
+		return now
+	}
+	dt := now.rep.CPUTotal - prev.rep.CPUTotal
+	if dt <= 0 || now.at.Sub(prev.at) < minCPUWindow {
+		return now
+	}
+	cores := (now.rep.CPUBusy - prev.rep.CPUBusy) / dt * float64(now.rep.NumCPU)
+	for i := range outs {
+		outs[i].srvCores, outs[i].srvNumCPU, outs[i].srvOK = cores, now.rep.NumCPU, true
+	}
+	return now
 }
 
 func rates(all []outcome, mode string, dir bench.Dir, proto string) []float64 {
@@ -428,26 +480,53 @@ func firstErr(rows []outcome, proto string) error {
 }
 
 func cpuCol(rows []outcome, proto string) string {
+	local, srv := "-", "-"
 	for _, o := range rows {
-		if o.proto == proto && o.coresOK {
-			return fmt.Sprintf("%.1f/%d cores", o.cores, bench.NumCPU())
+		if o.proto != proto {
+			continue
+		}
+		if o.coresOK && local == "-" {
+			local = fmt.Sprintf("%.1f/%d", o.cores, bench.NumCPU())
+		}
+		if o.srvOK && srv == "-" {
+			srv = fmt.Sprintf("%.1f/%d", o.srvCores, o.srvNumCPU)
 		}
 	}
-	return ""
+	if local == "-" && srv == "-" {
+		return ""
+	}
+	return local + " / " + srv
 }
 
-// A saturated machine means the benchmark measured the CPU, not the link.
-func warnCPU(rows []outcome) {
+// peak returns the busiest observation on one side, so a core pinned during a
+// single phase is not averaged away by the quiet ones around it.
+func peak(rows []outcome, pick func(outcome) (float64, bool)) (float64, bool) {
 	worst, ok := 0.0, false
 	for _, o := range rows {
-		if o.coresOK && o.cores > worst {
-			worst, ok = o.cores, true
+		if v, valid := pick(o); valid && v > worst {
+			worst, ok = v, true
 		}
 	}
-	if ok && bench.CPUBound(worst, len(rows)) {
-		fmt.Printf("  !! CPU-bound: %.1f cores busy for %d flow(s) of %d available — this measures\n"+
-			"     per-packet CPU cost, not the link; do not read it as a protocol comparison\n",
-			worst, len(rows), bench.NumCPU())
+	return worst, ok
+}
+
+// Either side pinning a core per flow means the benchmark measured per-packet
+// CPU cost rather than the path. Both userspace stacks here run a connection on
+// one goroutine, so this caps throughput long before the machine looks busy.
+func warnCPU(rows []outcome, flows int) {
+	local, localOK := peak(rows, func(o outcome) (float64, bool) { return o.cores, o.coresOK })
+	srv, srvOK := peak(rows, func(o outcome) (float64, bool) { return o.srvCores, o.srvOK })
+
+	var who []string
+	if localOK && bench.CPUBound(local, flows) {
+		who = append(who, fmt.Sprintf("this side %.1f", local))
+	}
+	if srvOK && bench.CPUBound(srv, flows) {
+		who = append(who, fmt.Sprintf("responder %.1f", srv))
+	}
+	if len(who) > 0 {
+		fmt.Printf("  !! CPU-bound (%s cores for %d flow(s)): measures per-packet CPU, not the link\n",
+			strings.Join(who, ", "), flows)
 	}
 }
 

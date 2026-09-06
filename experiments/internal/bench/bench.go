@@ -88,9 +88,14 @@ func DecodeHeader(b []byte) (Dir, uint64, error) {
 // only approximate, and the responder's CPU load answers the question a
 // one-sided benchmark cannot: was the far end the bottleneck?
 type ServerReport struct {
-	NumCPU        int               `json:"num_cpu"`
-	CoresBusy     float64           `json:"cores_busy"`
-	CoresKnown    bool              `json:"cores_known"`
+	NumCPU int `json:"num_cpu"`
+	// Raw cumulative CPU counters rather than an average: the client asks for
+	// a report after every phase and differences successive ones, so it gets
+	// the responder's load *during that phase*. A session-wide average hides
+	// a core pinned for ten seconds.
+	CPUBusy       float64           `json:"cpu_busy"`
+	CPUTotal      float64           `json:"cpu_total"`
+	CPUKnown      bool              `json:"cpu_known"`
 	ReceivedBytes map[string]uint64 `json:"received_bytes"`
 	SessionSecs   float64           `json:"session_seconds"`
 }

@@ -22,7 +22,6 @@ import (
 
 // Bytes the server has received per protocol, so the upload direction can be
 // checked against the client's sender-side numbers.
-// serverStart anchors the CPU measurement the client collects at the end.
 // A client in duration mode just stops and closes; there is no FIN. Without an
 // idle drop its session lives forever, and because the requested size is
 // effectively unbounded the pump keeps writing into a dead connection on every
@@ -33,10 +32,7 @@ const sessionIdle = 15 * time.Second
 // the send buffer per session instead of queueing the whole requested size.
 const downloadWindow = 2 << 20
 
-var (
-	serverStart     bench.CPU
-	serverStartTime = time.Now()
-)
+var serverStartTime = time.Now()
 
 // currentReport snapshots what this side measured.
 func currentReport() bench.ServerReport {
@@ -48,7 +44,8 @@ func currentReport() bench.ServerReport {
 	for _, p := range bench.Protocols {
 		r.ReceivedBytes[p] = received[p].Load()
 	}
-	r.CoresBusy, r.CoresKnown = bench.CoresBusy(serverStart, bench.ReadCPU())
+	c := bench.ReadCPU()
+	r.CPUBusy, r.CPUTotal, r.CPUKnown = c.Busy, c.Total, c.OK
 	return r
 }
 
@@ -59,7 +56,6 @@ var received = map[string]*atomic.Uint64{
 // serve runs the responder side until interrupted.
 func serve(addrStr string, base int) {
 	addr, b := &addrStr, &base
-	serverStart = bench.ReadCPU()
 	serverStartTime = time.Now()
 
 	ctx, cancel := context.WithCancel(context.Background())
