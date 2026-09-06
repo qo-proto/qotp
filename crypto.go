@@ -197,7 +197,7 @@ func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, 
 	encData := make([]byte, len(header)+snSize+len(sealed))
 	copy(encData, header)
 
-	encSn := aeadSn.Seal(nil, sealed[0:24], nonceDet[6:12], nil)
+	encSn := aeadSn.Seal(nil, sealed[:chacha20poly1305.NonceSizeX], nonceDet[6:12], nil)
 	copy(encData[len(header):], encSn[:snSize])
 	copy(encData[len(header)+snSize:], sealed)
 
@@ -248,7 +248,7 @@ func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, s
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv).
 func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
-	if len(encData) < aadLen(initRcv)+footerDataSize {
+	if len(encData) < aadLen(initRcv)+footerDataSize+minProtoSize {
 		return nil, nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
@@ -303,16 +303,23 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	// Remove padding: [fillLen (2 bytes)][filler][actualData]
-	fillerLen := getUint16(packetData)
-	return pubKeyIdSnd, pubKeyEpSnd, packetData[2+int(fillerLen):], nil
+	// Remove padding: [fillLen (2 bytes)][filler][actualData]. fillLen is
+	// attacker-chosen — InitCryptoSnd is sealed to the receiver's *public*
+	// identity key, so anyone able to dial can pick the plaintext. The
+	// conservativeMTU guard above makes packetData at least ~1.1KB, so
+	// reading the 2-byte length itself is always in bounds.
+	fillerLen := int(getUint16(packetData))
+	if msgInitFillLenSize+fillerLen > len(packetData) {
+		return nil, nil, nil, errors.New("invalid filler length")
+	}
+	return pubKeyIdSnd, pubKeyEpSnd, packetData[msgInitFillLenSize+fillerLen:], nil
 }
 
 // decryptInitCryptoRcv decrypts a 0-RTT response packet.
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
 func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
-	if len(encData) < aadLen(initCryptoRcv)+footerDataSize {
+	if len(encData) < aadLen(initCryptoRcv)+footerDataSize+minProtoSize {
 		return nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
@@ -337,7 +344,7 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 
 // decryptData decrypts a regular Data packet using the established shared secret.
 func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, error) {
-	if len(encData) < aadLen(data)+footerDataSize {
+	if len(encData) < aadLen(data)+footerDataSize+minProtoSize {
 		return nil, errors.New("size is below minimum")
 	}
 
@@ -348,9 +355,19 @@ func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
 // Tries all provided secrets (cur, plus prev/next during key rotation).
 func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) ([]byte, error) {
+	// The sequence-number layer takes its XChaCha20 nonce from the front of
+	// the sealed payload, so the encrypted region must hold the 6-byte
+	// sequence number plus that nonce. Callers only guarantee their own
+	// header fits; this is the only place that knows what the payload must
+	// contain, so the requirement is asserted here rather than restated by
+	// every caller.
+	if minEnc := snSize + chacha20poly1305.NonceSizeX; len(encData) < minEnc {
+		return nil, fmt.Errorf("encrypted payload too small: need %d bytes, got %d", minEnc, len(encData))
+	}
+
 	encSn := encData[:snSize]
 	encData = encData[snSize:]
-	nonceRand := encData[:24]
+	nonceRand := encData[:chacha20poly1305.NonceSizeX]
 
 	for _, sharedSecret := range sharedSecrets {
 		// A wrong secret produces garbage here rather than an error; the
@@ -498,7 +515,7 @@ func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, share
 	}
 
 	headerLen := aadLen(msgType)
-	if minSize := headerLen + footerDataSize; len(encData) < minSize {
+	if minSize := headerLen + footerDataSize + minProtoSize; len(encData) < minSize {
 		return nil, fmt.Errorf("packet too small for %v: need %d, got %d", msgType, minSize, len(encData))
 	}
 
@@ -510,10 +527,10 @@ func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, share
 	// InitCryptoSnd has padding that must be stripped
 	if msgType == initCryptoSnd {
 		fillerLen := getUint16(packetData)
-		if len(packetData) < 2+int(fillerLen) {
+		if msgInitFillLenSize+int(fillerLen) > len(packetData) {
 			return nil, errors.New("invalid filler length")
 		}
-		return packetData[2+fillerLen:], nil
+		return packetData[msgInitFillLenSize+int(fillerLen):], nil
 	}
 
 	return packetData, nil

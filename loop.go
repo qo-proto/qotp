@@ -40,7 +40,9 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 	encData := l.readBuf[:n]
 
-	// Parse and validate header
+	// Parse and validate header. This is a coarse filter (the smallest packet
+	// of any type, which is a Data packet) guarding the header and connId
+	// reads below; each message type re-checks its own minimum when decrypting.
 	if len(encData) < minPacketSize {
 		return nil, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}

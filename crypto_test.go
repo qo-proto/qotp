@@ -756,3 +756,119 @@ func TestCryptoDecryptWithSecrets_RoundTrip(t *testing.T) {
 	_, err = DecryptWithSecrets(buf, true, nil, nil)
 	assert.ErrorContains(t, err, "sharedSecret required for Data")
 }
+
+// A crafted InitCryptoSnd whose padding header claims a filler longer than the
+// payload must be rejected, not panic. InitCryptoSnd is sealed to the
+// receiver's *public* identity key, so the plaintext is attacker-chosen: this
+// was a remote, pre-connection crash reachable with a single datagram.
+func TestCryptoInitCryptoSnd_FillerLenOverflow(t *testing.T) {
+	bobPrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	alicePrvKeyId := generateTestKey(t)
+
+	secret, err := alicePrvKeyEp.ECDH(bobPrvKeyId.PublicKey())
+	assert.NoError(t, err)
+
+	header := make([]byte, minInitCryptoSndSizeHdr)
+	header[0] = (uint8(initCryptoSnd) << 5) | cryptoVersion
+	copy(header[headerSize:], alicePrvKeyEp.PublicKey().Bytes())
+	copy(header[headerSize+pubKeySize:], alicePrvKeyId.PublicKey().Bytes())
+
+	for _, fillerLen := range []uint16{0xFFFF, 1200, 1144} {
+		padded := make([]byte, conservativeMTU-(minInitCryptoSndSizeHdr+footerDataSize))
+		putUint16(padded, fillerLen)
+
+		encData, err := chainedEncrypt(0, true, secret, header, padded)
+		assert.NoError(t, err)
+		assert.GreaterOrEqual(t, len(encData), conservativeMTU)
+
+		_, _, _, err = decryptInitCryptoSnd(encData, bobPrvKeyId)
+		if int(fillerLen)+msgInitFillLenSize > len(padded) {
+			assert.ErrorContains(t, err, "invalid filler length", "fillerLen=%d", fillerLen)
+		} else {
+			assert.NoError(t, err, "fillerLen=%d is in range and must be accepted", fillerLen)
+		}
+	}
+}
+
+// The same packet through the real Listen() entry point.
+func TestCryptoInitCryptoSnd_FillerLenOverflowViaListen(t *testing.T) {
+	pair := NewConnPair("127.0.0.1:9000", "127.0.0.1:9001")
+	l, err := Listen(WithNetworkConn(pair.Conn1), WithSeed([32]byte{9}))
+	assert.NoError(t, err)
+
+	alicePrvKeyEp := generateTestKey(t)
+	alicePrvKeyId := generateTestKey(t)
+	secret, err := alicePrvKeyEp.ECDH(l.prvKeyId.PublicKey()) // public key only
+	assert.NoError(t, err)
+
+	header := make([]byte, minInitCryptoSndSizeHdr)
+	header[0] = (uint8(initCryptoSnd) << 5) | cryptoVersion
+	copy(header[headerSize:], alicePrvKeyEp.PublicKey().Bytes())
+	copy(header[headerSize+pubKeySize:], alicePrvKeyId.PublicKey().Bytes())
+
+	padded := make([]byte, conservativeMTU-(minInitCryptoSndSizeHdr+footerDataSize))
+	putUint16(padded, 0xFFFF)
+	encData, err := chainedEncrypt(0, true, secret, header, padded)
+	assert.NoError(t, err)
+
+	pair.Conn1.readQueue = append(pair.Conn1.readQueue, packetData{
+		data: encData, remoteAddr: "127.0.0.1:9001", arrivalTime: 0,
+	})
+
+	_, err = l.Listen(1000, 0)
+	assert.ErrorContains(t, err, "invalid filler length")
+}
+
+// chainedDecrypt takes its XChaCha20 nonce from the first 24 bytes of the
+// sealed payload, so it needs snSize+24 bytes, not the snSize+macSize the
+// per-type guards used to promise. Exactly-sized buffers (no spare capacity to
+// mask the reslice) across the boundary must error, never panic.
+func TestCryptoDecrypt_ShortEncryptedPayload(t *testing.T) {
+	prv := generateTestKey(t)
+	pub := prv.PublicKey().Bytes()
+	minEnc := snSize + 24
+
+	for _, msgType := range []cryptoMsgType{initRcv, initCryptoRcv, data} {
+		for _, encLen := range []int{0, 1, footerDataSize, minEnc - 1, minEnc} {
+			size := aadLen(msgType) + encLen
+			buf := make([]byte, size, size) // exact capacity: no reslice slack
+			buf[0] = (uint8(msgType) << 5) | cryptoVersion
+			if size >= headerSize+connIdSize+2*pubKeySize {
+				copy(buf[headerSize+connIdSize:], pub)
+				copy(buf[headerSize+connIdSize+pubKeySize:], pub)
+			} else if size >= headerSize+connIdSize+pubKeySize {
+				copy(buf[headerSize+connIdSize:], pub)
+			}
+
+			var err error
+			switch msgType {
+			case initRcv:
+				_, _, _, _, err = decryptInitRcv(buf, prv)
+			case initCryptoRcv:
+				_, _, _, err = decryptInitCryptoRcv(buf, prv)
+			case data:
+				_, err = decryptData(buf, false, [][]byte{make([]byte, 32)})
+			}
+			assert.Error(t, err, "msgType=%d encLen=%d must be rejected", msgType, encLen)
+		}
+	}
+}
+
+// DecryptWithSecrets is handed caller-allocated (exactly sized) buffers, so it
+// has no spare capacity to hide a short read behind.
+func TestCryptoDecryptWithSecrets_ShortPacket(t *testing.T) {
+	prv := generateTestKey(t)
+	pub := prv.PublicKey().Bytes()
+
+	for _, encLen := range []int{footerDataSize, snSize + 23} {
+		size := aadLen(initRcv) + encLen
+		buf := make([]byte, size, size)
+		buf[0] = (uint8(initRcv) << 5) | cryptoVersion
+		copy(buf[headerSize+connIdSize:], pub)
+		copy(buf[headerSize+connIdSize+pubKeySize:], pub)
+
+		_, err := DecryptWithSecrets(buf, false, make([]byte, 32), nil)
+		assert.Error(t, err, "encLen=%d must be rejected", encLen)
+	}
+}
