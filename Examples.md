@@ -499,7 +499,7 @@ constructors — is already unexported. The remaining judgement calls are below.
 | `NetworkConn`, `UDPNetworkConn` | Useful for testing, but could be internal |
 | `WithNetworkConn` | Testing hook |
 | `WithPrvKeyId` | Advanced use, `WithSeed*` covers most cases |
-| `DecryptPcap` | Debugging tool, could be separate package |
+| `DecryptWithSecrets` | Debugging tool; kept in crypto.go, next to the wire format it decodes |
 | `Listen`, `Flush` on Listener | Low-level, `Loop` is preferred |
 | `NotifyDataAvailable` on Stream | Internal signaling |
 

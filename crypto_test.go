@@ -701,3 +701,58 @@ func TestCryptoDecodeHexPubKey_Empty(t *testing.T) {
 	_, err := decodeHexPubKey("")
 	assert.Error(t, err)
 }
+
+// DecryptWithSecrets is the offline/debugging entry point: round-trip every
+// message type through it, including the InitCryptoSnd padding strip.
+func TestCryptoDecryptWithSecrets_RoundTrip(t *testing.T) {
+	alicePrvKeyId := generateTestKey(t)
+	alicePrvKeyEp := generateTestKey(t)
+	bobPrvKeyId := generateTestKey(t)
+	bobPrvKeyEp := generateTestKey(t)
+	payload := randomBytes(minProtoSize)
+
+	// InitSnd: unencrypted, returns empty
+	_, buf, err := encryptInitSnd(alicePrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), 1400)
+	assert.NoError(t, err)
+	out, err := DecryptWithSecrets(buf, false, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, []byte{}, out)
+
+	// InitCryptoSnd: needs sharedSecretId = ECDH(alice ep, bob id)
+	_, buf, err = encryptInitCryptoSnd(bobPrvKeyId.PublicKey(), alicePrvKeyId.PublicKey(), alicePrvKeyEp, 0, payload)
+	assert.NoError(t, err)
+	ssId, _ := alicePrvKeyEp.ECDH(bobPrvKeyId.PublicKey())
+	out, err = DecryptWithSecrets(buf, false, nil, ssId)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, out, "InitCryptoSnd payload (padding must be stripped)")
+
+	// InitRcv: encrypted to alice's ephemeral, secret = ECDH(bob ep, alice ep)
+	buf, err = encryptPacket(initRcv, 42, bobPrvKeyEp, bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), nil, 0, false, payload)
+	assert.NoError(t, err)
+	ss, _ := bobPrvKeyEp.ECDH(alicePrvKeyEp.PublicKey())
+	out, err = DecryptWithSecrets(buf, false, ss, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, out, "InitRcv payload")
+
+	// InitCryptoRcv
+	buf, err = encryptPacket(initCryptoRcv, 42, bobPrvKeyEp, bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), nil, 0, false, payload)
+	assert.NoError(t, err)
+	out, err = DecryptWithSecrets(buf, false, ss, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, payload, out, "InitCryptoRcv payload")
+
+	// Data, both nonce directions. chainedDecrypt inverts the direction bit,
+	// so a packet encrypted with isSender=X is read back with isSender=!X.
+	for _, isSender := range []bool{true, false} {
+		buf, err = encryptPacket(data, 42, bobPrvKeyEp, bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), ss, 7, isSender, payload)
+		assert.NoError(t, err)
+		out, err = DecryptWithSecrets(buf, !isSender, ss, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, payload, out, "Data payload isSender=%v", isSender)
+	}
+
+	// Missing-secret errors still name the right parameter
+	buf, _ = encryptPacket(data, 42, bobPrvKeyEp, bobPrvKeyId.PublicKey(), alicePrvKeyEp.PublicKey(), ss, 7, false, payload)
+	_, err = DecryptWithSecrets(buf, true, nil, nil)
+	assert.ErrorContains(t, err, "sharedSecret required for Data")
+}

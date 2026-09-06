@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 
 	"golang.org/x/crypto/chacha20"
@@ -207,6 +208,24 @@ func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, 
 // Decryption
 // =============================================================================
 
+// aadLen returns the plaintext header length for a message type: the bytes
+// that precede the encrypted payload and are authenticated as the AEAD's
+// additional data. The encrypted part therefore starts at aadLen(msgType).
+// Returns -1 for InitSnd, which carries no encrypted payload.
+func aadLen(msgType cryptoMsgType) int {
+	switch msgType {
+	case initRcv:
+		return minInitRcvSizeHdr
+	case initCryptoSnd:
+		return minInitCryptoSndSizeHdr
+	case initCryptoRcv:
+		return minInitCryptoRcvSizeHdr
+	case data:
+		return minDataSizeHdr
+	}
+	return -1
+}
+
 // decryptInitSnd extracts public keys and sender's maxPayload from an unencrypted InitSnd packet.
 // Validates packet size against conservativeMTU to prevent amplification attacks.
 func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, senderMaxPayload uint16, err error) {
@@ -229,7 +248,7 @@ func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, s
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv).
 func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
-	if len(encData) < minInitRcvSizeHdr+footerDataSize {
+	if len(encData) < aadLen(initRcv)+footerDataSize {
 		return nil, nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
@@ -247,7 +266,7 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, nil, err
 	}
 
-	headerLen := minInitRcvSizeHdr
+	headerLen := aadLen(initRcv)
 	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -278,7 +297,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	headerLen := minInitCryptoSndSizeHdr
+	headerLen := aadLen(initCryptoSnd)
 	packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
@@ -293,7 +312,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
 func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
-	if len(encData) < minInitCryptoRcvSizeHdr+footerDataSize {
+	if len(encData) < aadLen(initCryptoRcv)+footerDataSize {
 		return nil, nil, nil, errors.New("size is below minimum init reply")
 	}
 
@@ -307,7 +326,7 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	headerLen := minInitCryptoRcvSizeHdr
+	headerLen := aadLen(initCryptoRcv)
 	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
@@ -318,11 +337,11 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 
 // decryptData decrypts a regular Data packet using the established shared secret.
 func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, error) {
-	if len(encData) < minDataSizeHdr+footerDataSize {
+	if len(encData) < aadLen(data)+footerDataSize {
 		return nil, errors.New("size is below minimum")
 	}
 
-	headerLen := headerSize + connIdSize
+	headerLen := aadLen(data)
 	return chainedDecrypt(isSender, sharedSecret, encData[:headerLen], encData[headerLen:])
 }
 
@@ -419,4 +438,83 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) 
 	default:
 		return -1
 	}
+}
+
+// =============================================================================
+// Offline decryption (debugging)
+//
+// WithKeyLogWriter makes the Listener write per-connection secrets in an
+// NSS-key-log-style format; DecryptWithSecrets turns those secrets plus a
+// captured packet back into plaintext, for Wireshark or ad-hoc analysis.
+// =============================================================================
+
+// DecryptWithSecrets decrypts a single captured QOTP packet. The message type
+// is auto-detected from the header; the caller supplies the secrets, which
+// come from a key log written by WithKeyLogWriter:
+//   - Data, InitRcv, InitCryptoRcv: sharedSecret (ECDH of ephemeral keys)
+//   - InitCryptoSnd:                sharedSecretId (ECDH with identity key)
+//   - InitSnd:                      unencrypted, returns empty
+//
+// Debugging aid only. The live receive path is conn.decode, which additionally
+// tracks connection state and key rotation.
+func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecretId []byte) ([]byte, error) {
+	if len(encData) < minPacketSize {
+		return nil, fmt.Errorf("packet too small: need %d bytes, got %d", minPacketSize, len(encData))
+	}
+
+	header := encData[0]
+	if version := header & 0x1F; version != cryptoVersion {
+		return nil, fmt.Errorf("unsupported protocol version: %d", version)
+	}
+	msgType := cryptoMsgType(header >> 5)
+
+	var isSender bool
+	var secret []byte
+
+	switch msgType {
+	case initSnd:
+		return []byte{}, nil // unencrypted handshake initiation
+
+	case data:
+		if sharedSecret == nil {
+			return nil, errors.New("sharedSecret required for Data")
+		}
+		isSender, secret = isSenderOnInit, sharedSecret
+
+	case initRcv, initCryptoRcv:
+		if sharedSecret == nil {
+			return nil, errors.New("sharedSecret required for InitRcv/InitCryptoRcv")
+		}
+		isSender, secret = true, sharedSecret
+
+	case initCryptoSnd:
+		if sharedSecretId == nil {
+			return nil, errors.New("sharedSecretId required for InitCryptoSnd")
+		}
+		isSender, secret = false, sharedSecretId
+
+	default:
+		return nil, fmt.Errorf("unknown message type: %d", msgType)
+	}
+
+	headerLen := aadLen(msgType)
+	if minSize := headerLen + footerDataSize; len(encData) < minSize {
+		return nil, fmt.Errorf("packet too small for %v: need %d, got %d", msgType, minSize, len(encData))
+	}
+
+	packetData, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
+	if err != nil {
+		return nil, fmt.Errorf("decryption failed: %w", err)
+	}
+
+	// InitCryptoSnd has padding that must be stripped
+	if msgType == initCryptoSnd {
+		fillerLen := getUint16(packetData)
+		if len(packetData) < 2+int(fillerLen) {
+			return nil, errors.New("invalid filler length")
+		}
+		return packetData[2+fillerLen:], nil
+	}
+
+	return packetData, nil
 }

@@ -280,16 +280,10 @@ func (l *Listener) newConn(
 		negotiatedMTU: conservativeMTU,
 	}
 
-	// Log keys for Wireshark debugging if enabled
+	// Log keys for offline decryption if enabled (see DecryptWithSecrets)
 	if l.keyLogWriter != nil {
 		if ss, err := conn.sndKeys.prvKeyEp.ECDH(conn.rcvKeys.pubKeyEp); err == nil {
 			if ssId, err := conn.sndKeys.prvKeyEp.ECDH(conn.pubKeyIdRcv); err == nil {
-				// =============================================================================
-				// Wireshark/pcap support
-				//
-				// logKey: Writes session keys for Wireshark decryption (NSS key log format)
-				// DecryptPcap: Standalone packet decryption for offline analysis
-				// =============================================================================
 				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET %x %x\n", conn.connId, ss)
 				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET_ID %x %x\n", conn.connId, ssId)
 			}
