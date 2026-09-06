@@ -23,6 +23,16 @@ import (
 // Bytes the server has received per protocol, so the upload direction can be
 // checked against the client's sender-side numbers.
 // serverStart anchors the CPU measurement the client collects at the end.
+// A client in duration mode just stops and closes; there is no FIN. Without an
+// idle drop its session lives forever, and because the requested size is
+// effectively unbounded the pump keeps writing into a dead connection on every
+// loop iteration -- which starves the handshakes of later runs.
+const sessionIdle = 15 * time.Second
+
+// How far a download may run ahead of what the peer has acknowledged. Bounds
+// the send buffer per session instead of queueing the whole requested size.
+const downloadWindow = 2 << 20
+
 var (
 	serverStart     bench.CPU
 	serverStartTime = time.Now()
@@ -208,6 +218,9 @@ type qotpSession struct {
 	acked   bool
 	filler  []byte
 	reply   []byte // the responder's report, when dir is Report
+
+	lastMark     uint64 // bytes moved as of lastProgress
+	lastProgress time.Time
 }
 
 func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
@@ -217,6 +230,7 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 	}
 	go func() {
 		sessions := map[*qotp.Stream]*qotpSession{}
+		lastDbg := time.Now()
 		err := ln.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 			if s != nil {
 				sess := sessions[s]
@@ -234,6 +248,10 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 					delete(sessions, st)
 				}
 			}
+			if os.Getenv("BENCH_DBG") != "" && time.Since(lastDbg) > time.Second {
+				lastDbg = time.Now()
+				fmt.Fprintf(os.Stderr, "DBG sessions=%d\n", len(sessions))
+			}
 			return nil
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -241,6 +259,21 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 		}
 	}()
 	return ln
+}
+
+// stalled reports whether the peer has stopped moving bytes for long enough
+// that the session should be dropped.
+func (s *qotpSession) stalled(st *qotp.Stream) bool {
+	// Any forward movement counts, including a partly received header.
+	moved := uint64(len(s.hdr)) + s.got
+	if s.haveHdr && s.dir != bench.Upload {
+		moved = st.BytesDelivered()
+	}
+	if moved != s.lastMark || s.lastProgress.IsZero() {
+		s.lastMark, s.lastProgress = moved, time.Now()
+		return false
+	}
+	return time.Since(s.lastProgress) > sessionIdle
 }
 
 func (s *qotpSession) feed(data []byte) {
@@ -269,8 +302,14 @@ func (s *qotpSession) feed(data []byte) {
 	}
 }
 
-// pump makes progress on a session; reports whether it is finished.
+// pump makes progress on a session; reports whether it is finished or has been
+// abandoned by its peer.
 func (s *qotpSession) pump(st *qotp.Stream) bool {
+	// The stall check comes first: a session whose peer vanished before the
+	// header was complete would otherwise never be examined again.
+	if s.stalled(st) {
+		return true
+	}
 	if !s.haveHdr {
 		return false
 	}
@@ -288,7 +327,9 @@ func (s *qotpSession) pump(st *qotp.Stream) bool {
 		return s.sent >= uint64(len(s.reply))
 
 	case bench.Download:
-		if s.sent < s.size {
+		// Stay within a window of what the peer has acknowledged, so a session
+		// cannot queue the whole requested size into the send buffer.
+		if s.sent < s.size && s.sent-st.BytesDelivered() < downloadWindow {
 			n := uint64(len(s.filler))
 			if r := s.size - s.sent; r < n {
 				n = r

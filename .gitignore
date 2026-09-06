@@ -5,5 +5,5 @@ testdata
 examples/example?/example?
 experiments/qotp-bench
 experiments/qotp-bench-*
-experiments/results*/
+experiments/result*
 /bench*
