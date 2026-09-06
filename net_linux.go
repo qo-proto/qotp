@@ -8,6 +8,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Turns on destination-address reporting (see net_unix.go).
+const ipv4RecvPktInfo = unix.IP_PKTINFO
+
 // based on: https://github.com/quic-go/quic-go/blob/d540f545b0b70217220eb0fbd5278ece436a7a20/sys_conn_df_linux.go#L15
 func setDontFragment(conn *net.UDPConn) error {
 	rawConn, err := conn.SyscallConn()

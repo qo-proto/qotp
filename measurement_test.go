@@ -526,93 +526,30 @@ func TestMeasurements_Pacing_ZeroPacketSize(t *testing.T) {
 // BACKOFF TESTS
 // =============================================================================
 
-func TestBackoff_NoBackoff(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 0)
-
-	assert.NoError(t, err)
-	assert.Equal(t, baseRTO, result)
-}
-
-func TestBackoff_1x(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 1)
-
-	assert.NoError(t, err)
-	assert.Equal(t, baseRTO*2, result)
-}
-
-func TestBackoff_2x(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 2)
-
-	assert.NoError(t, err)
-	assert.Equal(t, baseRTO*4, result)
-}
-
-func TestBackoff_3x(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 3)
-
-	assert.NoError(t, err)
-	assert.Equal(t, baseRTO*8, result)
-}
-
-func TestBackoff_CappedAtMaxRTO(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 4)
-
-	assert.NoError(t, err)
-	assert.Equal(t, maxRTO, result)
-}
-
-func TestBackoff_ExceedsMax(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	result, err := backoff(baseRTO, 5)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "max retry attempts")
-	assert.Equal(t, uint64(0), result)
-}
-
-func TestBackoff_WayOverMax(t *testing.T) {
-	baseRTO := uint64(200 * msNano)
-
-	_, err := backoff(baseRTO, 100)
-
-	assert.Error(t, err)
-}
-
-func TestBackoff_ZeroBase(t *testing.T) {
-	result, err := backoff(0, 0)
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), result)
-
-	result, err = backoff(0, 3)
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), result)
-}
-
-func TestBackoff_VerySmallRTO(t *testing.T) {
-	result, err := backoff(1, 2)
-
-	assert.NoError(t, err)
-	assert.Equal(t, uint64(4), result)
-}
-
-func TestBackoff_LargeRTO(t *testing.T) {
-	largeRTO := uint64(1000 * msNano)
-
-	result, err := backoff(largeRTO, 4)
-
-	assert.NoError(t, err)
-	assert.Equal(t, maxRTO, result)
+func TestBackoff(t *testing.T) {
+	base := uint64(200 * msNano)
+	for _, tc := range []struct {
+		name    string
+		rto     uint64
+		attempt uint
+		want    uint64
+	}{
+		{"none", base, 0, base},
+		{"1x", base, 1, base * 2},
+		{"2x", base, 2, base * 4},
+		{"3x", base, 3, base * 8},
+		{"capped at maxRTO", base, 4, maxRTO},
+		{"large rto capped", 1000 * msNano, 4, maxRTO},
+		{"zero base", 0, 3, 0},
+		{"tiny rto", 1, 2, 4},
+		// Past the last attempt the schedule stays put: giving up is the
+		// caller's decision, and its final try is owed a full window.
+		{"clamped to last attempt", base, maxRetry, maxRTO},
+		{"way past", base, 100, maxRTO},
+		{"clamp visible with small rto", 1, 100, 1 << (maxRetry - 1)},
+	} {
+		assert.Equal(t, tc.want, backoff(tc.rto, tc.attempt), tc.name)
+	}
 }
 
 // =============================================================================

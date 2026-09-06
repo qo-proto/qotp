@@ -114,6 +114,33 @@ func TestStream_WriteEmptyData(t *testing.T) {
 	assert.Equal(t, 0, n)
 }
 
+// wakeCounter counts how often Write asked the event loop to run.
+type wakeCounter struct {
+	NetworkConn
+	wakes int
+}
+
+func (w *wakeCounter) TimeoutReadNow() error { w.wakes++; return nil }
+
+// A partial fill is still data to send: the loop must be woken for it, not
+// only when everything fit.
+func TestStream_Write_PartialFillWakesLoop(t *testing.T) {
+	wc := &wakeCounter{}
+	c := &conn{listener: &Listener{localConn: wc}, snd: newSendBuffer(3), rcv: newReceiveBuffer(1000)}
+	s := &Stream{streamID: 1, conn: c, reliable: true}
+
+	n, err := s.Write([]byte("test"))
+	assert.NoError(t, err)
+	assert.Equal(t, 3, n)
+	assert.Equal(t, 1, wc.wakes)
+
+	// Nothing taken, nothing to flush
+	n, err = s.Write([]byte("more"))
+	assert.NoError(t, err)
+	assert.Equal(t, 0, n)
+	assert.Equal(t, 1, wc.wakes)
+}
+
 // =============================================================================
 // MULTIPLE STREAMS TESTS
 // =============================================================================

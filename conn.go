@@ -323,6 +323,12 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 	}
 	conn.sndKeys.cur = sharedSecret
 	conn.rcvKeys.cur = sharedSecret //initially, both are the same, as sync is for free
+	l.logSecret("QOTP_SHARED_SECRET", connId, sharedSecret)
+	if msgType == initCryptoSnd && l.keyLogWriter != nil {
+		if ssId, err := l.prvKeyId.ECDH(pubKeyEpSnd); err == nil {
+			l.logSecret("QOTP_SHARED_SECRET_ID", connId, ssId)
+		}
+	}
 	return conn, payload, nil
 }
 
@@ -337,6 +343,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
+		c.listener.logSecret("QOTP_SHARED_SECRET", c.connId, sharedSecret)
 		return payload, nil
 
 	case initCryptoRcv:
@@ -347,6 +354,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
+		c.listener.logSecret("QOTP_SHARED_SECRET", c.connId, sharedSecret)
 		return payload, nil
 
 	case data:
@@ -703,17 +711,9 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// untracked inits (InitSnd, empty dials, InitRcv) are re-sent here with
 	// the same backoff and give-up as data retransmits.
 	if c.phase == phaseInitSent && !c.snd.hasInFlight(s.streamID) {
-		// Cap the backoff attempt so the final re-send gets its full response
-		// window; the error fires only once that window has also expired
-		attempt := c.initSendCount
-		if attempt > maxRetry-1 {
-			attempt = maxRetry - 1
-		}
-		waitNano, err := backoff(c.rtoNano(), attempt)
-		if err != nil {
-			return 0, 0, err
-		}
-		if nowNano-c.initLastSentNano > waitNano {
+		// The final re-send gets its full response window before the error
+		// fires: backoff clamps the attempt, the count below does not
+		if nowNano-c.initLastSentNano > backoff(c.rtoNano(), c.initSendCount) {
 			if c.initSendCount >= maxRetry {
 				return 0, 0, errors.New("handshake: max retry attempts exceeded")
 			}

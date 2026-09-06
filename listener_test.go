@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,13 +150,100 @@ func TestListen_WithMaxPayload_BelowFloor(t *testing.T) {
 	defer listener.Close()
 }
 
-func TestListen_WithKeyLogWriter(t *testing.T) {
-	var buf bytes.Buffer
-	listener, err := Listen(WithKeyLogWriter(&buf))
-	assert.NoError(t, err)
-	assert.NotNil(t, listener)
-	assert.Equal(t, &buf, listener.keyLogWriter)
-	defer listener.Close()
+// The key log exists so that DecryptWithSecrets can open a capture. Run both
+// handshakes through the real encode/decode path with a writer on each side
+// and check that what was logged actually decrypts what went over the wire.
+func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
+	// Returns the secret logged under label for connId, or nil.
+	logged := func(buf *bytes.Buffer, label string, connId uint64) []byte {
+		for _, line := range strings.Split(buf.String(), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 3 && f[0] == label && f[1] == fmt.Sprintf("%x", connId) {
+				b, err := hex.DecodeString(f[2])
+				assert.NoError(t, err)
+				return b
+			}
+		}
+		return nil
+	}
+	newL := func(id *ecdh.PrivateKey, buf *bytes.Buffer) *Listener {
+		return &Listener{connMap: newSharedLinkedMap[uint64, *conn](), prvKeyId: id,
+			maxPayload: 1452, keyLogWriter: buf}
+	}
+	userData := func(t *testing.T, plain []byte) []byte {
+		_, d, err := decodeProto(plain)
+		assert.NoError(t, err)
+		return d
+	}
+	rAddr := getTestRemoteAddrPort()
+
+	t.Run("0-RTT", func(t *testing.T) {
+		var logA, logB bytes.Buffer
+		lA, lB := newL(prvIdAlice, &logA), newL(prvIdBob, &logB)
+		cA, err := lA.DialWithCrypto(rAddr, prvIdBob.PublicKey())
+		assert.NoError(t, err)
+
+		// Alice -> Bob: InitCryptoSnd, sealed to Bob's identity key
+		p := &payloadHeader{maxPayload: 1452, streamId: 1}
+		initPkt, err := cA.encode(p, []byte("hello"), initCryptoSnd)
+		assert.NoError(t, err)
+		cB, _, err := decodePacket(lB, initPkt, rAddr, initCryptoSnd)
+		assert.NoError(t, err)
+		// Bob -> Alice: InitCryptoRcv, then Alice sends a Data packet
+		replyPkt, err := cB.encode(p, []byte("hi"), initCryptoRcv)
+		assert.NoError(t, err)
+		_, _, err = decodePacket(lA, replyPkt, rAddr, initCryptoRcv)
+		assert.NoError(t, err)
+		cA.phase = phaseReady
+		dataPkt, err := cA.encode(p, []byte("data"), data)
+		assert.NoError(t, err)
+
+		// Both sides logged both secrets, and they agree
+		ssId := logged(&logA, "QOTP_SHARED_SECRET_ID", cA.connId)
+		ss := logged(&logA, "QOTP_SHARED_SECRET", cA.connId)
+		assert.NotNil(t, ssId, "dialer must log the 0-RTT secret")
+		assert.NotNil(t, ss, "dialer must log the shared secret once the reply arrives")
+		assert.Equal(t, ssId, logged(&logB, "QOTP_SHARED_SECRET_ID", cA.connId))
+		assert.Equal(t, ss, logged(&logB, "QOTP_SHARED_SECRET", cA.connId))
+
+		// ...and they open the capture
+		out, err := DecryptWithSecrets(initPkt, false, nil, ssId)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte("hello"), userData(t, out))
+		out, err = DecryptWithSecrets(replyPkt, false, ss, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte("hi"), userData(t, out))
+		// A Data packet from the initiator is opened from the responder's side
+		out, err = DecryptWithSecrets(dataPkt, false, ss, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte("data"), userData(t, out))
+	})
+
+	t.Run("1-RTT", func(t *testing.T) {
+		var logA, logB bytes.Buffer
+		lA, lB := newL(prvIdAlice, &logA), newL(prvIdBob, &logB)
+		cA, err := lA.Dial(rAddr)
+		assert.NoError(t, err)
+
+		initPkt, err := cA.encode(nil, nil, initSnd)
+		assert.NoError(t, err)
+		cB, _, err := decodePacket(lB, initPkt, rAddr, initSnd)
+		assert.NoError(t, err)
+		p := &payloadHeader{maxPayload: 1452, streamId: 1}
+		replyPkt, err := cB.encode(p, []byte("hi"), initRcv)
+		assert.NoError(t, err)
+		_, _, err = decodePacket(lA, replyPkt, rAddr, initRcv)
+		assert.NoError(t, err)
+
+		ss := logged(&logA, "QOTP_SHARED_SECRET", cA.connId)
+		assert.NotNil(t, ss)
+		assert.Equal(t, ss, logged(&logB, "QOTP_SHARED_SECRET", cA.connId))
+		assert.Nil(t, logged(&logA, "QOTP_SHARED_SECRET_ID", cA.connId), "no identity secret without 0-RTT")
+
+		out, err := DecryptWithSecrets(replyPkt, false, ss, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, []byte("hi"), userData(t, out))
+	})
 }
 
 func TestListen_WithNetworkConn(t *testing.T) {
@@ -253,20 +342,9 @@ func TestListener_RefreshMaxPayload_NonUDP(t *testing.T) {
 	listener, err := Listen(WithNetworkConn(connPair.Conn1), WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
 
-	// Non-UDP conn: interfaceMTU stays at 1500 (default), maxPayload = 1500 - 48 = 1452
+	// Non-UDP conn: no interface to read, maxPayload keeps the 1500-48 default
 	listener.RefreshMaxPayload()
 	assert.Equal(t, 1452, listener.maxPayload)
-}
-
-func TestListener_RefreshMaxPayload_FloorAtConservativeMTU(t *testing.T) {
-	connPair := NewConnPair("a", "b")
-	listener, err := Listen(WithNetworkConn(connPair.Conn1), WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-
-	// Force interfaceMTU to something tiny
-	listener.interfaceMTU = 100
-	listener.RefreshMaxPayload()
-	assert.Equal(t, conservativeMTU, listener.maxPayload)
 }
 
 // =============================================================================
@@ -302,11 +380,13 @@ func TestListener_cleanupConn(t *testing.T) {
 	assert.NoError(t, err)
 	connId := conn.connId
 
-	assert.True(t, listener.connMap.contains(connId))
+	_, ok := listener.connMap.get(connId)
+	assert.True(t, ok)
 
 	listener.cleanupConn(connId)
 
-	assert.False(t, listener.connMap.contains(connId))
+	_, ok = listener.connMap.get(connId)
+	assert.False(t, ok)
 }
 
 func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
@@ -335,8 +415,8 @@ func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 
 func TestListener_Decode_EmptyBuffer(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 
@@ -347,8 +427,8 @@ func TestListener_Decode_EmptyBuffer(t *testing.T) {
 
 func TestListener_Decode_TooSmall(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 
@@ -359,8 +439,8 @@ func TestListener_Decode_TooSmall(t *testing.T) {
 
 func TestListener_Decode_InvalidVersion(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 
@@ -374,8 +454,8 @@ func TestListener_Decode_InvalidVersion(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 
@@ -389,8 +469,8 @@ func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 
@@ -404,8 +484,8 @@ func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
 	l := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: testPrvKey1,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
 

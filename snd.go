@@ -28,14 +28,6 @@ const sndBufferCapacity = 16 * 1024 * 1024 // 16MB
 // Status types
 // =============================================================================
 
-type insertStatus int
-
-const (
-	insertStatusOk insertStatus = iota
-	insertStatusSndFull
-	insertStatusNoData
-)
-
 type ackStatus int
 
 const (
@@ -179,33 +171,20 @@ func (t *transmitBuffer) inFlightAny() bool {
 // Queue data for sending
 // =============================================================================
 
-// queueData adds data to the stream's send queue.
-// Returns bytes queued and status (may be partial if buffer full).
-func (sb *sender) queueData(streamID uint32, userData []byte) (n int, status insertStatus) {
-	if len(userData) == 0 {
-		return 0, insertStatusNoData
-	}
-
+// queueData adds data to the stream's send queue and returns how much was
+// taken: less than len(userData) once the buffer is full.
+func (sb *sender) queueData(streamID uint32, userData []byte) int {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	remaining := sb.capacity - sb.size
-	if remaining == 0 {
-		return 0, insertStatusSndFull
+	chunk := userData[:min(len(userData), sb.capacity-sb.size)]
+	if len(chunk) == 0 {
+		return 0
 	}
-
-	chunk := userData
-	status = insertStatusOk
-	if len(userData) > remaining {
-		chunk = userData[:remaining]
-		status = insertStatusSndFull
-	}
-
 	stream := sb.getOrCreateStream(streamID)
 	stream.queuedData = append(stream.queuedData, chunk...)
 	sb.size += len(chunk)
-
-	return len(chunk), status
+	return len(chunk)
 }
 
 // trackProbe reserves the zero-payload key for an ACK probe, so a
@@ -358,17 +337,9 @@ func (sb *sender) readyToRetransmit(
 		if !ok {
 			continue
 		}
-		// Cap the backoff attempt so the final retransmit gets its full
-		// response window; the give-up error fires only once that window
-		// has also expired
-		attempt := uint(g)
-		if attempt > maxRetry-1 {
-			attempt = maxRetry - 1
-		}
-		rtoWithBackoff, err := backoff(baseRTO, attempt)
-		if err != nil {
-			return nil, 0, false, err
-		}
+		// The final retransmit gets its full response window before the
+		// give-up error fires: backoff clamps the attempt, sentCount does not
+		rtoWithBackoff := backoff(baseRTO, uint(g))
 		// Fast retransmit: a gen-0 packet declared lost by gap evidence is
 		// eligible immediately, no RTO wait
 		fastRetx := g == 0 && p.ackGap >= fastRetxThreshold

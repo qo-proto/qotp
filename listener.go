@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 )
 
 // =============================================================================
@@ -22,6 +21,12 @@ import (
 // socketBufferSize is the requested UDP send/receive buffer (same value
 // quic-go uses); the OS may cap it lower (Linux: net.core.rmem_max).
 const socketBufferSize = 7 * 1024 * 1024
+
+// maxUDPPayload is the largest datagram UDP can carry. The read buffer is this
+// size rather than maxPayload so that a later RefreshMaxPayload, which the peer
+// learns of on the next packet, cannot leave the buffer too small for what it
+// then sends: a truncated datagram fails its MAC and is simply lost.
+const maxUDPPayload = 65535
 
 type Listener struct {
 	localConn    NetworkConn
@@ -34,10 +39,7 @@ type Listener struct {
 	currentConnID   *uint64
 	currentStreamID *uint32
 
-	interfaceMTU int
-	readBuf      []byte // reusable buffer for Listen()
-
-	mu sync.Mutex
+	readBuf []byte // reusable buffer for Listen()
 }
 
 // =============================================================================
@@ -178,8 +180,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		maxPayload:   maxPayload,
 		keyLogWriter: o.keyLogWriter,
 		connMap:      newSharedLinkedMap[uint64, *conn](),
-		interfaceMTU: interfaceMTU,
-		readBuf:      make([]byte, maxPayload),
+		readBuf:      make([]byte, maxUDPPayload),
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
 	return l, nil
@@ -190,9 +191,6 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 // =============================================================================
 
 func (l *Listener) Close() error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	for _, conn := range l.connMap.iterator(nil) {
 		conn.closeAllStreams()
 	}
@@ -202,22 +200,17 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-// RefreshMaxPayload re-reads the network interface MTU and recomputes maxPayload.
-// Call this when the network interface changes (e.g., switching from WiFi to Ethernet).
+// RefreshMaxPayload re-reads the network interface MTU and recomputes
+// maxPayload; the new value reaches every peer on its next packet. Call it when
+// the interface changes (e.g. WiFi to Ethernet), and like RTTNano call it from
+// the Loop callback: the event loop reads maxPayload without a lock.
 func (l *Listener) RefreshMaxPayload() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
-		l.interfaceMTU = getInterfaceMTU(udpConn.conn)
+		l.maxPayload = max(getInterfaceMTU(udpConn.conn)-ipOverhead, conservativeMTU)
 	}
-	l.maxPayload = max(l.interfaceMTU-ipOverhead, conservativeMTU)
 }
 
 func (l *Listener) HasActiveStreams() bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	for _, conn := range l.connMap.iterator(nil) {
 		if conn.HasActiveStreams() || conn.rcv.hasPendingAcks() {
 			return true
@@ -237,13 +230,6 @@ func (l *Listener) newConn(
 	pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey,
 	isSender, withCrypto bool,
 ) (*conn, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	if l.connMap.contains(connId) {
-		return nil, errors.New("conn already exists")
-	}
-
 	var initMsgType cryptoMsgType
 	switch {
 	case withCrypto && isSender:
@@ -279,24 +265,28 @@ func (l *Listener) newConn(
 		mtu:          conservativeMTU,
 	}
 
-	// Log keys for offline decryption if enabled (see DecryptWithSecrets)
-	if l.keyLogWriter != nil {
-		if ss, err := conn.sndKeys.prvKeyEp.ECDH(conn.rcvKeys.pubKeyEp); err == nil {
-			if ssId, err := conn.sndKeys.prvKeyEp.ECDH(conn.pubKeyIdRcv); err == nil {
-				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET %x %x\n", conn.connId, ss)
-				fmt.Fprintf(l.keyLogWriter, "QOTP_SHARED_SECRET_ID %x %x\n", conn.connId, ssId)
-			}
+	if _, loaded := l.connMap.getOrPut(connId, conn); loaded {
+		return nil, errors.New("conn already exists")
+	}
+	// A 0-RTT dialer knows the InitCryptoSnd secret before anything is sent;
+	// every other secret is logged where the handshake establishes it.
+	if withCrypto && isSender && pubKeyIdRcv != nil && l.keyLogWriter != nil {
+		if ssId, err := prvKeyEpSnd.ECDH(pubKeyIdRcv); err == nil {
+			l.logSecret("QOTP_SHARED_SECRET_ID", connId, ssId)
 		}
 	}
-
-	l.connMap.put(connId, conn)
 	return conn, nil
 }
 
 // cleanupConn removes connection state. A stale round-robin cursor pointing
 // at the removed conn is fine: linkedMap.iterator falls back to the beginning.
 func (l *Listener) cleanupConn(connId uint64) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.connMap.remove(connId)
+}
+
+// logSecret writes one line of the key log read by DecryptWithSecrets.
+func (l *Listener) logSecret(label string, connId uint64, secret []byte) {
+	if l.keyLogWriter != nil {
+		fmt.Fprintf(l.keyLogWriter, "%s %x %x\n", label, connId, secret)
+	}
 }

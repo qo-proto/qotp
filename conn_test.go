@@ -425,7 +425,7 @@ func TestConnEncodeDecodeRoundtrip_EmptyPayload(t *testing.T) {
 	connAlice.rcv = newReceiveBuffer(12000)
 
 	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
-	lAlice.connMap.put(connId, connAlice)
+	lAlice.connMap.getOrPut(connId, connAlice)
 	connAlice.connId = connId
 
 	testData := createTestData(0)
@@ -455,7 +455,7 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	connAlice.rcv = newReceiveBuffer(12000)
 
 	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
-	lAlice.connMap.put(connId, connAlice)
+	lAlice.connMap.getOrPut(connId, connAlice)
 	connAlice.connId = connId
 
 	// max payload for InitCryptoSnd at conservativeMTU=1232
@@ -486,7 +486,7 @@ func TestConnEncodeDecodeRoundtrip_SingleByte(t *testing.T) {
 	connAlice.rcv = newReceiveBuffer(12000)
 
 	connId := binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes())
-	lAlice.connMap.put(connId, connAlice)
+	lAlice.connMap.getOrPut(connId, connAlice)
 	connAlice.connId = connId
 
 	testData := []byte{0xFF}
@@ -532,7 +532,7 @@ func TestConnFullHandshake(t *testing.T) {
 			},
 		},
 	}
-	lAlice.connMap.put(connAlice.connId, connAlice)
+	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 
 	// Step 1: Alice encodes InitSnd
 	p := &payloadHeader{}
@@ -573,12 +573,12 @@ func TestConnFullHandshake(t *testing.T) {
 	connAlice.rcvKeys.pubKeyEp = prvEpBob.PublicKey()
 	connAlice.sndKeys.cur = seed1[:]
 	connAlice.rcvKeys.cur = seed1[:]
-	lAlice.connMap.put(connId, connAlice)
+	lAlice.connMap.getOrPut(connId, connAlice)
 
 	connBob.phase = phaseReady
 	connBob.sndKeys.cur = seed1[:]
 	connBob.rcvKeys.cur = seed1[:]
-	lBob.connMap.put(connId, connBob)
+	lBob.connMap.getOrPut(connId, connBob)
 
 	// Step 6: Alice sends Data message
 	dataMsg := []byte("data message")
@@ -1131,7 +1131,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
 	}
-	lAlice.connMap.put(connAlice.connId, connAlice)
+	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 	assert.Equal(t, conservativeMTU, connAlice.mtu) // starts at conservativeMTU; negotiateMTU upgrades it
 
 	// Step 1: Alice encodes InitSnd — embeds localMaxPayload=1400 in fixed header
@@ -1261,7 +1261,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
 		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
 	}
-	lAlice.connMap.put(connAlice.connId, connAlice)
+	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 
 	// Step 1: Alice encodes InitCryptoSnd with the MTU update field in proto payload
 	p := &payloadHeader{streamId: 0, maxPayload: uint16(lAlice.maxPayload)}

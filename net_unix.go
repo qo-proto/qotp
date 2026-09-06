@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 package qotp
 
@@ -9,6 +9,14 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// =============================================================================
+// Destination-address reporting (IP_PKTINFO)
+//
+// Linux and Darwin share the control-message layout; they differ only in the
+// option that turns reporting on, which each OS file provides as
+// ipv4RecvPktInfo.
+// =============================================================================
 
 // Room for one IPv6 pktinfo control message, which is the larger of the two.
 var pktInfoOobSize = unix.CmsgSpace(unix.SizeofInet6Pktinfo)
@@ -23,7 +31,7 @@ func enablePktInfo(conn *net.UDPConn) error {
 	}
 	var errIPv4, errIPv6 error
 	if err := rawConn.Control(func(fd uintptr) {
-		errIPv4 = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, unix.IP_PKTINFO, 1)
+		errIPv4 = unix.SetsockoptInt(int(fd), unix.IPPROTO_IP, ipv4RecvPktInfo, 1)
 		errIPv6 = unix.SetsockoptInt(int(fd), unix.IPPROTO_IPV6, unix.IPV6_RECVPKTINFO, 1)
 	}); err != nil {
 		return err

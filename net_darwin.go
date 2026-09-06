@@ -10,6 +10,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Turns on destination-address reporting (see net_unix.go). Darwin separates
+// the "report it" option from the control-message type; Linux uses one value.
+const ipv4RecvPktInfo = unix.IP_RECVPKTINFO
+
 // based on https://github.com/quic-go/quic-go/blob/d540f545b0b70217220eb0fbd5278ece436a7a20/sys_conn_df_darwin.go
 func setDontFragment(conn *net.UDPConn) error {
 	if supportsDF, err := isAtLeastMacOS11(); !supportsDF || err != nil {

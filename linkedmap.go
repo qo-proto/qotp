@@ -28,7 +28,7 @@ type linkedMap[K cmp.Ordered, V any] struct {
 	items map[K]*lmNode[K, V]
 	head  *lmNode[K, V] // Sentinel head node
 	tail  *lmNode[K, V] // Sentinel tail node
-	len  int
+	len   int
 }
 
 type lmNode[K cmp.Ordered, V any] struct {
@@ -243,22 +243,10 @@ func (s *sharedLinkedMap[K, V]) size() int {
 	return s.m.size()
 }
 
-func (s *sharedLinkedMap[K, V]) contains(key K) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.m.contains(key)
-}
-
 func (s *sharedLinkedMap[K, V]) get(key K) (V, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.m.get(key)
-}
-
-func (s *sharedLinkedMap[K, V]) put(key K, value V) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m.put(key, value)
 }
 
 // getOrPut returns the existing value for key, or inserts value and returns

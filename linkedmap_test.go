@@ -878,7 +878,7 @@ func TestSharedLinkedMap_Concurrent_Reads(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		key := "key" + strconv.Itoa(i)
 		keys[i] = key
-		lm.put(key, i)
+		lm.getOrPut(key, i)
 	}
 
 	var wg sync.WaitGroup
@@ -889,7 +889,6 @@ func TestSharedLinkedMap_Concurrent_Reads(t *testing.T) {
 			for j := 0; j < 50; j++ {
 				key := keys[j]
 				_, _ = lm.get(key)
-				_ = lm.contains(key)
 				_ = lm.size()
 			}
 		}()
@@ -910,7 +909,7 @@ func TestSharedLinkedMap_Concurrent_Writes(t *testing.T) {
 			baseKey := "goroutine" + strconv.Itoa(id) + "_"
 			for j := 0; j < 20; j++ {
 				key := baseKey + strconv.Itoa(j)
-				lm.put(key, id*1000+j)
+				lm.getOrPut(key, id*1000+j)
 			}
 		}(i)
 	}
@@ -925,7 +924,7 @@ func TestSharedLinkedMap_Concurrent_Mixed(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		key := "key" + strconv.Itoa(i)
 		keys[i] = key
-		lm.put(key, i)
+		lm.getOrPut(key, i)
 	}
 
 	var wg sync.WaitGroup
@@ -938,7 +937,6 @@ func TestSharedLinkedMap_Concurrent_Mixed(t *testing.T) {
 			for j := 0; j < 100; j++ {
 				key := keys[j%50]
 				_, _ = lm.get(key)
-				_ = lm.contains(key)
 				if j%10 == 0 {
 					time.Sleep(time.Microsecond)
 				}
@@ -953,7 +951,7 @@ func TestSharedLinkedMap_Concurrent_Mixed(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 30; j++ {
 				key := "writer" + strconv.Itoa(id) + "_" + strconv.Itoa(j)
-				lm.put(key, id*1000+j)
+				lm.getOrPut(key, id*1000+j)
 				if j%5 == 0 {
 					time.Sleep(time.Microsecond)
 				}
@@ -997,7 +995,7 @@ func TestSharedLinkedMap_Concurrent_GetOrPut(t *testing.T) {
 func TestSharedLinkedMap_Concurrent_IterateWhileWriting(t *testing.T) {
 	lm := newSharedLinkedMap[int, int]()
 	for i := 0; i < 100; i++ {
-		lm.put(i, i)
+		lm.getOrPut(i, i)
 	}
 
 	var wg sync.WaitGroup
@@ -1006,7 +1004,7 @@ func TestSharedLinkedMap_Concurrent_IterateWhileWriting(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 100; i < 200; i++ {
-			lm.put(i, i)
+			lm.getOrPut(i, i)
 		}
 	}()
 

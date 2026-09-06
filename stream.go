@@ -54,18 +54,13 @@ func (s *Stream) Write(userData []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	if len(userData) == 0 {
-		return 0, nil
-	}
-
-	n, status := s.conn.snd.queueData(s.streamID, userData)
-	if status == insertStatusOk {
-		// Signal to unblock any pending read so Flush can run
+	n := s.conn.snd.queueData(s.streamID, userData)
+	if n > 0 {
+		// Wake the loop so Flush can send it, for a partial fill too
 		if err := s.conn.listener.localConn.TimeoutReadNow(); err != nil {
 			return 0, err
 		}
 	}
-
 	return n, nil
 }
 

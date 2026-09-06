@@ -48,9 +48,8 @@ func TestSendBuffer_New_ZeroCapacity(t *testing.T) {
 func TestSendBuffer_QueueData_Basic(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	n, status := sb.queueData(1, []byte("test"))
+	n := sb.queueData(1, []byte("test"))
 
-	assert.Equal(t, insertStatusOk, status)
 	assert.Equal(t, 4, n)
 	assert.Equal(t, []byte("test"), sb.streams[1].queuedData)
 }
@@ -58,38 +57,38 @@ func TestSendBuffer_QueueData_Basic(t *testing.T) {
 func TestSendBuffer_QueueData_CapacityLimit_Partial(t *testing.T) {
 	sb := newSendBuffer(3)
 
-	n, status := sb.queueData(1, []byte("test"))
+	n := sb.queueData(1, []byte("test"))
 
-	assert.Equal(t, insertStatusSndFull, status)
 	assert.Equal(t, 3, n)
+	assert.Equal(t, []byte("tes"), sb.streams[1].queuedData)
 }
 
 func TestSendBuffer_QueueData_CapacityLimit_Full(t *testing.T) {
 	sb := newSendBuffer(4)
 	sb.queueData(1, []byte("test"))
 
-	n, status := sb.queueData(1, []byte("more"))
+	n := sb.queueData(1, []byte("more"))
 
-	assert.Equal(t, insertStatusSndFull, status)
 	assert.Equal(t, 0, n)
+	assert.Equal(t, []byte("test"), sb.streams[1].queuedData)
 }
 
 func TestSendBuffer_QueueData_EmptyData(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	n, status := sb.queueData(1, []byte{})
+	n := sb.queueData(1, []byte{})
 
-	assert.Equal(t, insertStatusNoData, status)
 	assert.Equal(t, 0, n)
+	assert.Nil(t, sb.streams[1])
 }
 
 func TestSendBuffer_QueueData_NilData(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	n, status := sb.queueData(1, nil)
+	n := sb.queueData(1, nil)
 
-	assert.Equal(t, insertStatusNoData, status)
 	assert.Equal(t, 0, n)
+	assert.Nil(t, sb.streams[1])
 }
 
 func TestSendBuffer_QueueData_CreatesStream(t *testing.T) {

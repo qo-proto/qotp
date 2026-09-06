@@ -1,7 +1,6 @@
 package qotp
 
 import (
-	"fmt"
 	"log/slog"
 	"math"
 	"slices"
@@ -521,17 +520,14 @@ func (m *measurements) rtoNano() uint64 {
 	}
 }
 
-func backoff(rtoNano uint64, attempt uint) (uint64, error) {
-	if attempt >= maxRetry {
-		return 0, fmt.Errorf("max retry attempts: %v exceeded limit %v", attempt, maxRetry)
+// backoff returns the RTO for the given retransmission attempt. The attempt is
+// clamped to the last one: the caller decides when to give up, and its final
+// try is owed a full window.
+func backoff(rtoNano uint64, attempt uint) uint64 {
+	for range min(attempt, maxRetry-1) {
+		rtoNano = min((rtoNano*rtoBackoffPct)/100, maxRTO)
 	}
-	for i := uint(0); i < attempt; i++ {
-		rtoNano = (rtoNano * rtoBackoffPct) / 100
-		if rtoNano > maxRTO {
-			rtoNano = maxRTO
-		}
-	}
-	return rtoNano, nil
+	return rtoNano
 }
 
 // =============================================================================
