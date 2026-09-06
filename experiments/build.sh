@@ -57,10 +57,14 @@ parse_params() {
 setup_colors
 parse_params "$@"
 
+# The benchmark harness is its own Go module (see experiments/go.mod), so the
+# build has to run from this directory rather than the repo root.
+cd "$SCRIPT_DIR"
+
 msg "Building server..."
-go build -o "$SCRIPT_DIR/server/server" "$SCRIPT_DIR/server/"
+go build -o "$SCRIPT_DIR/server/server" ./server/
 
 msg "Building client..."
-go build -o "$SCRIPT_DIR/client/client" "$SCRIPT_DIR/client/"
+go build -o "$SCRIPT_DIR/client/client" ./client/
 
 msg_ok "Done."
