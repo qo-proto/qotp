@@ -93,7 +93,7 @@ func encryptInitCryptoSnd(
 	}
 	padded := make([]byte, len(packetData)+msgInitFillLenSize+fillLen)
 	putUint16(padded, uint16(fillLen))
-	copy(padded[2+fillLen:], packetData)
+	copy(padded[msgInitFillLenSize+fillLen:], packetData)
 
 	secret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
 	if err != nil {
@@ -305,9 +305,11 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 
 	// Remove padding: [fillLen (2 bytes)][filler][actualData]. fillLen is
 	// attacker-chosen — InitCryptoSnd is sealed to the receiver's *public*
-	// identity key, so anyone able to dial can pick the plaintext. The
-	// conservativeMTU guard above makes packetData at least ~1.1KB, so
-	// reading the 2-byte length itself is always in bounds.
+	// identity key, so anyone able to dial can pick the plaintext, and a
+	// successful AEAD check says nothing about who sent it. Reading the
+	// 2-byte length is safe without its own check: chainedDecrypt rejects a
+	// sealed payload shorter than its 24-byte nonce, so packetData is always
+	// at least minProtoSize (24 - macSize = 8) bytes.
 	fillerLen := int(getUint16(packetData))
 	if msgInitFillLenSize+fillerLen > len(packetData) {
 		return nil, nil, nil, errors.New("invalid filler length")
