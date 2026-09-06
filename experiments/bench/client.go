@@ -137,7 +137,8 @@ func runClient(cfg config) {
 
 	fmt.Fprintf(os.Stderr, "checking %s ...\n", cfg.addr)
 	preflight(cfg.addr)
-	mark := markServer(cfg.addr) // responder CPU baseline
+	mark := markServer(cfg.addr) // responder CPU and byte-count baseline
+	baseline := mark.rep
 
 	var all []outcome
 	var samples []sample
@@ -171,6 +172,10 @@ func runClient(cfg config) {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "note: could not collect the responder's report: %v\n", err)
 	}
+	// Its counters run for the life of the responder process, which may span
+	// several client runs. Difference them against the baseline so the block
+	// describes this run and can be compared with what this side sent.
+	subtractBaseline(srv, baseline)
 
 	report(all, cfg.sizeMB, cfg.runs, srv)
 
@@ -185,6 +190,21 @@ func runClient(cfg config) {
 // /proc/stat advances in 10 ms ticks, so a phase shorter than this yields a
 // CPU figure that is mostly quantisation. Better no column than a wrong one.
 const minCPUWindow = 500 * time.Millisecond
+
+// subtractBaseline turns the responder's lifetime counters into this run's.
+func subtractBaseline(srv, baseline *bench.ServerReport) {
+	if srv == nil || baseline == nil {
+		return
+	}
+	for p, v := range srv.ReceivedBytes {
+		if b := baseline.ReceivedBytes[p]; v >= b {
+			srv.ReceivedBytes[p] = v - b
+		}
+	}
+	if srv.SessionSecs >= baseline.SessionSecs {
+		srv.SessionSecs -= baseline.SessionSecs
+	}
+}
 
 // activeProtocols is the set this run measures; -only narrows it.
 var activeProtocols = bench.Protocols
@@ -413,7 +433,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 		for _, p := range activeProtocols {
 			fmt.Printf("  %-5s received %8.1f MB\n", p, float64(srv.ReceivedBytes[p])/1e6)
 		}
-		fmt.Printf("  session %.0fs, %d cores\n", srv.SessionSecs, srv.NumCPU)
+		fmt.Printf("  over %.0fs of this run, %d cores\n", srv.SessionSecs, srv.NumCPU)
 	}
 
 	fmt.Println("\nMbps is measured over the steady-state window: after a warm-up, and")

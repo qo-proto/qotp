@@ -173,11 +173,10 @@ func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, 
 	nonceDet := make([]byte, chacha20poly1305.NonceSize)
 	putUint48(nonceDet[6:], snCrypt)
 
-	// Set direction bit to prevent nonce collision between peers
+	// Direction bit, so the two peers cannot collide on a nonce. The buffer is
+	// freshly zeroed, so only the set case needs doing.
 	if isSender {
 		nonceDet[0] |= 0x80
-	} else {
-		nonceDet[0] &^= 0x80
 	}
 
 	// First layer: encrypt payload
@@ -382,9 +381,9 @@ func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byt
 		nonceDet := make([]byte, chacha20poly1305.NonceSize)
 		putUint48(nonceDet[6:], snConn)
 
-		if isSender {
-			nonceDet[0] &^= 0x80
-		} else {
+		// The peer's direction bit, mirrored: freshly zeroed, so only the set
+		// case needs doing.
+		if !isSender {
 			nonceDet[0] |= 0x80
 		}
 
@@ -437,20 +436,15 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) 
 		flags |= flagExtend
 	}
 
-	overhead := calcProtoOverhead(flags)
-
-	switch msgType {
-	case initRcv:
-		return overhead + minInitRcvSizeHdr + footerDataSize
-	case initCryptoSnd:
-		return overhead + minInitCryptoSndSizeHdr + footerDataSize + msgInitFillLenSize
-	case initCryptoRcv:
-		return overhead + minInitCryptoRcvSizeHdr + footerDataSize
-	case data:
-		return overhead + minDataSizeHdr + footerDataSize
-	default:
-		return -1
+	hdr := aadLen(msgType)
+	if hdr < 0 {
+		return -1 // InitSnd: no payload allowed
 	}
+	overhead := calcProtoOverhead(flags) + hdr + footerDataSize
+	if msgType == initCryptoSnd {
+		overhead += msgInitFillLenSize // the padding length field
+	}
+	return overhead
 }
 
 // =============================================================================

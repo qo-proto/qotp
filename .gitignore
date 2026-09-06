@@ -7,3 +7,8 @@ experiments/qotp-bench
 experiments/qotp-bench-*
 experiments/result*
 /bench*
+
+# benchmark run artifacts
+experiments/*.log
+experiments/*.json
+experiments/plots/

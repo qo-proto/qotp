@@ -11,14 +11,26 @@ import (
 	"sync/atomic"
 )
 
-type keyState struct {
+// secrets is the sliding window of shared secrets a direction will accept:
+// the current one, plus its neighbours while a key change is in flight.
+type secrets struct {
 	prev, cur, next []byte
-	prvKeyEp        *ecdh.PrivateKey
-	prvKeyEpNext    *ecdh.PrivateKey
 }
 
+// keyState is the sending side: our own ephemeral key, and the replacement
+// generated when a rotation starts.
+type keyState struct {
+	secrets
+	prvKeyEp     *ecdh.PrivateKey
+	prvKeyEpNext *ecdh.PrivateKey
+}
+
+// rcvKeyState is the receiving side. It has no current private key of its own:
+// what it needs is the peer's public keys, and one private key to answer the
+// next rotation with.
 type rcvKeyState struct {
-	keyState
+	secrets
+	prvKeyEpNext *ecdh.PrivateKey
 	pubKeyEp     *ecdh.PublicKey
 	pubKeyEpNext *ecdh.PublicKey
 }
@@ -26,10 +38,9 @@ type rcvKeyState struct {
 type connPhase int
 
 const (
-	phaseCreated          connPhase = iota // nothing sent
-	phaseInitSent                          // init sent, awaiting reply
-	phaseReady                             // handshake complete, idle
-	phaseKeyUpdatePending                  // received KEY_UPDATE, need to send ACK
+	phaseCreated  connPhase = iota // nothing sent
+	phaseInitSent                  // init sent, awaiting reply
+	phaseReady                     // handshake complete
 )
 
 // conn represents a QOTP connection to a remote peer.
@@ -85,7 +96,6 @@ type conn struct {
 
 	// Activity tracking
 	lastReadTimeNano uint64
-	diag             diagState
 
 	// Cumulative acked payload bytes, any order (unlike the contiguous
 	// acked offset, this does not freeze at head-of-line holes). Atomic:
@@ -104,6 +114,10 @@ type conn struct {
 	// until acked; on an idle connection, KU-only packets are re-sent
 	kuLastSentNano uint64 // last time a packet carrying the KU went out
 	kuSendCount    uint   // RTO-paced re-sends this round; errors past maxRetry
+	// A KEY_UPDATE_ACK we owe the peer. A flag rather than a phase: as a phase
+	// it excluded the connection from the "may send new data" test, so data
+	// stalled for a packet even though the ack would have ridden along on it.
+	kuAckDue bool
 
 	// Handshake retransmission: untracked init packets (InitSnd, empty
 	// crypto dials, InitRcv) are re-sent with backoff in phaseInitSent,
@@ -141,7 +155,7 @@ func (c *conn) kuPending() bool {
 
 // kuAckPending reports a KEY_UPDATE_ACK we owe the peer.
 func (c *conn) kuAckPending() bool {
-	return c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
+	return c.kuAckDue && c.rcvKeys.prvKeyEpNext != nil
 }
 
 // kuAttachDue returns true when the pending KEY_UPDATE should be attached to
@@ -405,7 +419,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.listener.maxPayload,
 		)
 	case initCryptoSnd:
-		packetData, _ := encodeProto(p, userData)
+		packetData := encodeProto(p, userData)
 		_, encData, err = encryptInitCryptoSnd(
 			c.pubKeyIdRcv,
 			c.listener.prvKeyId.PublicKey(),
@@ -414,7 +428,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			packetData,
 		)
 	case initRcv, initCryptoRcv, data:
-		packetData, _ := encodeProto(p, userData)
+		packetData := encodeProto(p, userData)
 		encData, err = encryptPacket(
 			msgType,
 			c.connId,
@@ -482,13 +496,13 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 // through the self-locking getOrCreateStream.
 func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint64, nowNano uint64) (*Stream, error) {
 	// Handle key update from peer
-	if p.isKeyUpdate && len(p.keyUpdatePub) == pubKeySize {
+	if len(p.keyUpdatePub) == pubKeySize {
 		if err := c.handlePeerKeyUpdate(p.keyUpdatePub); err != nil {
 			return nil, fmt.Errorf("key update failed: %w", err)
 		}
 	}
 
-	if p.isKeyUpdateAck && len(p.keyUpdatePubAck) == pubKeySize {
+	if len(p.keyUpdatePubAck) == pubKeySize {
 		if err := c.handleKeyUpdateAck(p.keyUpdatePubAck); err != nil {
 			return nil, fmt.Errorf("key update failed: %w", err)
 		}
@@ -508,12 +522,8 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 
 	// Process ACK if present
 	if p.ack != nil {
-		if diagOn {
-			c.diag.acks++
-		}
-		ackStatus, ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack)
-
-		if ackStatus == ackStatusOk {
+		ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack)
+		if ackedPkt != nil {
 			c.dataInFlight -= int(p.ack.len)
 			c.deliveredBytes.Add(uint64(p.ack.len))
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
@@ -545,12 +555,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 	if s == nil {
 		// Stream finished but peer still sending - ACK to stop retransmits
 		if c.rcv.isFinished(p.streamId) {
-			if len(userData) > 0 {
-				c.rcv.queueAck(p.streamId, p.streamOffset, uint16(len(userData)))
-			} else {
-				// Empty packet (ping/close/key-update): still ACK it
-				c.rcv.queueAck(p.streamId, p.streamOffset, 0)
-			}
+			c.rcv.queueAck(p.streamId, p.streamOffset, uint16(len(userData)))
 		}
 		return nil, nil
 	}
@@ -600,7 +605,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	// Retransmit of CURRENT round's KEY_UPDATE
 	if c.rcvKeys.pubKeyEpNext != nil &&
 		bytes.Equal(c.rcvKeys.pubKeyEpNext.Bytes(), peerNewPubKeyBytes) {
-		c.phase = phaseKeyUpdatePending
+		c.kuAckDue = true
 		return nil
 	}
 
@@ -609,12 +614,10 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 		c.rcvKeys.prev = c.rcvKeys.cur
 		c.rcvKeys.cur = c.rcvKeys.next
 		c.rcvKeys.next = nil
-		c.rcvKeys.prvKeyEp = c.rcvKeys.prvKeyEpNext
 		c.rcvKeys.prvKeyEpNext = nil
 		c.rcvKeys.pubKeyEp = c.rcvKeys.pubKeyEpNext // MUST be before setting to nil
 		c.rcvKeys.pubKeyEpNext = nil
 		c.rcvSnHigh = 0 // the peer's sequence number restarts with its key
-		c.phase = phaseReady
 	}
 
 	// Generate fresh key for this KEY_UPDATE
@@ -632,7 +635,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	}
 	c.rcvKeys.next = newSecret
 
-	c.phase = phaseKeyUpdatePending
+	c.kuAckDue = true
 	return nil
 }
 
@@ -668,8 +671,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// Expired best-effort packets (unreliable data, pings) are dropped, not
 	// retransmitted: release their in-flight accounting
-	droppedBytes, _ := c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
-	c.dataInFlight -= droppedBytes
+	c.dataInFlight -= c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
 
 	// Skip receive gaps on unreliable streams whose reorder deadline passed
 	// (covers the case where the sender went silent mid-gap)
@@ -686,10 +688,6 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// gets its full response window before the error fires
 	if kuSendDue && c.kuSendCount >= maxRetry {
 		return 0, 0, errors.New("key update: max retry attempts exceeded")
-	}
-
-	if diagOn {
-		c.diagCheck(s, ack != nil, nowNano)
 	}
 
 	// Check send blockers
@@ -827,12 +825,9 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	if isKeyUpdate {
-		p.isKeyUpdate = true
 		p.keyUpdatePub = c.sndKeys.prvKeyEpNext.PublicKey().Bytes()
 	}
-
 	if isKeyUpdateAck {
-		p.isKeyUpdateAck = true
 		p.keyUpdatePubAck = c.rcvKeys.prvKeyEpNext.PublicKey().Bytes()
 	}
 
@@ -845,9 +840,6 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	if err != nil {
 		return 0, 0, err
 	}
-	if diagOn {
-		c.diag.sent++
-	}
 
 	// Stamp with the send-completion time: the write can block (full socket
 	// buffer), and a pre-block stamp would inflate this packet's RTT sample
@@ -857,7 +849,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
 	}
 
-	if p.isKeyUpdate {
+	if isKeyUpdate {
 		if c.kuLastSentNano != 0 {
 			c.kuSendCount++ // an RTO passed without a KUAck: this is a re-send
 		}
@@ -871,7 +863,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	}
 
 	if isKeyUpdateAck {
-		c.phase = phaseReady
+		c.kuAckDue = false
 	}
 
 	// Token-bucket pacing with burst allowance: schedule the next send
@@ -882,11 +874,10 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// one packet per wakeup and locking the bw estimator onto that
 	// artifact. Carrying the pacing credit forward lets a late wakeup send
 	// a short back-to-back burst instead, so the achieved rate tracks the
-	// paced rate. The credit is floored at maxBurstPackets so a long-idle
-	// connection can't dump an unbounded burst into the queue.
-	// Credit and debt are both capped at maxBurstPackets: a long-idle
-	// connection cannot bank an unbounded burst, and packets that bypass the
-	// pacing gate (ACKs) cannot push the next send arbitrarily far out.
+	// paced rate. Credit and debt are both capped at maxBurstPackets: a
+	// long-idle connection cannot bank an unbounded burst, and packets that
+	// bypass the pacing gate (ACKs) cannot push the next send arbitrarily
+	// far out.
 	pacingNano := c.calcPacing(uint64(len(encData)))
 	burst := maxBurstPackets * pacingNano
 	floor := uint64(0)

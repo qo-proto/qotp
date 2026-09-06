@@ -78,15 +78,12 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		rcv:         newReceiveBuffer(1000),
 		streams:     newSharedLinkedMap[uint32, *Stream](),
 		sndKeys: &keyState{
-			cur:      sharedSecret,
+			secrets:  secrets{cur: sharedSecret},
 			prvKeyEp: prvEpAlice,
 		},
 		snCrypto: 0,
 		rcvKeys: &rcvKeyState{
-			keyState: keyState{
-				cur:      sharedSecret,
-				prvKeyEp: prvEpAlice,
-			},
+			secrets:  secrets{cur: sharedSecret},
 			pubKeyEp: prvEpBob.PublicKey(),
 		},
 	}
@@ -320,7 +317,7 @@ func TestConnHandlePeerKeyUpdate_NewKeyUpdate(t *testing.T) {
 	assert.NotNil(t, c.rcvKeys.prvKeyEpNext)
 	assert.NotNil(t, c.rcvKeys.pubKeyEpNext)
 	assert.NotNil(t, c.rcvKeys.next)
-	assert.Equal(t, phaseKeyUpdatePending, c.phase)
+	assert.True(t, c.kuAckDue)
 }
 
 func TestConnHandlePeerKeyUpdate_Retransmit(t *testing.T) {
@@ -342,7 +339,7 @@ func TestConnHandlePeerKeyUpdate_Retransmit(t *testing.T) {
 	// Should just re-set phase, not regenerate keys
 	assert.Equal(t, savedPrvKeyEpNext, c.rcvKeys.prvKeyEpNext)
 	assert.Equal(t, savedNext, c.rcvKeys.next)
-	assert.Equal(t, phaseKeyUpdatePending, c.phase)
+	assert.True(t, c.kuAckDue)
 }
 
 func TestConnHandlePeerKeyUpdate_NewRoundRotates(t *testing.T) {
@@ -526,11 +523,7 @@ func TestConnFullHandshake(t *testing.T) {
 			prvKeyEp: prvEpAlice,
 		},
 		snCrypto: 0,
-		rcvKeys: &rcvKeyState{
-			keyState: keyState{
-				prvKeyEp: prvEpAlice,
-			},
-		},
+		rcvKeys:  &rcvKeyState{},
 	}
 	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 
@@ -699,14 +692,13 @@ func TestConnProcessIncomingPayload_KeyUpdate(t *testing.T) {
 	p := &payloadHeader{
 		streamId:     1,
 		streamOffset: 0,
-		isKeyUpdate:  true,
 		keyUpdatePub: prvEpNew.PublicKey().Bytes(), // Must be different from current peerPubKeyEp
 	}
 
 	s, err := c.processIncomingPayload(p, []byte{}, 0, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, s)
-	assert.Equal(t, phaseKeyUpdatePending, c.phase)
+	assert.True(t, c.kuAckDue)
 	assert.NotNil(t, c.rcvKeys.next)
 }
 
@@ -719,7 +711,6 @@ func TestConnProcessIncomingPayload_KeyUpdateAck(t *testing.T) {
 	p := &payloadHeader{
 		streamId:        1,
 		streamOffset:    0,
-		isKeyUpdateAck:  true,
 		keyUpdatePubAck: prvEpAlice.PublicKey().Bytes(),
 	}
 
@@ -904,7 +895,7 @@ func TestConnDecode_DataWithPrevKey(t *testing.T) {
 
 	// Encrypt with prev key (simulate packet from peer, so flip isSender)
 	p := &payloadHeader{streamId: 1, streamOffset: 0}
-	packetData, _ := encodeProto(p, []byte("test"))
+	packetData := encodeProto(p, []byte("test"))
 
 	encData, err := encryptPacket(
 		data,
@@ -937,7 +928,7 @@ func TestConnDecode_DataWithNextKey(t *testing.T) {
 
 	// Encrypt with next key (simulate packet from peer, so flip isSender)
 	p := &payloadHeader{streamId: 1, streamOffset: 0}
-	packetData, _ := encodeProto(p, []byte("test"))
+	packetData := encodeProto(p, []byte("test"))
 
 	encData, err := encryptPacket(
 		data,
@@ -1129,7 +1120,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
-		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
+		rcvKeys:      &rcvKeyState{},
 	}
 	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 	assert.Equal(t, conservativeMTU, connAlice.mtu) // starts at conservativeMTU; negotiateMTU upgrades it
@@ -1171,12 +1162,12 @@ func TestConn_MaxPayload_OnEveryPacketKind(t *testing.T) {
 	cases := map[string]*payloadHeader{
 		"data":      {streamId: 1, streamOffset: 5, maxPayload: 1400},
 		"close":     {streamId: 1, isClose: true, maxPayload: 1400},
-		"keyUpdate": {streamId: 1, isKeyUpdate: true, keyUpdatePub: pub, maxPayload: 1400},
-		"kuAck":     {streamId: 1, isKeyUpdateAck: true, keyUpdatePubAck: pub, maxPayload: 1400},
+		"keyUpdate": {streamId: 1, keyUpdatePub: pub, maxPayload: 1400},
+		"kuAck":     {streamId: 1, keyUpdatePubAck: pub, maxPayload: 1400},
 		"ackOnly":   {ack: &ack{streamId: 1, offset: 2, len: 3}, maxPayload: 1400},
 	}
 	for name, p := range cases {
-		enc, _ := encodeProto(p, nil)
+		enc := encodeProto(p, nil)
 		got, _, err := decodeProto(enc)
 		assert.NoError(t, err, name)
 		assert.Equal(t, uint16(1400), got.maxPayload, name)
@@ -1184,7 +1175,7 @@ func TestConn_MaxPayload_OnEveryPacketKind(t *testing.T) {
 
 	// An ACK-only packet must stay ACK-only: maxPayload no longer drags a
 	// stream header along with it.
-	enc, _ := encodeProto(cases["ackOnly"], nil)
+	enc := encodeProto(cases["ackOnly"], nil)
 	assert.True(t, enc[0]&flagHasStream == 0, "ACK-only packet must not carry a stream header")
 }
 
@@ -1259,13 +1250,13 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 		measurements: newMeasurements(),
 		rcvWndSize:   rcvBufferCapacity,
 		sndKeys:      &keyState{prvKeyEp: prvEpAlice},
-		rcvKeys:      &rcvKeyState{keyState: keyState{prvKeyEp: prvEpAlice}},
+		rcvKeys:      &rcvKeyState{},
 	}
 	lAlice.connMap.getOrPut(connAlice.connId, connAlice)
 
 	// Step 1: Alice encodes InitCryptoSnd with the MTU update field in proto payload
 	p := &payloadHeader{streamId: 0, maxPayload: uint16(lAlice.maxPayload)}
-	packetData, _ := encodeProto(p, []byte("init data"))
+	packetData := encodeProto(p, []byte("init data"))
 	encoded, err := connAlice.encode(p, packetData, initCryptoSnd)
 	assert.NoError(t, err)
 
@@ -1553,7 +1544,7 @@ func TestConn_FlushStream_KeyUpdate_CompletedStopsSending(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
 
-	// KUAck processed: next secret established → isKeyUpdate false
+	// KUAck processed: next secret established, so nothing left to announce
 	c.sndKeys.next = bytes.Repeat([]byte{7}, 32)
 
 	_, _, err = c.flushStream(s, uint64(2*secondNano))
@@ -1751,7 +1742,7 @@ func TestConn_FlushStream_RwndBlocked_ProbesForWindowUpdate(t *testing.T) {
 // our own carries a stream header, and a stream header with no data is
 // acknowledged like any other packet -- that ACK is what reopens the window.
 func TestConn_RwndProbe_IsAcknowledgedByPeer(t *testing.T) {
-	enc, _ := encodeProto(&payloadHeader{maxPayload: 1452, streamId: 7}, nil)
+	enc := encodeProto(&payloadHeader{maxPayload: 1452, streamId: 7}, nil)
 	ph, userData, err := decodeProto(enc)
 	assert.NoError(t, err)
 	assert.NotNil(t, userData, "probe must carry a stream header")
@@ -1770,7 +1761,7 @@ func TestConn_RwndProbe_IsAcknowledgedByPeer(t *testing.T) {
 
 	// An ACK-only packet, by contrast, is not acknowledged back -- which is why
 	// a blocked uploader cannot rely on one to learn the window.
-	encAck, _ := encodeProto(&payloadHeader{maxPayload: 1452, ack: &ack{streamId: 7}}, nil)
+	encAck := encodeProto(&payloadHeader{maxPayload: 1452, ack: &ack{streamId: 7}}, nil)
 	phAck, dataAck, err := decodeProto(encAck)
 	assert.NoError(t, err)
 	assert.Nil(t, dataAck, "ack-only packet carries no stream header")
@@ -1794,7 +1785,7 @@ func TestConn_RcvWnd_TravelsOnEveryPacket(t *testing.T) {
 }
 
 func mustEncode(p *payloadHeader, userData []byte) []byte {
-	enc, _ := encodeProto(p, userData)
+	enc := encodeProto(p, userData)
 	return enc
 }
 
@@ -2015,4 +2006,28 @@ func TestConn_RwndProbe_DeadPeerIsTornDown(t *testing.T) {
 	c.listener.Flush(nowNano + readDeadline + 1)
 	_, stillThere = c.listener.connMap.get(c.connId)
 	assert.False(t, stillThere, "read deadline must end a connection whose peer is gone")
+}
+
+// A KEY_UPDATE_ACK we owe the peer must not stop data going out. It rides
+// along on the next packet, so blocking new data until it has been sent costs
+// a packet for nothing -- which is what it did while it was a phase rather
+// than a flag.
+func TestConn_KeyUpdateAckDue_DoesNotBlockData(t *testing.T) {
+	c := createTestConn(true, false, true)
+	w := &countingConn{}
+	c.listener.localConn = w
+	c.mtu = testMaxPayload
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.getOrCreateStream(1)
+
+	// The peer sent a KEY_UPDATE, so we owe it an ack.
+	assert.NoError(t, c.handlePeerKeyUpdate(prvEpNew.PublicKey().Bytes()))
+	assert.True(t, c.kuAckPending(), "we owe a KEY_UPDATE_ACK")
+	assert.Equal(t, phaseReady, c.phase, "owing an ack is not a handshake state")
+
+	c.snd.queueData(s.streamID, []byte("payload that should still go out"))
+	n, _, err := c.flushStream(s, uint64(secondNano))
+	assert.NoError(t, err)
+	assert.Greater(t, n, 0, "data must flow while a KEY_UPDATE_ACK is owed")
+	assert.False(t, c.kuAckDue, "and the ack rode along on it")
 }

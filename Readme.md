@@ -420,6 +420,12 @@ sender therefore emits an empty packet until the window reopens, and a receiver
 whose buffer drains well below what it last announced sends one unprompted.
 That update may be lost, so it does not replace the probe.
 
+Retransmission gives up after `maxRetry` attempts spaced by doubling backoff,
+plus one round trip to hear back from the last one — about 5s at a 200ms RTO.
+That final wait is deliberately not backed off: there is no further retransmit
+to space out, so using the backed-off interval would add 16×RTO to how long a
+broken path takes to surface.
+
 The probe interval backs off like a retransmit, but the probe never gives up:
 a peer refusing data is behaving correctly, so there is no failure to count. A
 peer that has actually gone away is ended by the 30s read deadline instead —
@@ -444,6 +450,14 @@ Normal → Probe (1 round) → Drain (1 round) → Normal
 
 1. **Startup → Normal**: 3 consecutive packet-timed rounds without ≥25% bandwidth growth
 2. **Normal → Probe**: Every 8 × RTT_min. A probe is one round at 1.25x pacing of normal data (no extra packets), immediately followed by one drain round at 0.75x, then back to 1.0x
+
+**Queue feedback**: a standing queue means qotp is pacing faster than the link
+drains, so it drains at 0.75x until the delay falls back. The threshold is
+`rttMin + max(rttMin/4, 5ms)`, not a flat percentage: a bottleneck running
+fq_codel or CAKE deliberately holds a few milliseconds of delay, and on a short
+path that target is a large fraction of `rttMin`. A flat 25% allowance read a
+healthy AQM meeting its own target as congestion — measured draining 27% of the
+time on an 11ms path, where codel's 5ms target alone is 44% of `rttMin`.
 
 **Measurements**:
 

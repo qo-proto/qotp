@@ -58,9 +58,16 @@ var (
 	startupGrowthPct  = uint64(125) // startup expects >=25% bandwidth growth per round
 	startupExitRounds = uint64(3)   // exit startup after this many rounds without growth
 
-	// Queue feedback: srtt above rttMin x queueThresholdPct/100 means a
-	// standing queue is building at the bottleneck — drain instead of probe
-	queueThresholdPct = uint64(125)
+	// Queue feedback: smoothed delay above queueLimit() means a standing queue
+	// is building at the bottleneck — drain instead of probe. The allowance is
+	// proportional to the path but floored, because a bottleneck running
+	// fq_codel or CAKE deliberately holds a few milliseconds of delay, and on
+	// a short path that target is a large fraction of rttMin. Reading an AQM
+	// meeting its own target as congestion keeps a healthy flow draining for
+	// no reason: measured at 27% of the time on an 11ms path, where codel's
+	// 5ms target alone is 44% of rttMin.
+	queueTolerancePct = uint64(25)         // of rttMin
+	aqmTargetNano     = uint64(5 * msNano) // fq_codel/CAKE default target
 
 	// Fairness throttle: a persistent pacing multiplier with TCP-like
 	// dynamics (multiplicative decrease, gradual recovery), so loss-based
@@ -325,14 +332,6 @@ func (m *measurements) deliveryRateSample(pkt *sendPacket, nowNano uint64) (uint
 	}
 	bwSample := (delivered * secondNano) / elapsed
 
-	slog.Debug("bwSample",
-		"bwCurrent_MBs", bwSample/1_000_000,
-		"delivered", delivered,
-		"ackElapsed_us", ackElapsed/1000,
-		"sendElapsed_us", sendElapsed/1000,
-		"deliveredAtSend", pkt.deliveredAtSend,
-		"totalDelivered", m.totalDelivered,
-	)
 	return bwSample, true
 }
 
@@ -455,34 +454,38 @@ func (m *measurements) updateBBRState(nowNano uint64) {
 }
 
 func (m *measurements) updateStartup() {
-	slog.Debug("updateStartup",
-		"bwMax_MBs", m.bwMax/1_000_000,
-		"roundBwBest_MBs", m.roundBwBest/1_000_000,
-		"prevRoundBwBest_MBs", m.prevRoundBwBest/1_000_000,
-		"noGrowthRounds", m.noGrowthRounds,
-		"roundTarget", m.roundDeliveredTarget,
-		"delivered", m.totalDelivered,
-		"gain_pct", m.pacingGainPct,
-	)
 	if m.noGrowthRounds >= startupExitRounds {
 		m.exitStartup()
 	}
 }
 
+// queueLimit is the smoothed delay above which a standing queue is assumed to
+// be building: the path's own minimum, plus whichever is larger of a
+// proportion of it and the delay a bottleneck AQM deliberately maintains. The
+// floor matters because fq_codel and CAKE hold a few milliseconds of delay on
+// purpose, and on a short path that target is a large fraction of rttMin -- a
+// flat percentage would read a healthy AQM meeting its own target as
+// congestion and drain for no reason.
+func (m *measurements) queueLimit() uint64 {
+	if m.rttMinNano == math.MaxUint64 {
+		return math.MaxUint64 // no sample yet, nothing to compare against
+	}
+	return m.rttMinNano + max((m.rttMinNano*queueTolerancePct)/100, aqmTargetNano)
+}
+
 func (m *measurements) updateNormal(nowNano uint64) {
 	// Queue feedback: a standing queue means we pace faster than the link
-	// drains (estimator over-report, probe residue). Drain at 0.75x until
-	// the delay falls back toward rttMin; also postpone probing, which
-	// would only refill the queue. Safety net independent of the estimator.
-	isQueueBuilding := m.rttMinNano != math.MaxUint64 &&
-		m.srtt > (m.rttMinNano*queueThresholdPct)/100
+	// drains (estimator over-report, probe residue). Drain at 0.75x until the
+	// delay falls back toward rttMin; also postpone probing, which would only
+	// refill the queue. Safety net independent of the estimator.
+	isQueueBuilding := m.srtt > m.queueLimit()
 	if isQueueBuilding {
 		m.setState(ccDraining)
 		m.probeRoundsRemaining = 0
 		m.lastProbeTimeNano = nowNano
 	} else if m.probeRoundsRemaining == 0 {
-		// Not draining, not probing: restore steady state (also the exit
-		// path from a queue-drain episode)
+		// Not draining, not probing: restore steady state (also the exit path
+		// from a queue-drain episode)
 		m.setState(ccSteady)
 		if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeIntervalRtts {
 			m.setState(ccProbing)
@@ -490,15 +493,6 @@ func (m *measurements) updateNormal(nowNano uint64) {
 			m.lastProbeTimeNano = nowNano
 		}
 	}
-
-	slog.Debug("updateNormal",
-		"bwMax_MBs", m.bwMax/1_000_000,
-		"gain_pct", m.pacingGainPct,
-		"throttle_pct", m.throttlePct,
-		"srtt_us", m.srtt/1000,
-		"rttMin_us", m.rttMinNano/1000,
-		"delivered_MB", m.totalDelivered/1_000_000,
-	)
 }
 
 // =============================================================================
@@ -507,17 +501,10 @@ func (m *measurements) updateNormal(nowNano uint64) {
 
 func (m *measurements) rtoNano() uint64 {
 	rto := m.srtt + 4*m.rttvar
-
-	switch {
-	case rto == 0:
-		return defaultRTO
-	case rto < minRTO:
-		return minRTO
-	case rto > maxRTO:
-		return maxRTO
-	default:
-		return rto
+	if rto == 0 {
+		return defaultRTO // no sample yet
 	}
+	return min(max(rto, minRTO), maxRTO)
 }
 
 // backoff returns the RTO for the given retransmission attempt. The attempt is

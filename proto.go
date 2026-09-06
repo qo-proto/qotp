@@ -13,8 +13,8 @@ import (
 //   Bit 1: hasStream     streamId + streamOffset (+ userData) present
 //   Bit 2: extend        48-bit offsets instead of 24-bit
 //   Bit 3: isClose
-//   Bit 4: isKeyUpdate      32-byte pubkey present
-//   Bit 5: isKeyUpdateAck   32-byte pubkey present
+//   Bit 4: keyUpdate        32-byte pubkey present
+//   Bit 5: keyUpdateAck     32-byte pubkey present
 //   Bits 6-7: reserved
 //
 // Wire layout: [flags][maxPayload][rcvWnd][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
@@ -51,13 +51,14 @@ const (
 // =============================================================================
 
 type payloadHeader struct {
-	maxPayload      uint16 // sender's max UDP payload; always present
-	rcvWnd          uint64 // free space in the connection's receive buffer; always present
-	isClose         bool
-	isKeyUpdate     bool
-	isKeyUpdateAck  bool
-	keyUpdatePub    []byte // 32 bytes when isKeyUpdate
-	keyUpdatePubAck []byte // 32 bytes when isKeyUpdateAck
+	maxPayload uint16 // sender's max UDP payload; always present
+	rcvWnd     uint64 // free space in the connection's receive buffer; always present
+	isClose    bool
+	// A key update is present exactly when its public key is. The wire flag
+	// means "32 bytes follow", so the key's length is the only truth there is
+	// -- a separate bool could disagree with it.
+	keyUpdatePub    []byte // 32 bytes to announce a new ephemeral key
+	keyUpdatePubAck []byte // 32 bytes to answer the peer's
 	unreliable      bool   // best-effort stream: sender never retransmits its data
 	ack             *ack
 	streamId        uint32
@@ -131,14 +132,16 @@ func decodeRcvWindow(encoded uint8) uint64 {
 // Encode
 // =============================================================================
 
-func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
+func encodeProto(p *payloadHeader, userData []byte) []byte {
 	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
 	// Stream header (streamId+offset) included when:
 	// - any control flag set, OR
 	// - has user data (empty userData = ping), OR
 	// - no ACK (for minimum packet size)
-	hasStreamHeader := p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
+	hasKeyUpdate := len(p.keyUpdatePub) == pubKeySize
+	hasKeyUpdateAck := len(p.keyUpdatePubAck) == pubKeySize
+	hasStreamHeader := p.isClose || hasKeyUpdate || hasKeyUpdateAck ||
 		userData != nil || p.ack == nil
 
 	var flags uint8
@@ -154,10 +157,10 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	if p.isClose {
 		flags |= flagClose
 	}
-	if p.isKeyUpdate {
+	if hasKeyUpdate {
 		flags |= flagKeyUpdate
 	}
-	if p.isKeyUpdateAck {
+	if hasKeyUpdateAck {
 		flags |= flagKeyUpdateAck
 	}
 
@@ -177,14 +180,12 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset += putUint16(encoded[offset:], p.ack.len)
 	}
 
-	if p.isKeyUpdate {
-		copy(encoded[offset:], p.keyUpdatePub)
-		offset += pubKeySize
+	if hasKeyUpdate {
+		offset += copy(encoded[offset:], p.keyUpdatePub)
 	}
 
-	if p.isKeyUpdateAck {
-		copy(encoded[offset:], p.keyUpdatePubAck)
-		offset += pubKeySize
+	if hasKeyUpdateAck {
+		offset += copy(encoded[offset:], p.keyUpdatePubAck)
 	}
 
 	if hasStreamHeader {
@@ -196,8 +197,8 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
 	}
 
-	offset += copy(encoded[offset:], userData)
-	return encoded, offset
+	copy(encoded[offset:], userData)
+	return encoded
 }
 
 // =============================================================================
@@ -213,11 +214,9 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	isExtend := flags&flagExtend != 0
 
 	p := &payloadHeader{
-		maxPayload:     getUint16(data[1:]),
-		rcvWnd:         decodeRcvWindow(data[3]),
-		isClose:        flags&flagClose != 0,
-		isKeyUpdate:    flags&flagKeyUpdate != 0,
-		isKeyUpdateAck: flags&flagKeyUpdateAck != 0,
+		maxPayload: getUint16(data[1:]),
+		rcvWnd:     decodeRcvWindow(data[3]),
+		isClose:    flags&flagClose != 0,
 	}
 	offset := 4
 
@@ -236,7 +235,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += 2
 	}
 
-	if p.isKeyUpdate {
+	if flags&flagKeyUpdate != 0 {
 		if len(data) < offset+pubKeySize {
 			return nil, nil, errors.New("payload too small for keyUpdate")
 		}
@@ -244,7 +243,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += pubKeySize
 	}
 
-	if p.isKeyUpdateAck {
+	if flags&flagKeyUpdateAck != 0 {
 		if len(data) < offset+pubKeySize {
 			return nil, nil, errors.New("payload too small for keyUpdateAck")
 		}

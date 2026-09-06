@@ -301,7 +301,10 @@ have closed and no acknowledgements are outstanding.
 *Acknowledgement.* Each ACK names one packet by
 `(stream, offset, length)`. A packet is retransmitted
 when its timeout expires, or when three later packets
-have been acknowledged.
+have been acknowledged. A sender gives up after a
+bounded number of attempts, plus one round trip to hear
+back from the last -- a response window, not another
+backoff step.
 
 *Receive window.* Free space in the receiver's buffer,
 connection-wide, on every packet (§5). An 8-bit

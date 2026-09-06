@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -637,4 +638,51 @@ func TestMeasurements_ZeroPayloadPacketGivesNoBandwidthSample(t *testing.T) {
 
 	assert.Positive(t, c.srtt, "a probe still yields an RTT sample")
 	assert.Zero(t, c.bwMax, "but never a bandwidth sample")
+}
+
+// The drain threshold has to sit above the delay a bottleneck AQM deliberately
+// maintains. fq_codel targets 5ms; on a short path that is a large fraction of
+// rttMin, so a flat percentage reads a healthy AQM as congestion and keeps the
+// flow draining. The allowance is therefore proportional or the AQM target,
+// whichever is more generous.
+func TestMeasurements_QueueLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rttMin uint64
+		want   uint64
+	}{
+		{"long path: proportional dominates", 100 * msNano, 125 * msNano},
+		{"11ms path: AQM target dominates", 11400 * 1000, 16400 * 1000},
+		{"LAN: AQM target dominates by far", msNano, 6 * msNano},
+		{"boundary, 20ms: the two are equal", 20 * msNano, 25 * msNano},
+	} {
+		m := newMeasurements()
+		m.rttMinNano = tc.rttMin
+		assert.Equal(t, tc.want, m.queueLimit(), tc.name)
+	}
+
+	// No RTT sample yet: nothing to compare against, so never drain.
+	m := newMeasurements()
+	assert.Equal(t, uint64(math.MaxUint64), m.queueLimit())
+	m.srtt = 1 << 62
+	m.updateNormal(secondNano)
+	assert.NotEqual(t, ccDraining, m.state, "cannot judge a queue without a minimum")
+}
+
+// The case that was actually costing throughput: fq_codel holding its 5ms
+// target on an 11ms path used to read as congestion and drain at 0.75x.
+func TestMeasurements_HealthyAqmDoesNotDrain(t *testing.T) {
+	m := newMeasurements()
+	m.setState(ccSteady)
+	m.rttMinNano = 11400 * 1000 // measured on the real path
+	m.srtt = m.rttMinNano + 5*msNano
+
+	m.updateNormal(secondNano)
+	assert.NotEqual(t, ccDraining, m.state, "an AQM meeting its target is not congestion")
+
+	// A real standing queue still drains.
+	m.srtt = m.rttMinNano + 20*msNano
+	m.updateNormal(2 * secondNano)
+	assert.Equal(t, ccDraining, m.state)
+	assert.Equal(t, drainGain, m.pacingGainPct)
 }

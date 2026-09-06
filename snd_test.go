@@ -231,9 +231,9 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	assert.Equal(t, ackStatusOk, status)
+	assert.NotNil(t, pkt)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
@@ -243,17 +243,17 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	assert.Equal(t, ackDup, status)
+	assert.Nil(t, pkt, "a duplicate matches nothing in flight")
 }
 
 func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	status, _, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
 
-	assert.Equal(t, ackNotFound, status)
+	assert.Nil(t, pkt, "an unknown stream matches nothing in flight")
 }
 
 func TestSendBuffer_AcknowledgeRange_OutOfOrder_Middle(t *testing.T) {
@@ -396,10 +396,9 @@ func TestSendBuffer_DrainBestEffort_ExpiredPing(t *testing.T) {
 	sb.queuePing(1)
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+	droppedBytes := sb.drainExpiredBestEffort(1, 50, 200)
 
 	assert.Equal(t, 0, droppedBytes, "ping carries no data")
-	assert.Equal(t, 0, droppedPackets)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
@@ -408,10 +407,9 @@ func TestSendBuffer_DrainBestEffort_ExpiredUnreliableData(t *testing.T) {
 	sb.queueData(1, []byte("test1"))
 	sb.readyToSend(1, data, nil, 1000, false) // reliable=false
 
-	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+	droppedBytes := sb.drainExpiredBestEffort(1, 50, 200)
 
 	assert.Equal(t, 5, droppedBytes)
-	assert.Equal(t, 1, droppedPackets)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 	assert.Equal(t, 0, sb.size, "sender capacity must be released")
 }
@@ -421,10 +419,9 @@ func TestSendBuffer_DrainBestEffort_NotExpired(t *testing.T) {
 	sb.queueData(1, []byte("test1"))
 	sb.readyToSend(1, data, nil, 1000, false)
 
-	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 100, 50)
+	droppedBytes := sb.drainExpiredBestEffort(1, 100, 50)
 
 	assert.Equal(t, 0, droppedBytes)
-	assert.Equal(t, 0, droppedPackets)
 	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
@@ -433,10 +430,9 @@ func TestSendBuffer_DrainBestEffort_ReliableUntouched(t *testing.T) {
 	sb.queueData(1, []byte("test1"))
 	sb.readyToSend(1, data, nil, 1000, true) // reliable
 
-	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+	droppedBytes := sb.drainExpiredBestEffort(1, 50, 200)
 
 	assert.Equal(t, 0, droppedBytes)
-	assert.Equal(t, 0, droppedPackets)
 	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
 
@@ -601,9 +597,9 @@ func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200) // one retransmit
 
-	status, ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	assert.Equal(t, ackStatusOk, status)
+	assert.NotNil(t, ackedPkt)
 	assert.Equal(t, uint(1), ackedPkt.sentCount, "ack after retransmit must be flagged as ambiguous")
 }
 
@@ -717,9 +713,8 @@ func TestSendBuffer_Unreliable_DataNotRetransmitted(t *testing.T) {
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
-	droppedBytes, droppedPackets := sb.drainExpiredBestEffort(1, 50, 200)
+	droppedBytes := sb.drainExpiredBestEffort(1, 50, 200)
 	assert.Equal(t, 4, droppedBytes)
-	assert.Equal(t, 1, droppedPackets)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
 
@@ -917,9 +912,9 @@ func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
 
-	status, ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
-	assert.Equal(t, ackStatusOk, status)
+	assert.NotNil(t, ackedPkt)
 	assert.Equal(t, uint64(12345), ackedPkt.sentTimeNano)
 	assert.Equal(t, uint64(5000), ackedPkt.deliveredAtSend)
 }
@@ -1024,4 +1019,70 @@ func TestSendBuffer_RetransmitProbesAtSmallerMtu(t *testing.T) {
 	d, _, _, err := sb.readyToRetransmit(1, nil, big, probe, 1, data, now)
 	assert.NoError(t, err)
 	assert.Equal(t, 40, len(d), "the last attempts must probe at the smaller size")
+}
+
+// The give-up schedule: five retransmits spaced by doubling backoff, then a
+// single round trip to hear back. The last wait is deliberately not backed
+// off -- there is no further retransmit to space out, so 16x RTO there would
+// add seconds to how long a broken path takes to surface.
+func TestSendBuffer_GiveUpSchedule(t *testing.T) {
+	const rto = uint64(200 * msNano)
+	const step = rto / 8
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("x"))
+	sb.readyToSend(1, data, nil, 1200, true)
+	sb.markSent(1, 0, 1, 60, 0, 0, 0, 0)
+
+	// Walk the clock forward, recording when each retransmit and the final
+	// give-up happen.
+	var events []uint64
+	var gaveUp bool
+	for nowNano := step; nowNano < 60*rto; nowNano += step {
+		d, _, _, err := sb.readyToRetransmit(1, nil, 1200, 1200, rto, data, nowNano)
+		if err != nil {
+			assert.Contains(t, err.Error(), "max retry attempts exceeded")
+			events = append(events, nowNano)
+			gaveUp = true
+			break
+		}
+		if d != nil {
+			events = append(events, nowNano)
+		}
+	}
+	assert.True(t, gaveUp, "the schedule must terminate")
+	assert.Len(t, events, int(maxRetry)+1, "maxRetry retransmits, then the give-up")
+
+	// Gaps between events, rounded to whole RTOs.
+	var gaps []uint64
+	prev := uint64(0)
+	for _, e := range events {
+		gaps = append(gaps, (e-prev)/rto)
+		prev = e
+	}
+	assert.Equal(t, []uint64{1, 2, 4, 8, 10, 1}, gaps,
+		"doubling, capped at maxRTO, then one round trip to hear back")
+
+	assert.Less(t, float64(events[len(events)-1])/float64(secondNano), 5.5,
+		"whole schedule well inside the 30s read deadline")
+}
+
+// InitSnd carries no stream data and goes out through the control path. It
+// must not book a zero-length packet: that holds the stream's one zero-payload
+// slot, so a ping queued around the handshake is dropped instead of sent.
+func TestSendBuffer_InitSnd_DoesNotBookAPhantomPacket(t *testing.T) {
+	sb := newSendBuffer(1000)
+	sb.queueData(1, []byte("0-RTT data waits for the handshake"))
+
+	d, _, _ := sb.readyToSend(1, initSnd, nil, conservativeMTU, true)
+	assert.Nil(t, d, "InitSnd takes the control path, not the data path")
+	assert.False(t, sb.hasInFlight(1), "and books nothing")
+
+	// So a ping queued at the same moment still gets its slot.
+	sb.queuePing(1)
+	d, _, _ = sb.readyToSend(1, data, nil, conservativeMTU, true)
+	assert.NotNil(t, d)
+	assert.Empty(t, d, "the ping is a zero-payload packet")
+
+	// The queued data is untouched and goes out once the handshake completes.
+	assert.Equal(t, 34, len(sb.streams[1].queuedData))
 }

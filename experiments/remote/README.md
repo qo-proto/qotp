@@ -98,6 +98,22 @@ RTT or two, which is well inside the warm-up the report discards.
 Needs `iproute2` and root, and `DEV=` if the outbound interface is not the one
 on the default route.
 
+## Plotting
+
+`-json` writes the full result: every run, every phase, plus a progress sample
+every 100ms per flow. `plot.py` turns that into figures without needing the
+responder or the network again:
+
+    ./plot.py full.json plots/
+
+Five PNGs and a combined PDF: throughput per phase (median, bars spanning the
+run-to-run range), share of the bottleneck against an equal split, and rate
+over time for the solo and contended phases. The time-series band is min-max
+across runs, so a wide band means unstable rather than merely slow -- which is
+what distinguishes a protocol that stalls from one that is simply slower.
+
+Needs matplotlib (`pip install matplotlib`).
+
 ## Reading the result
 
 **Check the cpu column first.** Every phase reports cores busy on both sides

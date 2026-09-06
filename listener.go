@@ -246,12 +246,7 @@ func (l *Listener) newConn(
 		connId:     connId,
 		streams:    newSharedLinkedMap[uint32, *Stream](),
 		remoteAddr: remoteAddr,
-		rcvKeys: &rcvKeyState{
-			pubKeyEp: pubKeyEpRcv,
-			keyState: keyState{
-				prvKeyEp: prvKeyEpSnd,
-			},
-		},
+		rcvKeys:    &rcvKeyState{pubKeyEp: pubKeyEpRcv},
 		sndKeys: &keyState{
 			prvKeyEp: prvKeyEpSnd,
 		},

@@ -28,14 +28,6 @@ const sndBufferCapacity = 16 * 1024 * 1024 // 16MB
 // Status types
 // =============================================================================
 
-type ackStatus int
-
-const (
-	ackStatusOk ackStatus = iota
-	ackNotFound
-	ackDup
-)
-
 // =============================================================================
 // Packet tracking
 // =============================================================================
@@ -262,14 +254,18 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, ack *ack, mtu int, reliable bool) (
 	data []byte, offset uint64, isClose bool) {
 
-	maxData := 0
-	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
-		if overhead > mtu {
-			return nil, 0, false
-		}
-		maxData = mtu - overhead
+	// InitSnd is a fixed-size padded packet carrying no stream data; it leaves
+	// through the control path. Booking a zero-length packet for it here would
+	// hold the stream's one zero-payload slot for a full RTO, silently
+	// dropping a ping queued around the handshake.
+	if msgType == initSnd {
+		return nil, 0, false
 	}
+	overhead := calcCryptoOverheadWithData(msgType, ack, stream.bytesSentOffset)
+	if overhead > mtu {
+		return nil, 0, false
+	}
+	maxData := mtu - overhead
 
 	length := min(uint64(maxData), uint64(len(stream.queuedData)))
 	data = stream.queuedData[:length]
@@ -337,9 +333,14 @@ func (sb *sender) readyToRetransmit(
 		if !ok {
 			continue
 		}
-		// The final retransmit gets its full response window before the
-		// give-up error fires: backoff clamps the attempt, sentCount does not
+		// The final retransmit gets a response window before the give-up
+		// error fires, but only one round trip of it: the last generation has
+		// no further retransmit to schedule, so backing off there would just
+		// add 16x RTO to the time a broken path takes to surface.
 		rtoWithBackoff := backoff(baseRTO, uint(g))
+		if uint(g) >= maxRetry {
+			rtoWithBackoff = baseRTO
+		}
 		// Fast retransmit: a gen-0 packet declared lost by gap evidence is
 		// eligible immediately, no RTO wait
 		fastRetx := g == 0 && p.ackGap >= fastRetxThreshold
@@ -365,15 +366,13 @@ func (sb *sender) readyToRetransmit(
 		mtu = probeMtu
 	}
 
-	// Calculate max data for current MTU
-	maxData := 0
-	if msgType != initSnd {
-		overhead := calcCryptoOverheadWithData(msgType, ack, key.offset())
-		if overhead > mtu {
-			return nil, 0, false, errors.New("overhead larger than MTU")
-		}
-		maxData = mtu - overhead
+	// Max data at the current MTU. A negative overhead means the message type
+	// carries no payload, which nothing in flight can have.
+	overhead := calcCryptoOverheadWithData(msgType, ack, key.offset())
+	if overhead < 0 || overhead > mtu {
+		return nil, 0, false, errors.New("overhead larger than MTU")
 	}
+	maxData := mtu - overhead
 
 	// Fits in current MTU - just retransmit, moving the packet to the next
 	// generation's map so every map stays ordered by send time.
@@ -420,14 +419,14 @@ func (sb *sender) splitAndRetransmit(
 // unreliable data, pings) from the head of the in-flight queue. They are not
 // retransmitted; the deadline is one RTO without backoff — after that the ACK
 // is not coming and the packet counts as lost. Returns dropped payload bytes
-// and dropped data-packet count so the caller can release in-flight accounting.
-func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNano uint64) (droppedBytes int, droppedPackets int) {
+// so the caller can release in-flight accounting.
+func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNano uint64) (droppedBytes int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[streamID]
 	if stream == nil {
-		return 0, 0
+		return 0
 	}
 
 	// Best-effort packets are never retransmitted, so they only ever live
@@ -437,12 +436,11 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 		key, pkt, ok := stream.inFlight[0].first()
 		if !ok || pkt.needsReTx || pkt.sentTimeNano >= nowNano ||
 			nowNano-pkt.sentTimeNano <= baseRTO {
-			return droppedBytes, droppedPackets
+			return droppedBytes
 		}
 		stream.inFlight[0].remove(key)
 		if len(pkt.data) > 0 {
 			droppedBytes += len(pkt.data)
-			droppedPackets++
 			sb.size -= len(pkt.data)
 		}
 	}
@@ -452,9 +450,9 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // Acknowledgment
 // =============================================================================
 
-// acknowledgeRange processes an ACK for a sent packet.
-// Returns the acked packet for RTT and delivery rate measurement (nil unless
-// status is ackStatusOk). Its sentCount matters for Karn's algorithm: an ACK
+// acknowledgeRange processes an ACK for a sent packet, returning the packet it
+// acknowledged, or nil if it matched nothing in flight -- a duplicate, or for a
+// stream that is gone. Its sentCount matters for Karn's algorithm: an ACK
 // for retransmitted data is ambiguous (it may answer any of the
 // transmissions), so callers must not measure from it.
 //
@@ -464,13 +462,13 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // declared lost by this call. Only originals count — ACKs for
 // retransmissions (gen 1+) are transmission-ambiguous and contribute no
 // gap evidence.
-func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPacket, lostCount int) {
+func (sb *sender) acknowledgeRange(ack *ack) (ackedPkt *sendPacket, lostCount int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
 	stream := sb.streams[ack.streamId]
 	if stream == nil {
-		return ackNotFound, nil, 0
+		return nil, 0
 	}
 
 	key := createPacketKey(ack.offset, ack.len)
@@ -489,16 +487,16 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPa
 		}
 		stream.inFlight[0].remove(key)
 		sb.size -= len(pkt.data)
-		return ackStatusOk, pkt, lostCount
+		return pkt, lostCount
 	}
 
 	pkt, ok := stream.inFlightRemove(key)
 	if !ok {
-		return ackDup, nil, 0
+		return nil, 0
 	}
 
 	sb.size -= len(pkt.data)
-	return ackStatusOk, pkt, 0
+	return pkt, 0
 }
 
 // markSent stamps send time, wire size and delivery snapshots after the packet
@@ -620,25 +618,4 @@ func (sb *sender) getOffsetClosedAt(streamID uint32) *uint64 {
 		return stream.closeAtOffset
 	}
 	return nil
-}
-
-// diagCounts reports queued bytes and in-flight packets per generation.
-func (sb *sender) diagCounts(streamID uint32) (queued, g0, g1, g2plus int) {
-	sb.mu.Lock()
-	defer sb.mu.Unlock()
-	stream := sb.streams[streamID]
-	if stream == nil {
-		return 0, 0, 0, 0
-	}
-	for g, m := range stream.inFlight {
-		switch g {
-		case 0:
-			g0 = m.size()
-		case 1:
-			g1 = m.size()
-		default:
-			g2plus += m.size()
-		}
-	}
-	return len(stream.queuedData), g0, g1, g2plus
 }

@@ -49,6 +49,25 @@ func FuzzPayload(f *testing.F) {
 			data: []byte{},
 		},
 		{
+			// Key update, and one carrying both directions' keys
+			header: &payloadHeader{
+				streamId:     7,
+				streamOffset: 42,
+				keyUpdatePub: bytes.Repeat([]byte{0xAB}, pubKeySize),
+			},
+			data: []byte("rotating"),
+		},
+		{
+			header: &payloadHeader{
+				streamId:        8,
+				streamOffset:    64,
+				keyUpdatePub:    bytes.Repeat([]byte{0xCD}, pubKeySize),
+				keyUpdatePubAck: bytes.Repeat([]byte{0xEF}, pubKeySize),
+				ack:             &ack{streamId: 8, offset: 1, len: 2},
+			},
+			data: []byte{},
+		},
+		{
 			// Type 00: regular ack (nil userData, no data header)
 			header: &payloadHeader{
 				ack: &ack{streamId: 30, offset: 300, len: 50},
@@ -66,7 +85,7 @@ func FuzzPayload(f *testing.F) {
 	}
 
 	for _, p := range payloads {
-		encoded, _ := encodeProto(p.header, p.data)
+		encoded := encodeProto(p.header, p.data)
 		f.Add(encoded)
 	}
 
@@ -77,7 +96,7 @@ func FuzzPayload(f *testing.F) {
 		}
 
 		// Re-encode and decode
-		reEncoded, _ := encodeProto(decoded, payloadData)
+		reEncoded := encodeProto(decoded, payloadData)
 		reDecoded, reDecodedData, err := decodeProto(reEncoded)
 		if err != nil {
 			t.Fatal("Failed to decode our own encoded data:", err)
@@ -97,6 +116,13 @@ func FuzzPayload(f *testing.F) {
 		}
 		if decoded.streamOffset != reDecoded.streamOffset {
 			t.Fatal("StreamOffset mismatch")
+		}
+
+		if !bytes.Equal(decoded.keyUpdatePub, reDecoded.keyUpdatePub) {
+			t.Fatal("keyUpdatePub mismatch")
+		}
+		if !bytes.Equal(decoded.keyUpdatePubAck, reDecoded.keyUpdatePubAck) {
+			t.Fatal("keyUpdatePubAck mismatch")
 		}
 
 		// Compare Ack
