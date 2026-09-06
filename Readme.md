@@ -64,7 +64,7 @@ func main() {
 - **BBR congestion control**: Estimates network capacity via bottleneck bandwidth and RTT
 - **Connection-level flow control**: Congestion control at connection level, not per-stream
 - **Simple teardown**: FIN/ACK with timeout
-- **Compact**: ~4k LoC source code
+- **Compact**: ~3k LoC source code (find . -maxdepth 1 -type f ! -name '*_test.go' -print0 | xargs -0 tokei)
 
 In QOTP, there is 1 supported crypto algorithm (curve25519/chacha20-poly1305) as in contrast to TLS with
 many options. It is mentioned [here](https://www.cs.auckland.ac.nz/~pgut001/pubs/bollocks.pdf) that there

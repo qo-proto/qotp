@@ -1,469 +1,318 @@
+// Benchmark client: measures QOTP, TCP and QUIC over the same link.
+//
+// Every invocation runs all three protocols, in both directions, twice:
+//
+//	solo     — one protocol at a time, the link to itself: capacity baseline
+//	parallel — all three at once, competing: fairness
+//
+// Fairness is reported over the contended window (start until the first flow
+// finishes), because once a flow completes the survivors get its bandwidth and
+// a whole-run average would flatter whoever finished last.
 package main
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/tls"
 	"encoding/csv"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"log/slog"
-	"net"
-	"net/http"
 	"os"
-	"strings"
+	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/qo-proto/qotp"
-	"github.com/quic-go/quic-go/http3"
+	"github.com/qo-proto/qotp/experiments/internal/bench"
 )
 
-type result struct {
-	protocol string
-	size     int
-	duration time.Duration
+const (
+	sampleInterval = 100 * time.Millisecond
+	idleTimeout    = 5 * time.Minute
+)
+
+type runFn func(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.Duration, error)
+
+var runners = map[string]runFn{
+	"qotp": runQOTP,
+	"tcp":  runTCP,
+	"quic": runQUIC,
 }
 
-const sampleInterval = 100 * time.Millisecond
+var portBase = bench.DefaultPortBase
+
+type outcome struct {
+	proto   string
+	dir     bench.Dir
+	mode    string // "solo" | "parallel"
+	dur     time.Duration
+	bytes   uint64
+	contBps float64 // bytes/s during the contended window (parallel only)
+	err     error
+}
+
+func (o outcome) mbps() float64 {
+	if o.dur == 0 {
+		return 0
+	}
+	return float64(o.bytes) * 8 / o.dur.Seconds() / 1e6
+}
+
+type sample struct {
+	proto string
+	t     time.Duration
+	bytes uint64
+}
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1", "server IP address")
-	sizeMB := flag.Int("size", 32, "data size in MB")
-	scenario := flag.String("scenario", "loopback", "scenario label for CSV")
-	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing; for congestion-control analysis only)")
-	proto := flag.String("proto", "", "comma-separated protocols to run CONCURRENTLY (tcp,qotp,quic); empty = all three sequentially")
-	ratelog := flag.String("ratelog", "", "write per-protocol rate samples (protocol,t_s,mbps,cum_mb) to this file (concurrent mode)")
+	base := flag.Int("port", bench.DefaultPortBase, "base port: qotp=port, tcp=port+1, quic=port+2")
+	sizeMB := flag.Int("size", 32, "MB per protocol per direction")
+	csvPath := flag.String("csv", "", "write per-protocol rate samples here")
+	skipSolo := flag.Bool("no-solo", false, "skip the solo baseline phase")
+	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing)")
 	flag.Parse()
 
-	// Benchmark mode: suppress qotp's per-ACK debug logging, which would
-	// otherwise penalize only qotp. Enable with -v for CC analysis.
 	level := slog.LevelWarn
 	if *verbose {
 		level = slog.LevelDebug
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
-	data := make([]byte, *sizeMB*1024*1024)
-	if _, err := rand.Read(data); err != nil {
-		log.Fatal(err)
-	}
+	portBase = *base
+	size := uint64(*sizeMB) * 1024 * 1024
+	var all []outcome
+	var samples []sample
 
-	var results []result
-	if *proto == "" {
-		// Sequential: isolated capacity measurement. Concurrent runs would
-		// contend for the CPU and the link and corrupt each protocol's
-		// measurement.
-		results = []result{
-			runTCPClient(fmt.Sprintf("%s:9001", *addr), data),
-			runQOTPClient(fmt.Sprintf("%s:9000", *addr), data),
-			runHTTP3Client(fmt.Sprintf("%s:9002", *addr), data),
+	if !*skipSolo {
+		for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
+			for _, p := range bench.Protocols {
+				fmt.Fprintf(os.Stderr, "solo %-8s %s ...\n", dir, p)
+				all = append(all, runSolo(p, *addr, dir, size))
+			}
 		}
-	} else {
-		// Concurrent: coexistence/fairness measurement — all listed
-		// protocols share the bottleneck, started from a common barrier.
-		results = runConcurrent(parseProtos(*proto), *addr, data, *ratelog)
+	}
+	for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
+		fmt.Fprintf(os.Stderr, "parallel %-8s qotp+tcp+quic ...\n", dir)
+		outs, ss := runParallel(*addr, dir, size)
+		all = append(all, outs...)
+		samples = append(samples, ss...)
 	}
 
-	w := csv.NewWriter(os.Stdout)
-	defer w.Flush()
-
-	for _, r := range results {
-		w.Write([]string{
-			r.protocol,
-			fmt.Sprintf("%d", r.size/1024/1024),
-			fmt.Sprintf("%.3f", float64(r.duration.Microseconds())/1000.0),
-			*scenario,
-		})
+	report(all, *sizeMB)
+	if *csvPath != "" {
+		if err := writeCSV(*csvPath, samples); err != nil {
+			log.Printf("csv: %v", err)
+		} else {
+			fmt.Printf("\nrate samples: %s\n", *csvPath)
+		}
 	}
 }
 
-func parseProtos(list string) []string {
-	var protos []string
-	for _, p := range strings.Split(list, ",") {
-		p = strings.TrimSpace(strings.ToLower(p))
-		if p == "quic" || p == "http3" {
-			p = "http3"
-		}
-		switch p {
-		case "tcp", "qotp", "http3":
-			protos = append(protos, p)
-		default:
-			log.Fatalf("unknown protocol %q (want tcp, qotp, quic)", p)
-		}
+func target(addr string, proto string) string {
+	return fmt.Sprintf("%s:%d", addr, bench.Port(portBase, proto))
+}
+
+func runSolo(proto, addr string, dir bench.Dir, size uint64) outcome {
+	var prog atomic.Uint64
+	dur, err := runners[proto](target(addr, proto), dir, size, &prog)
+	return outcome{proto: proto, dir: dir, mode: "solo", dur: dur, bytes: size, err: err}
+}
+
+// runParallel starts all three at the same instant and samples their progress,
+// so the shares are measured while they are actually competing.
+func runParallel(addr string, dir bench.Dir, size uint64) ([]outcome, []sample) {
+	progs := map[string]*atomic.Uint64{}
+	for _, p := range bench.Protocols {
+		progs[p] = &atomic.Uint64{}
 	}
-	return protos
-}
-
-// =============================================================================
-// Concurrent mode
-//
-// Each runner sets up before the barrier (no wire traffic), then connects
-// and transfers after it, so all protocols start cold at the same instant.
-// A sampler polls each runner's cumulative progress every sampleInterval.
-//
-// Progress sources per protocol (skew noted; skews are constant offsets, so
-// starvation patterns remain visible):
-//   - qotp:  bytes ACKed by the peer (exact wire progress)
-//   - tcp:   bytes written to the socket (skewed by the kernel send buffer)
-//   - http3: bytes consumed from the request body by quic-go (skewed by its
-//     internal flow-control buffering)
-// =============================================================================
-
-type runner struct {
-	name     string
-	progress func() uint64
-	run      func() error // connect + transfer + wait for delivery
-}
-
-type rateSample struct {
-	tMs int64
-	cum uint64
-}
-
-func runConcurrent(protos []string, addr string, data []byte, ratelogPath string) []result {
-	runners := make([]*runner, 0, len(protos))
-	for _, p := range protos {
-		switch p {
-		case "tcp":
-			runners = append(runners, newTCPRunner(fmt.Sprintf("%s:9001", addr), data))
-		case "qotp":
-			runners = append(runners, newQOTPRunner(fmt.Sprintf("%s:9000", addr), data))
-		case "http3":
-			runners = append(runners, newHTTP3Runner(fmt.Sprintf("%s:9002", addr), data))
-		}
-	}
-
-	start := make(chan struct{})
-	done := make(chan struct{})
-	durations := make([]time.Duration, len(runners))
 
 	var wg sync.WaitGroup
-	for i, r := range runners {
+	outs := make([]outcome, len(bench.Protocols))
+	start := make(chan struct{})
+	done := make(chan struct{}, len(bench.Protocols))
+	stopSampler := make(chan struct{})
+	var samples []sample
+	var mu sync.Mutex
+
+	for i, p := range bench.Protocols {
 		wg.Add(1)
-		go func(i int, r *runner) {
+		go func(i int, p string) {
 			defer wg.Done()
 			<-start
-			begin := time.Now()
-			if err := r.run(); err != nil {
-				log.Fatalf("%s: %v", r.name, err)
-			}
-			durations[i] = time.Since(begin)
-		}(i, r)
+			dur, err := runners[p](target(addr, p), dir, size, progs[p])
+			outs[i] = outcome{proto: p, dir: dir, mode: "parallel", dur: dur, bytes: size, err: err}
+			done <- struct{}{}
+		}(i, p)
 	}
 
-	// Sampler: cumulative progress per runner on a fixed tick
-	samples := make([][]rateSample, len(runners))
-	var samplerWg sync.WaitGroup
-	samplerWg.Add(1)
+	t0 := time.Now()
+	snap := func() {
+		el := time.Since(t0)
+		mu.Lock()
+		for _, p := range bench.Protocols {
+			samples = append(samples, sample{p, el, progs[p].Load()})
+		}
+		mu.Unlock()
+	}
+	close(start)
 	go func() {
-		defer samplerWg.Done()
-		ticker := time.NewTicker(sampleInterval)
-		defer ticker.Stop()
-		begin := <-startedAt(start)
+		tick := time.NewTicker(sampleInterval)
+		defer tick.Stop()
 		for {
 			select {
-			case <-done:
+			case <-stopSampler:
 				return
-			case now := <-ticker.C:
-				tMs := now.Sub(begin).Milliseconds()
-				for i, r := range runners {
-					samples[i] = append(samples[i], rateSample{tMs: tMs, cum: r.progress()})
-				}
+			case <-tick.C:
+				snap()
 			}
 		}
 	}()
-
-	close(start)
-	wg.Wait()
-	close(done)
-	samplerWg.Wait()
-
-	if ratelogPath != "" {
-		writeRatelog(ratelogPath, runners, samples, durations)
-	}
-
-	results := make([]result, len(runners))
-	for i, r := range runners {
-		results[i] = result{r.name, len(data), durations[i]}
-	}
-	return results
-}
-
-// startedAt converts the barrier close into a timestamped channel read.
-func startedAt(start <-chan struct{}) <-chan time.Time {
-	ch := make(chan time.Time, 1)
+	// A flow finishing ends the contended window, so snapshot on each
+	// completion: on a fast link every transfer can finish inside one tick.
 	go func() {
-		<-start
-		ch <- time.Now()
+		for range done {
+			snap()
+		}
 	}()
-	return ch
+	wg.Wait()
+	close(stopSampler)
+	close(done)
+
+	// Contended window: until the first flow finished.
+	first := time.Duration(1<<62 - 1)
+	for _, o := range outs {
+		if o.err == nil && o.dur < first {
+			first = o.dur
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range outs {
+		outs[i].contBps = rateAt(samples, outs[i].proto, first)
+		if outs[i].contBps == 0 && outs[i].err == nil && outs[i].dur > 0 {
+			outs[i].contBps = float64(outs[i].bytes) / outs[i].dur.Seconds()
+		}
+	}
+	return outs, samples
 }
 
-func writeRatelog(path string, runners []*runner, samples [][]rateSample, durations []time.Duration) {
-	f, err := os.Create(path)
-	if err != nil {
-		log.Fatal(err)
+// rateAt returns the average byte rate of proto from t=0 up to the last sample
+// at or before cutoff.
+func rateAt(samples []sample, proto string, cutoff time.Duration) float64 {
+	var bytes uint64
+	var at time.Duration
+	for _, s := range samples {
+		if s.proto == proto && s.t <= cutoff && s.t > at {
+			at, bytes = s.t, s.bytes
+		}
 	}
-	defer f.Close()
+	if at == 0 {
+		return 0
+	}
+	return float64(bytes) / at.Seconds()
+}
 
-	fmt.Fprintln(f, "protocol,t_s,mbps,cum_mb")
-	for i, r := range runners {
-		// Truncate at this protocol's completion (plus one final catch-up
-		// sample): a finished flow's line should end, not crash to zero —
-		// that would read as starvation
-		cutoffMs := durations[i].Milliseconds() + sampleInterval.Milliseconds()
-		var prev rateSample
-		for _, s := range samples[i] {
-			if s.tMs > cutoffMs {
-				break
+// =============================================================================
+// Reporting
+// =============================================================================
+
+func report(all []outcome, sizeMB int) {
+	solo := map[string]map[bench.Dir]float64{}
+	for _, o := range all {
+		if o.mode == "solo" && o.err == nil {
+			if solo[o.proto] == nil {
+				solo[o.proto] = map[bench.Dir]float64{}
 			}
-			dtMs := s.tMs - prev.tMs
-			if dtMs <= 0 {
+			solo[o.proto][o.dir] = o.mbps()
+		}
+	}
+
+	fmt.Printf("\n%d MB per protocol per direction\n", sizeMB)
+	for _, mode := range []string{"solo", "parallel"} {
+		for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
+			rows := filter(all, mode, dir)
+			if len(rows) == 0 {
 				continue
 			}
-			mbps := float64(s.cum-prev.cum) * 8 / float64(dtMs) / 1000
-			fmt.Fprintf(f, "%s,%.1f,%.2f,%.2f\n",
-				r.name, float64(s.tMs)/1000, mbps, float64(s.cum)/1024/1024)
-			prev = s
+			fmt.Printf("\n== %s / %s ==\n", mode, dir)
+			if mode == "solo" {
+				fmt.Printf("  %-5s %10s %10s\n", "proto", "time", "Mbps")
+				for _, o := range rows {
+					if o.err != nil {
+						fmt.Printf("  %-5s %10s  FAILED: %v\n", o.proto, "-", o.err)
+						continue
+					}
+					fmt.Printf("  %-5s %10s %10.1f\n", o.proto, o.dur.Round(time.Millisecond), o.mbps())
+				}
+				continue
+			}
+
+			var rates []float64
+			var total float64
+			for _, o := range rows {
+				r := o.contBps * 8 / 1e6
+				rates = append(rates, r)
+				total += r
+			}
+			fmt.Printf("  %-5s %12s %8s %10s %s\n", "proto", "Mbps(cont)", "share", "vs solo", "total time")
+			for i, o := range rows {
+				if o.err != nil {
+					fmt.Printf("  %-5s %12s  FAILED: %v\n", o.proto, "-", o.err)
+					continue
+				}
+				share := 0.0
+				if total > 0 {
+					share = 100 * rates[i] / total
+				}
+				vsSolo := "-"
+				if s, ok := solo[o.proto][dir]; ok && s > 0 {
+					vsSolo = fmt.Sprintf("%.0f%%", 100*rates[i]/s)
+				}
+				fmt.Printf("  %-5s %12.1f %7.1f%% %10s %s\n",
+					o.proto, rates[i], share, vsSolo, o.dur.Round(time.Millisecond))
+			}
+			fmt.Printf("  Jain fairness index: %.3f  (1.000 = equal shares, %.3f = one flow takes all)\n",
+				bench.JainIndex(rates), 1/float64(len(rates)))
 		}
 	}
+	fmt.Println("\nMbps(cont) is measured over the contended window only: from the start")
+	fmt.Println("until the first flow finished. Upload progress is sampled from each")
+	fmt.Println("protocol's delivery counter (qotp BytesDelivered, TCP tcpi_bytes_acked);")
+	fmt.Println("QUIC has no acked-bytes counter, so its upload samples lag by up to one")
+	fmt.Println("flow-control window. Download progress is counted on receipt for all three.")
 }
 
-// =============================================================================
-// Concurrent runners
-// =============================================================================
+func filter(all []outcome, mode string, dir bench.Dir) []outcome {
+	var out []outcome
+	for _, o := range all {
+		if o.mode == mode && o.dir == dir {
+			out = append(out, o)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].proto < out[j].proto })
+	return out
+}
 
-func newTCPRunner(addr string, data []byte) *runner {
-	var sent atomic.Uint64
-	var tconn atomic.Pointer[net.TCPConn]
-	return &runner{
-		name: "tcp",
-		progress: func() uint64 {
-			// Prefer the kernel's acked-bytes counter (true wire delivery,
-			// TCP_INFO); the write-side counter is only the fallback — it
-			// measures socket-buffer refills, which paint a 0/full comb
-			// instead of the wire rate
-			if c := tconn.Load(); c != nil {
-				if acked, ok := tcpBytesAcked(c); ok {
-					return acked
-				}
-			}
-			return sent.Load()
-		},
-		run: func() error {
-			conn, err := net.Dial("tcp", addr)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
-			tconn.Store(conn.(*net.TCPConn))
-
-			// Chunked writes so the progress counter tracks backpressure
-			for off := 0; off < len(data); off += 64 * 1024 {
-				end := min(off+64*1024, len(data))
-				n, err := conn.Write(data[off:end])
-				if err != nil {
-					return err
-				}
-				sent.Add(uint64(n))
-			}
-			if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
-				return err
-			}
-			// Wait for the server to receive everything and close its side
-			_, err = io.Copy(io.Discard, conn)
+func writeCSV(path string, samples []sample) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	defer w.Flush()
+	if err := w.Write([]string{"protocol", "t_s", "cum_bytes"}); err != nil {
+		return err
+	}
+	for _, s := range samples {
+		if err := w.Write([]string{
+			s.proto,
+			strconv.FormatFloat(s.t.Seconds(), 'f', 3, 64),
+			strconv.FormatUint(s.bytes, 10),
+		}); err != nil {
 			return err
-		},
-	}
-}
-
-func newQOTPRunner(addr string, data []byte) *runner {
-	listener, err := qotp.Listen(qotp.WithListenAddr("0.0.0.0:0"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	conn, err := listener.DialString(addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	stream := conn.Stream(0)
-
-	return &runner{
-		name:     "qotp",
-		progress: stream.BytesDelivered,
-		run: func() error {
-			defer listener.Close()
-			written := 0
-			size := len(data)
-			return ignoreDone(listener.Loop(context.Background(), func(ctx context.Context, s *qotp.Stream) error {
-				if written < size {
-					n, _ := stream.Write(data[written:])
-					written += n
-				}
-				if written >= size && !stream.IsCloseRequested() {
-					stream.Close()
-				}
-				if stream.SndClosed() {
-					return errDone
-				}
-				return nil
-			}))
-		},
-	}
-}
-
-var errDone = fmt.Errorf("done")
-
-func ignoreDone(err error) error {
-	if err == errDone {
-		return nil
-	}
-	return err
-}
-
-func newHTTP3Runner(addr string, data []byte) *runner {
-	var consumed atomic.Uint64
-	tr := &http3.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	client := &http.Client{Transport: tr}
-
-	return &runner{
-		name:     "http3",
-		progress: consumed.Load,
-		run: func() error {
-			defer tr.Close()
-
-			pr, pw := io.Pipe()
-			go func() {
-				pw.Write(data)
-				pw.Close()
-			}()
-
-			url := fmt.Sprintf("https://%s/bench", addr)
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url,
-				&countingReader{r: pr, n: &consumed})
-			if err != nil {
-				return err
-			}
-			req.ContentLength = int64(len(data))
-
-			resp, err := client.Do(req)
-			if err != nil {
-				return err
-			}
-			return resp.Body.Close()
-		},
-	}
-}
-
-type countingReader struct {
-	r io.Reader
-	n *atomic.Uint64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n.Add(uint64(n))
-	return n, err
-}
-
-// =============================================================================
-// Sequential mode (isolated capacity measurement)
-// =============================================================================
-
-func runTCPClient(addr string, data []byte) result {
-	// Time connection setup too, matching QOTP (handshake in Loop) and
-	// HTTP/3 (handshake in client.Do).
-	start := time.Now()
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	if _, err = conn.Write(data); err != nil {
-		log.Fatal(err)
-	}
-	conn.(*net.TCPConn).CloseWrite()
-	// Wait for the server to receive everything and close its side. Without
-	// this, CloseWrite returns locally and TCP would be timed on "handed to
-	// kernel", not "delivered" — unlike QOTP (FIN ack) and HTTP/3 (response).
-	io.Copy(io.Discard, conn)
-	dur := time.Since(start)
-
-	return result{"tcp", len(data), dur}
-}
-
-func runQOTPClient(addr string, data []byte) result {
-	listener, err := qotp.Listen(qotp.WithListenAddr("0.0.0.0:0"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer listener.Close()
-
-	conn, err := listener.DialString(addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	stream := conn.Stream(0)
-	written := 0
-	size := len(data)
-
-	start := time.Now()
-	listener.Loop(context.Background(), func(ctx context.Context, s *qotp.Stream) error {
-		if written < size {
-			n, _ := stream.Write(data[written:])
-			written += n
 		}
-		if written >= size && !stream.IsCloseRequested() {
-			stream.Close()
-		}
-		if stream.SndClosed() {
-			return fmt.Errorf("done")
-		}
-		return nil
-	})
-	dur := time.Since(start)
-
-	return result{"qotp", size, dur}
-}
-
-func runHTTP3Client(addr string, data []byte) result {
-	tr := &http3.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
 	}
-	defer tr.Close()
-
-	client := &http.Client{Transport: tr}
-
-	pr, pw := io.Pipe()
-	go func() {
-		pw.Write(data)
-		pw.Close()
-	}()
-
-	url := fmt.Sprintf("https://%s/bench", addr)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, pr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	req.ContentLength = int64(len(data))
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	resp.Body.Close()
-	dur := time.Since(start)
-
-	return result{"http3", len(data), dur}
+	return nil
 }
