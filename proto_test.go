@@ -900,3 +900,21 @@ func TestProto_StreamHeader_AckWithDataHasStreamHeader(t *testing.T) {
 	assert.Equal(t, uint32(5), decoded.streamId)
 	assert.Equal(t, []byte("test"), userData)
 }
+
+// Bits 6-7 are reserved: the encoder must never set them, whatever the header.
+func TestProto_ReservedFlagBitsNeverSet(t *testing.T) {
+	pub := make([]byte, pubKeySize)
+	for _, p := range []*payloadHeader{
+		{streamId: 1, streamOffset: 100, maxPayload: 1400},
+		{streamId: 1, streamOffset: 0x1000000, unreliable: true},
+		{streamId: 1, isClose: true},
+		{streamId: 1, isKeyUpdate: true, keyUpdatePub: pub},
+		{streamId: 1, isKeyUpdateAck: true, keyUpdatePubAck: pub},
+		{streamId: 1, isClose: true, isKeyUpdate: true, isKeyUpdateAck: true,
+			keyUpdatePub: pub, keyUpdatePubAck: pub},
+		{ack: &ack{streamId: 2, offset: 100, len: 50, rcvWnd: 1000}},
+	} {
+		encoded, _ := encodeProto(p, []byte("d"))
+		assert.Zero(t, encoded[0]&0xC0, "flags=%08b", encoded[0])
+	}
+}

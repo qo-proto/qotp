@@ -8,15 +8,14 @@ import (
 // =============================================================================
 // Transport layer protocol encoding/decoding
 //
-// Header byte: one independent flag per field, in wire order.
+// Header byte: one independent flag per field.
 //   Bit 0: hasAck        ACK block present
 //   Bit 1: hasStream     streamId + streamOffset (+ userData) present
 //   Bit 2: extend        48-bit offsets instead of 24-bit
-//   Bit 3: (reserved)
-//   Bit 4: isClose
-//   Bit 5: isKeyUpdate      32-byte pubkey present
-//   Bit 6: isKeyUpdateAck   32-byte pubkey present
-//   Bit 7: (reserved)
+//   Bit 3: isClose
+//   Bit 4: isKeyUpdate      32-byte pubkey present
+//   Bit 5: isKeyUpdateAck   32-byte pubkey present
+//   Bits 6-7: reserved
 //
 // Wire layout: [flags][maxPayload][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
 //
@@ -35,9 +34,9 @@ const (
 	flagHasAck       = 1 << 0
 	flagHasStream    = 1 << 1
 	flagExtend       = 1 << 2
-	flagClose        = 1 << 4
-	flagKeyUpdate    = 1 << 5
-	flagKeyUpdateAck = 1 << 6
+	flagClose        = 1 << 3
+	flagKeyUpdate    = 1 << 4
+	flagKeyUpdateAck = 1 << 5
 
 	streamUnreliableBit uint32 = 1 << 31
 	maxStreamID         uint32 = streamUnreliableBit - 1

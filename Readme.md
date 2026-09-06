@@ -328,16 +328,15 @@ After decryption, payload contains transport header + data. Min 10 bytes total.
 
 #### Payload Header Format
 
-**Byte 0 (Header byte)** — one independent flag per field, in wire order:
+**Byte 0 (Header byte)** — one independent flag per field:
 ```
 Bit 0: hasAck          ACK block present
 Bit 1: hasStream       streamId + streamOffset (+ userData) present
 Bit 2: extend          48-bit offsets instead of 24-bit
-Bit 3: (reserved)
-Bit 4: isClose         stream close (FIN)
-Bit 5: isKeyUpdate     32-byte pubkey present (key rotation initiation)
-Bit 6: isKeyUpdateAck  32-byte pubkey present (key rotation acknowledgment)
-Bit 7: (reserved)
+Bit 3: isClose         stream close (FIN)
+Bit 4: isKeyUpdate     32-byte pubkey present (key rotation initiation)
+Bit 5: isKeyUpdateAck  32-byte pubkey present (key rotation acknowledgment)
+Bits 6-7: reserved
 ```
 
 Any flag combination is representable; overhead is computable directly from
