@@ -320,8 +320,11 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 
 // readyToRetransmit returns expired in-flight data for retransmission.
 // May split packets if MTU decreased. Increments retry counter.
+// probeMtu is the size used for a packet close to giving up: if the smaller
+// one gets through where the working size did not, the path cannot carry the
+// working size (see conn.observeMTU).
 func (sb *sender) readyToRetransmit(
-	streamID uint32, ack *ack, mtu int,
+	streamID uint32, ack *ack, mtu, probeMtu int,
 	baseRTO uint64, msgType cryptoMsgType,
 	nowNano uint64) (data []byte, offset uint64, isClose bool, err error) {
 
@@ -385,6 +388,10 @@ func (sb *sender) readyToRetransmit(
 
 	if pkt.sentCount >= maxRetry {
 		return nil, 0, false, errors.New("max retry attempts exceeded")
+	}
+
+	if pkt.sentCount >= maxRetry-mtuProbeLastAttempts && probeMtu < mtu {
+		mtu = probeMtu
 	}
 
 	// Calculate max data for current MTU

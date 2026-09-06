@@ -969,7 +969,6 @@ func TestConn_NegotiateMTU_Symmetric(t *testing.T) {
 	c.negotiateMTU(uint16(testMaxPayload))
 
 	assert.Equal(t, testMaxPayload, c.mtu)
-	assert.Equal(t, testMaxPayload, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_RemoteSmaller(t *testing.T) {
@@ -979,7 +978,6 @@ func TestConn_NegotiateMTU_RemoteSmaller(t *testing.T) {
 	c.negotiateMTU(1300)
 
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_LocalSmaller(t *testing.T) {
@@ -989,7 +987,6 @@ func TestConn_NegotiateMTU_LocalSmaller(t *testing.T) {
 	c.negotiateMTU(1400)
 
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_BelowFloor(t *testing.T) {
@@ -999,7 +996,6 @@ func TestConn_NegotiateMTU_BelowFloor(t *testing.T) {
 	c.negotiateMTU(500) // below conservativeMTU
 
 	assert.Equal(t, conservativeMTU, c.mtu)
-	assert.Equal(t, conservativeMTU, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
@@ -1009,7 +1005,6 @@ func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
 	c.negotiateMTU(8952)
 
 	assert.Equal(t, 8952, c.mtu)
-	assert.Equal(t, 8952, c.negotiatedMTU)
 }
 
 func TestConn_InitialMTU_StartsAtConservativeMTU(t *testing.T) {
@@ -1025,42 +1020,70 @@ func TestConn_InitialMTU_StartsAtConservativeMTU(t *testing.T) {
 	_ = lBob // suppress unused
 }
 
-func TestConn_FallbackOnConsecutiveLosses(t *testing.T) {
+// Ordinary congestion loss must not move the MTU. Inferring an MTU problem
+// from loss made it oscillate many times a second on a lossy path.
+func TestConn_MTU_LossAloneDoesNotLowerIt(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.mtu = 1400
-	c.negotiatedMTU = 1400
 
-	// Simulate consecutive losses
-	for i := 0; i < mtuFallbackThreshold; i++ {
-		c.consecutiveLosses++
-		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
-			c.mtu = conservativeMTU
-		}
+	// A full-size packet gets through: that is what confirms the path.
+	c.observeMTU(&sendPacket{wireLen: 1400, sentCount: 0})
+	assert.Equal(t, 1400, c.mtuConfirmed)
+	assert.Equal(t, 1400, c.mtu)
+
+	// Retransmits that still carry the working size say nothing about the MTU,
+	// however many there are.
+	for i := uint(1); i < maxRetry; i++ {
+		c.observeMTU(&sendPacket{wireLen: 1400, sentCount: i})
 	}
-
-	assert.Equal(t, conservativeMTU, c.mtu)
-	assert.Equal(t, 1400, c.negotiatedMTU) // original preserved
+	assert.Equal(t, 1400, c.mtu, "loss at the working size must not downgrade")
+	assert.False(t, c.mtuDowngraded)
 }
 
-func TestConn_RestoreAfterFallback(t *testing.T) {
+// A packet that only got through once shrunk, on a size never seen to work,
+// is what an MTU black hole looks like, and is the one thing that lowers it.
+func TestConn_MTU_DowngradesWhenOnlySmallGetsThrough(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.mtu = conservativeMTU // currently in fallback
-	c.negotiatedMTU = 1400
-	c.consecutiveLosses = mtuFallbackThreshold
+	c.mtu = 1400 // raised on the peer's word, unconfirmed
 
-	// Simulate successful ACK
-	c.consecutiveLosses = 0
-	if c.mtu < c.negotiatedMTU {
-		c.mtu = c.negotiatedMTU
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+
+	assert.Equal(t, conservativeMTU, c.mtu)
+	assert.True(t, c.mtuDowngraded)
+}
+
+// Once the working size is confirmed, a probe succeeding is just loss. Without
+// this a burst of losses on one packet downgrades a path already proven to
+// carry the larger size — seen on a 2% loss link with no MTU problem at all.
+func TestConn_MTU_ConfirmedSizeSurvivesProbeSuccess(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtu = 1400
+	c.observeMTU(&sendPacket{wireLen: 1400, sentCount: 0}) // proven to work
+
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+
+	assert.Equal(t, 1400, c.mtu, "a confirmed size must survive loss")
+	assert.False(t, c.mtuDowngraded)
+}
+
+// The downgrade lasts for the life of the connection: the peer re-advertising
+// its interface MTU on every packet says nothing about the path in between.
+func TestConn_MTU_DowngradeIsSticky(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.listener.maxPayload = 1400
+	c.mtu = 1400
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+	assert.True(t, c.mtuDowngraded)
+
+	for i := 0; i < 10; i++ {
+		c.negotiateMTU(1400)
 	}
-
-	assert.Equal(t, 1400, c.mtu)
+	assert.Equal(t, conservativeMTU, c.mtu, "advertisements must not undo a downgrade")
 }
 
 func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.mtu = 1400
-	c.negotiatedMTU = 1400
 	c.listener.maxPayload = 1400
 
 	// Simulate receiving a the MTU update field with a smaller value
@@ -1074,7 +1097,6 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	_, err := c.processIncomingPayload(p, []byte{}, 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 	_ = s
 }
 
@@ -1164,33 +1186,6 @@ func TestConn_MaxPayload_OnEveryPacketKind(t *testing.T) {
 	// stream header along with it.
 	enc, _ := encodeProto(cases["ackOnly"], nil)
 	assert.True(t, enc[0]&flagHasStream == 0, "ACK-only packet must not carry a stream header")
-}
-
-// A received maxPayload sets the ceiling, but must not undo a loss-triggered
-// fallback — otherwise the next inbound packet would defeat the MTU
-// black-hole mitigation, which now runs on every packet.
-func TestConn_NegotiateMTU_DoesNotClobberLossFallback(t *testing.T) {
-	c := createTestConn(true, false, true)
-	c.listener.maxPayload = 1400
-
-	c.negotiateMTU(1400)
-	assert.Equal(t, 1400, c.mtu)
-	assert.Equal(t, 1400, c.negotiatedMTU)
-
-	// Simulate the loss-driven fallback
-	c.consecutiveLosses = mtuFallbackThreshold
-	c.mtu = conservativeMTU
-
-	// Peer keeps advertising 1400 on every packet: the ceiling tracks it, the
-	// working value stays down until the losses stop.
-	c.negotiateMTU(1400)
-	assert.Equal(t, conservativeMTU, c.mtu, "fallback must survive inbound MTU advertisements")
-	assert.Equal(t, 1400, c.negotiatedMTU)
-
-	// Once losses clear, an advertisement restores the working value.
-	c.consecutiveLosses = 0
-	c.negotiateMTU(1400)
-	assert.Equal(t, 1400, c.mtu)
 }
 
 // A local interface change now reaches the peer, because every packet carries
@@ -1466,7 +1461,7 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
 	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
-	c.snd.readyToRetransmit(0, nil, 1000, 50, data, 2_000_000_000)
+	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}

@@ -19,8 +19,11 @@ const (
 	ipOverhead      = 48   // always use IPv6 worst-case (IPv4=28, IPv6=48)
 	conservativeMTU = 1232 // IPv6 min link MTU (1280) - 48 headers; hard floor
 
-	mtuFallbackThreshold = 5  // consecutive losses before fallback to conservativeMTU
-	mtuFlapWarnThreshold = 3  // fallback→restore cycles before warning about a black hole
+	// A packet this close to giving up is retransmitted at conservativeMTU
+	// instead of the working MTU. The retransmit is the probe: if the smaller
+	// one gets through where the larger ones did not, the path cannot carry
+	// the working size. Ordinary loss never moves the MTU.
+	mtuProbeLastAttempts = 2
 	windowSize           = 10 // rolling window for min-RTT and max-bandwidth filters
 )
 

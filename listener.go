@@ -272,12 +272,11 @@ func (l *Listener) newConn(
 		pubKeyIdRcv:  pubKeyIdRcv,
 		listener:     l,
 		initMsgType:  initMsgType,
-		snd:           newSendBuffer(sndBufferCapacity),
-		rcv:           newReceiveBuffer(rcvBufferCapacity),
-		measurements:  newMeasurements(),
-		rcvWndSize:    rcvBufferCapacity,
-		mtu:           conservativeMTU,
-		negotiatedMTU: conservativeMTU,
+		snd:          newSendBuffer(sndBufferCapacity),
+		rcv:          newReceiveBuffer(rcvBufferCapacity),
+		measurements: newMeasurements(),
+		rcvWndSize:   rcvBufferCapacity,
+		mtu:          conservativeMTU,
 	}
 
 	// Log keys for offline decryption if enabled (see DecryptWithSecrets)

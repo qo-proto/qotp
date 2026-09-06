@@ -239,6 +239,12 @@ at any time, so no state records whether it has been
 announced. The connection MTU is
 `max(min(local, remote), 1232)`.
 
+That is an upper bound agreed by the two endpoints, not
+a property of the path between them, which may silently
+drop larger packets. A sender MUST be able to fall back
+to 1232, which is always carried; how it decides to is
+an implementation matter.
+
 *ACK block* -- one packet acknowledged per block.
 
 ```
