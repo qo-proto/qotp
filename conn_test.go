@@ -1224,7 +1224,7 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 	s := c.getOrCreateStream(7)
 	c.snd.queueData(7, []byte("data"))
 	c.snd.readyToSend(7, data, nil, 1000, true)
-	c.snd.markSent(7, 0, 4, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(7, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
 	// An ACK-only packet: no stream header, so streamId defaults to 0
 	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4, rcvWnd: 1000}}
@@ -1465,7 +1465,7 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	// A packet that was sent, then retransmitted
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 	c.snd.readyToRetransmit(0, nil, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
@@ -1483,7 +1483,7 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 	// A packet sent exactly once
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
 	_, err := c.processIncomingPayload(p, nil, 1_100_000_000)
@@ -1592,4 +1592,109 @@ func TestUnreliableMarkerOnCloseOnlyStream(t *testing.T) {
 	marked := c.rcv.streams[3] != nil && c.rcv.streams[3].unreliable
 	c.rcv.mu.Unlock()
 	assert.True(t, marked, "a FIN-only best-effort stream must still be marked")
+}
+
+// Packets that bypass the pacing gate (ACKs) must not push nextWriteTime
+// arbitrarily far out. Before the cap, acknowledging a bulk transfer ran the
+// receiver's next send seconds into the future and stalled its own data.
+func TestConn_PacingDebtIsBounded(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.Stream(0)
+
+	nowNano := uint64(1000)
+	for i := 0; i < 2000; i++ {
+		a := &ack{streamId: 0, offset: uint64(i), len: 1}
+		_, _, err := c.sendControlPacket(s, a, nowNano)
+		assert.NoError(t, err)
+	}
+
+	debt := c.nextWriteTime - nowNano
+	limit := maxBurstPackets * c.calcPacing(uint64(c.mtu))
+	assert.LessOrEqual(t, debt, limit,
+		"2000 bypassing ACKs pushed nextWriteTime %dms into the future", debt/uint64(msNano))
+	assert.Less(t, debt, uint64(secondNano), "debt must not reach seconds")
+}
+
+// A receiver-only connection gets no RTT sample on its own, because nothing it
+// sends is ever ACKed. The first control packet carries a stream header and is
+// tracked so the peer's ACK for it becomes that sample.
+func TestConn_AckProbe_YieldsRttSample(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.Stream(0)
+
+	assert.Equal(t, uint64(0), c.srtt, "receiver-only: no sample yet")
+	_, _, err := c.sendControlPacket(s, &ack{streamId: 0, offset: 0, len: 1}, 1000)
+	assert.NoError(t, err)
+
+	// The probe is tracked, so the peer's ACK for it can be matched.
+	c.snd.mu.Lock()
+	_, tracked := c.snd.streams[0].inFlightGet(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	assert.True(t, tracked, "probe must be recorded in flight")
+
+	// Peer ACKs the probe: that is the RTT sample.
+	_, err = c.processIncomingPayload(
+		&payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 0, rcvWnd: rcvBufferCapacity}},
+		nil, 1000+5*uint64(msNano))
+	assert.NoError(t, err)
+	assert.Positive(t, c.srtt, "the probe's ACK must produce an RTT sample")
+
+	// Once a sample exists the probe stops: no more stream headers on ACKs.
+	c.snd.mu.Lock()
+	c.snd.streams[0].inFlight[0].remove(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	_, _, err = c.sendControlPacket(s, &ack{streamId: 0, offset: 1, len: 1}, 2000)
+	assert.NoError(t, err)
+	c.snd.mu.Lock()
+	_, again := c.snd.streams[0].inFlightGet(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	assert.False(t, again, "probe must not repeat once srtt is known")
+}
+
+// packetKey is offset+length, so every zero-payload packet at one offset shares
+// a key. A pending FIN or ping owns it; the probe must stand down for both, or
+// their ACKs get misattributed to each other.
+func TestConn_AckProbe_StandsDownOnKeyCollision(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(c *conn)
+	}{
+		{"close pending", func(c *conn) { c.snd.close(0) }},
+		{"ping pending", func(c *conn) { c.snd.queuePing(0) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := createTestConn(true, false, true)
+			connPair := NewConnPair("a", "b")
+			c.listener.localConn = connPair.Conn1
+			c.remoteAddr = getTestRemoteAddr()
+			c.mtu = testMaxPayload
+			c.measurements = newMeasurements()
+			c.rcvWndSize = rcvBufferCapacity
+			s := c.Stream(0)
+			tc.setup(c)
+
+			assert.False(t, c.snd.trackProbe(0), "probe must not claim an occupied key")
+			_, _, err := c.sendControlPacket(s, &ack{streamId: 0, offset: 0, len: 1}, 1000)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// Only one probe may be outstanding, for the same key-collision reason.
+func TestConn_AckProbe_OnlyOneOutstanding(t *testing.T) {
+	c := createTestConn(true, false, true)
+	assert.True(t, c.snd.trackProbe(0), "first probe is recorded")
+	assert.False(t, c.snd.trackProbe(0), "second probe must not overwrite the first")
 }

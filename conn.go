@@ -433,7 +433,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
 			// (original or retransmit?) - never measure RTT/bandwidth from it
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
-				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
+				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, ackedPkt, nowNano)
 			}
 			// Losses feed the windowed fairness throttle (see
 			// updateThrottle); no per-event reaction — the throttle's
@@ -756,7 +756,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// buffer), and a pre-block stamp would inflate this packet's RTT sample
 	// by our own send stall
 	if data != nil {
-		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano+elapsedNano,
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano+elapsedNano,
 			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
 	}
 
@@ -787,12 +787,16 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// a short back-to-back burst instead, so the achieved rate tracks the
 	// paced rate. The credit is floored at maxBurstPackets so a long-idle
 	// connection can't dump an unbounded burst into the queue.
+	// Credit and debt are both capped at maxBurstPackets: a long-idle
+	// connection cannot bank an unbounded burst, and packets that bypass the
+	// pacing gate (ACKs) cannot push the next send arbitrarily far out.
 	pacingNano := c.calcPacing(uint64(len(encData)))
+	burst := maxBurstPackets * pacingNano
 	floor := uint64(0)
-	if debt := maxBurstPackets * pacingNano; nowNano > debt {
-		floor = nowNano - debt
+	if nowNano > burst {
+		floor = nowNano - burst
 	}
-	c.nextWriteTime = max(c.nextWriteTime, floor) + pacingNano
+	c.nextWriteTime = min(max(c.nextWriteTime, floor)+pacingNano, nowNano+burst)
 
 	dataLen := len(data)
 	if trackInFlight && dataLen > 0 {
@@ -806,7 +810,19 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 // or handshake re-send) at the stream's current send offset. Key-update and
 // MTU fields are attached by encodeAndWrite from connection state.
 func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
-	return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+	offset := c.snd.getSendOffset(s.streamID)
+
+	// A connection that only ever receives sends nothing the peer will ACK, so
+	// it never gets an RTT sample and stays on the cold-start pacing fallback
+	// for its whole life. Until the first sample, carry a stream header on an
+	// outgoing control packet and track it: the peer ACKs any packet with a
+	// stream header, and that ACK is the sample. This rides the ACK path
+	// deliberately — ACKs bypass the pacing gate, so unlike a ping it still
+	// gets out when the connection is pacing-blocked.
+	if c.srtt == 0 && c.msgType() == data && c.snd.trackProbe(s.streamID) {
+		return c.encodeAndWrite(s, ack, []byte{}, offset, false, nowNano, false)
+	}
+	return c.encodeAndWrite(s, ack, nil, offset, false, nowNano, false)
 }
 
 // =============================================================================

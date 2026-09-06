@@ -122,7 +122,7 @@ const (
 	ccSteady                  // pace at measured bandwidth (1.0x)
 	ccProbing                 // probe for spare bandwidth (1.25x, one round)
 	ccDraining                // drain the bottleneck queue (0.75x): probe-cycle
-	                          // drain phase or queue/delay feedback
+	// drain phase or queue/delay feedback
 )
 
 func gainFor(s ccState) uint64 {
@@ -173,7 +173,7 @@ type measurements struct {
 	// Delivery-rate tracking (BBR delivery-rate estimation): each send
 	// snapshots these into the packet so its ACK can compute an honest
 	// sample interval — see deliveryRateSample
-	totalDelivered    uint64 // cumulative bytes ACK'd
+	totalDelivered    uint64 // cumulative wire bytes ACK'd
 	deliveredTimeNano uint64 // when the last delivery (measured ACK) happened
 	firstSentTimeNano uint64 // send time of the packet delivered last
 
@@ -198,7 +198,12 @@ func newMeasurements() measurements {
 // RTT and bandwidth updates
 // =============================================================================
 
-func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, pkt *sendPacket, nowNano uint64) {
+// updateMeasurements folds one acknowledged packet into the RTT and bandwidth
+// estimates. Everything here counts wire bytes — the same unit calcPacing
+// spends — so the estimate and the pacer cannot drift apart. Payload bytes are
+// tracked separately for flow control (dataInFlight) and for the application
+// (BytesDelivered).
+func (m *measurements) updateMeasurements(rttNano uint64, pkt *sendPacket, nowNano uint64) {
 	if rttNano == 0 || nowNano == 0 {
 		slog.Warn("invalid measurement", "rtt", rttNano, "now", nowNano)
 		return
@@ -208,7 +213,7 @@ func (m *measurements) updateMeasurements(rttNano uint64, ackLen uint16, pkt *se
 		return
 	}
 
-	m.totalDelivered += uint64(ackLen)
+	m.totalDelivered += uint64(pkt.wireLen)
 	m.windowAckedPackets++
 	// Delivery-rate bookkeeping: future sends snapshot these to anchor
 	// their sample intervals
@@ -299,6 +304,12 @@ func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
 // the larger of the two cancels the inflation, so samples cannot exceed
 // the true rate and the max filter latches onto capacity, not noise.
 func (m *measurements) deliveryRateSample(pkt *sendPacket, nowNano uint64) (uint64, bool) {
+	// A packet with no payload (ping, ACK probe) went out because there was
+	// nothing else to send. Its delivery rate measures our own idleness, not
+	// the link, so it must not pull the estimate down.
+	if len(pkt.data) == 0 {
+		return 0, false
+	}
 	if m.totalDelivered <= pkt.deliveredAtSend {
 		return 0, false
 	}
@@ -525,12 +536,16 @@ func backoff(rtoNano uint64, attempt uint) (uint64, error) {
 // =============================================================================
 
 func (m *measurements) calcPacing(packetSize uint64) uint64 {
-	// Cold start: no bandwidth sample yet
+	// Cold start: no bandwidth sample yet. Both fallbacks are the cost of one
+	// full-size packet, so scale by the actual size — otherwise a 44-byte ACK
+	// costs as much send budget as a 1452-byte data packet, and a receiver
+	// runs up seconds of pacing debt just acknowledging a bulk transfer.
 	if m.bwMax == 0 {
+		interval := coldStartInterval
 		if m.srtt > 0 {
-			return m.srtt / coldStartRttDivisor
+			interval = m.srtt / coldStartRttDivisor
 		}
-		return coldStartInterval
+		return (packetSize * interval) / conservativeMTU
 	}
 
 	// bwMax (sensor) x pacingGainPct (BBR cycle, transient) x throttlePct

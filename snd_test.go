@@ -888,7 +888,7 @@ func TestSendBuffer_MarkSent(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	sb.markSent(1, 0, 4, 12345, 5000, 0, 0)
+	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
 
 	_, info, ok := sb.streams[1].inFlight[0].first()
 	assert.True(t, ok)
@@ -900,7 +900,7 @@ func TestSendBuffer_MarkSent_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
 	// Should not panic
-	sb.markSent(999, 0, 4, 12345, 0, 0, 0)
+	sb.markSent(999, 0, 4, 44, 12345, 0, 0, 0)
 }
 
 func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
@@ -909,14 +909,14 @@ func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 
 	// Wrong offset - should not panic
-	sb.markSent(1, 100, 4, 12345, 0, 0, 0)
+	sb.markSent(1, 100, 4, 44, 12345, 0, 0, 0)
 }
 
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.markSent(1, 0, 4, 12345, 5000, 0, 0)
+	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
 
 	status, ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
 
@@ -965,4 +965,34 @@ func TestPacketKey_MaxValues(t *testing.T) {
 	key := createPacketKey(0xFFFFFFFFFFFF, 0xFFFF)
 
 	assert.Equal(t, uint64(0xFFFFFFFFFFFF), key.offset())
+}
+
+// Ping and ACK probe share one in-flight key, so whichever gets there first
+// owns it — otherwise the peer's ACK is misattributed to the other.
+func TestSendBuffer_ZeroPayloadKey_SingleOwner(t *testing.T) {
+	t.Run("probe blocks a later ping", func(t *testing.T) {
+		sb := newSendBuffer(1000)
+		sb.queueData(1, []byte("data"))
+		assert.True(t, sb.trackProbe(1))
+
+		sb.queuePing(1)
+		d, _, _ := sb.readyToSend(1, data, nil, 1000, true)
+		assert.Equal(t, []byte("data"), d, "ping must be dropped, not overwrite the probe")
+	})
+
+	t.Run("ping blocks a later probe", func(t *testing.T) {
+		sb := newSendBuffer(1000)
+		sb.queuePing(1)
+		assert.False(t, sb.trackProbe(1), "probe must defer to a pending ping")
+	})
+
+	t.Run("close owns the key", func(t *testing.T) {
+		sb := newSendBuffer(1000)
+		sb.close(1)
+		assert.False(t, sb.trackProbe(1))
+		sb.queuePing(1)
+		d, _, isClose := sb.readyToSend(1, data, nil, 1000, true)
+		assert.True(t, isClose, "the FIN owns the key, not the ping")
+		assert.Empty(t, d)
+	})
 }
