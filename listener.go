@@ -170,7 +170,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	if maxPayload == 0 {
 		maxPayload = interfaceMTU - ipOverhead
 	}
-	maxPayload = clampMaxPayload(maxPayload)
+	maxPayload = max(maxPayload, conservativeMTU)
 
 	l := &Listener{
 		localConn:    o.localConn,
@@ -211,15 +211,7 @@ func (l *Listener) RefreshMaxPayload() {
 	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
 		l.interfaceMTU = getInterfaceMTU(udpConn.conn)
 	}
-	l.maxPayload = clampMaxPayload(l.interfaceMTU - ipOverhead)
-}
-
-// clampMaxPayload enforces the conservativeMTU floor.
-func clampMaxPayload(maxPayload int) int {
-	if maxPayload < conservativeMTU {
-		return conservativeMTU
-	}
-	return maxPayload
+	l.maxPayload = max(l.interfaceMTU-ipOverhead, conservativeMTU)
 }
 
 func (l *Listener) HasActiveStreams() bool {

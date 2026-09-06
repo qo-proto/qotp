@@ -147,11 +147,6 @@ func (t *transmitBuffer) inFlightRemove(key packetKey) (*sendPacket, bool) {
 	return nil, false
 }
 
-func (t *transmitBuffer) inFlightContains(key packetKey) bool {
-	_, ok := t.inFlightGet(key)
-	return ok
-}
-
 // inFlightAny reports whether any generation holds an unacked packet.
 func (t *transmitBuffer) inFlightAny() bool {
 	for _, m := range t.inFlight {
@@ -160,15 +155,6 @@ func (t *transmitBuffer) inFlightAny() bool {
 		}
 	}
 	return false
-}
-
-// inFlightSize returns the number of unacked packets across all generations.
-func (t *transmitBuffer) inFlightSize() int {
-	size := 0
-	for _, m := range t.inFlight {
-		size += m.size()
-	}
-	return size
 }
 
 // =============================================================================
@@ -251,7 +237,7 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 		!stream.closeSent {
 
 		closeKey := createPacketKey(stream.bytesSentOffset, 0)
-		if stream.inFlightContains(closeKey) {
+		if _, ok := stream.inFlightGet(closeKey); ok {
 			return nil, 0, false
 		}
 

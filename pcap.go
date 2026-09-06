@@ -76,7 +76,7 @@ func DecryptPcap(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecret
 		return nil, fmt.Errorf("packet too small for %v: need %d, got %d", msgType, minSize, len(encData))
 	}
 
-	_, packetData, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
+	packetData, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}

@@ -230,12 +230,7 @@ func (m *measurements) updateRTT(rttNano uint64) {
 	}
 
 	// delta = |SRTT - R|
-	var delta uint64
-	if rttNano > m.srtt {
-		delta = rttNano - m.srtt
-	} else {
-		delta = m.srtt - rttNano
-	}
+	delta := max(rttNano, m.srtt) - min(rttNano, m.srtt)
 
 	// RTTVAR = 3/4 * RTTVAR + 1/4 * delta
 	// SRTT = 7/8 * SRTT + 1/8 * R

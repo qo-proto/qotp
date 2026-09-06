@@ -53,7 +53,6 @@ type conn struct {
 	rcvKeys     *rcvKeyState
 
 	// Handshake state
-	//isSenderOnInit bool
 	initMsgType cryptoMsgType
 	phase       connPhase
 
@@ -116,10 +115,14 @@ func (c *conn) HasActiveStreams() bool {
 	return false
 }
 
-func (c *conn) keyUpdateFlags() (isKeyUpdate, isKeyUpdateAck bool) {
-	isKeyUpdate = c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
-	isKeyUpdateAck = c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
-	return
+// kuPending reports a KEY_UPDATE we initiated that the peer has not acked yet.
+func (c *conn) kuPending() bool {
+	return c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
+}
+
+// kuAckPending reports a KEY_UPDATE_ACK we owe the peer.
+func (c *conn) kuAckPending() bool {
+	return c.phase == phaseKeyUpdatePending && c.rcvKeys.prvKeyEpNext != nil
 }
 
 // kuAttachDue returns true when the pending KEY_UPDATE should be attached to
@@ -127,7 +130,7 @@ func (c *conn) keyUpdateFlags() (isKeyUpdate, isKeyUpdateAck bool) {
 // KEY_UPDATE_ACK arrives. The key is not attached to every packet — any
 // single carrier may be lost, and the next RTO tick re-sends it.
 func (c *conn) kuAttachDue(nowNano uint64) bool {
-	if isKeyUpdate, _ := c.keyUpdateFlags(); !isKeyUpdate {
+	if !c.kuPending() {
 		return false
 	}
 	return c.kuLastSentNano == 0 || nowNano-c.kuLastSentNano > c.rtoNano()
@@ -168,15 +171,7 @@ func (c *conn) cleanupStream(streamID uint32) {
 
 // negotiateMTU sets the connection's MTU to min(remoteMaxPayload, localMaxPayload).
 func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
-	remote := int(remoteMaxPayload)
-	local := c.listener.maxPayload
-	negotiated := local
-	if remote < negotiated {
-		negotiated = remote
-	}
-	if negotiated < conservativeMTU {
-		negotiated = conservativeMTU
-	}
+	negotiated := max(min(c.listener.maxPayload, int(remoteMaxPayload)), conservativeMTU)
 	c.mtu = negotiated
 	c.negotiatedMTU = negotiated
 }
@@ -236,49 +231,49 @@ func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cry
 }
 
 func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
+	var pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey
+	var senderMaxPayload uint16
+	var payload []byte
+	var err error
+
 	switch msgType {
 	case initSnd:
-		pubKeyIdSnd, pubKeyEpSnd, senderMaxPayload, err := decryptInitSnd(encData)
+		pubKeyIdSnd, pubKeyEpSnd, senderMaxPayload, err = decryptInitSnd(encData)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitSnd: %w", err)
 		}
-		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, false)
-		if err != nil {
-			return nil, nil, err
-		}
-		conn.negotiateMTU(senderMaxPayload)
-		sharedSecret, err := conn.sndKeys.prvKeyEp.ECDH(pubKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("ECDH: %w", err)
-		}
-		conn.sndKeys.cur = sharedSecret
-		conn.rcvKeys.cur = sharedSecret //initially, both are the same, as sync is for free
-		return conn, []byte{}, nil
-
+		payload = []byte{} // InitSnd carries no proto payload
 	case initCryptoSnd:
-		pubKeyIdSnd, pubKeyEpSnd, message, err := decryptInitCryptoSnd(encData, l.prvKeyId)
+		pubKeyIdSnd, pubKeyEpSnd, payload, err = decryptInitCryptoSnd(encData, l.prvKeyId)
 		if err != nil {
 			return nil, nil, fmt.Errorf("decrypt InitCryptoSnd: %w", err)
 		}
-		conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, true)
-		if err != nil {
-			return nil, nil, err
-		}
-		sharedSecret, err := conn.sndKeys.prvKeyEp.ECDH(pubKeyEpSnd)
-		if err != nil {
-			return nil, nil, fmt.Errorf("ECDH: %w", err)
-		}
-		conn.sndKeys.cur = sharedSecret
-		conn.rcvKeys.cur = sharedSecret //initially, both are the same, as sync is for free
-		return conn, message.payloadRaw, nil
+	default:
+		return nil, nil, errors.New("invalid init message type")
 	}
-	return nil, nil, errors.New("invalid init message type")
+
+	conn, err := l.getOrCreateConn(connId, rAddr, pubKeyIdSnd, pubKeyEpSnd, false, msgType == initCryptoSnd)
+	if err != nil {
+		return nil, nil, err
+	}
+	// InitCryptoSnd carries the peer's maxPayload in the proto payload instead
+	if msgType == initSnd {
+		conn.negotiateMTU(senderMaxPayload)
+	}
+
+	sharedSecret, err := conn.sndKeys.prvKeyEp.ECDH(pubKeyEpSnd)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ECDH: %w", err)
+	}
+	conn.sndKeys.cur = sharedSecret
+	conn.rcvKeys.cur = sharedSecret //initially, both are the same, as sync is for free
+	return conn, payload, nil
 }
 
 func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 	switch msgType {
 	case initRcv:
-		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, message, err := decryptInitRcv(encData, c.sndKeys.prvKeyEp)
+		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, payload, err := decryptInitRcv(encData, c.sndKeys.prvKeyEp)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt InitRcv: %w", err)
 		}
@@ -286,17 +281,17 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
-		return message.payloadRaw, nil
+		return payload, nil
 
 	case initCryptoRcv:
-		sharedSecret, pubKeyEpRcv, message, err := decryptInitCryptoRcv(encData, c.sndKeys.prvKeyEp)
+		sharedSecret, pubKeyEpRcv, payload, err := decryptInitCryptoRcv(encData, c.sndKeys.prvKeyEp)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
 		}
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
-		return message.payloadRaw, nil
+		return payload, nil
 
 	case data:
 		secrets := [][]byte{c.rcvKeys.cur}
@@ -306,11 +301,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		if c.rcvKeys.next != nil {
 			secrets = append(secrets, c.rcvKeys.next)
 		}
-		message, err := decryptData(encData, c.initMsgType == initCryptoSnd || c.initMsgType == initSnd, secrets)
-		if err != nil {
-			return nil, err
-		}
-		return message.payloadRaw, nil
+		return decryptData(encData, c.isInitiator(), secrets)
 
 	}
 	return nil, fmt.Errorf("unexpected message type: %v", msgType)
@@ -350,7 +341,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 			c.rcvKeys.pubKeyEp,
 			c.sndKeys.cur,
 			c.snCrypto,
-			c.initMsgType == initCryptoSnd || c.initMsgType == initSnd,
+			c.isInitiator(),
 			packetData,
 		)
 	default:
@@ -595,11 +586,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	if ack != nil {
 		// max(0): size can briefly exceed capacity when an in-order segment
 		// is accepted over the limit to break a reassembly deadlock
-		free := 0
-		if c.rcv.capacity > c.rcv.size() {
-			free = c.rcv.capacity - c.rcv.size()
-		}
-		ack.rcvWnd = uint64(free)
+		ack.rcvWnd = uint64(max(c.rcv.capacity-c.rcv.size(), 0))
 	}
 
 	// Expired best-effort packets (unreliable data, pings) are dropped, not
@@ -616,7 +603,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// KEY_UPDATE_ACK arrives. On an idle connection a KU-only packet is sent
 	// instead. Gives up after maxRetry re-sends, like data retransmits.
 	// KUAck needs no timer: a lost ack is re-triggered by the peer's KU retransmit.
-	_, isKeyUpdateAck := c.keyUpdateFlags()
+	isKeyUpdateAck := c.kuAckPending()
 	kuSendDue := c.kuAttachDue(nowNano)
 	// Give up only when the NEXT re-send would be due, so the final re-send
 	// gets its full response window before the error fires
@@ -729,7 +716,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// attached once per RTO (kuAttachDue); the pending KUAck is attached
 	// until sent once (phase flips to Ready below).
 	isKeyUpdate := c.kuAttachDue(nowNano)
-	_, isKeyUpdateAck := c.keyUpdateFlags()
+	isKeyUpdateAck := c.kuAckPending()
 
 	p := &payloadHeader{
 		isClose:      isClose,
@@ -807,15 +794,11 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// paced rate. The credit is floored at maxBurstPackets so a long-idle
 	// connection can't dump an unbounded burst into the queue.
 	pacingNano := c.calcPacing(uint64(len(encData)))
-	base := c.nextWriteTime
 	floor := uint64(0)
 	if debt := maxBurstPackets * pacingNano; nowNano > debt {
 		floor = nowNano - debt
 	}
-	if base < floor {
-		base = floor
-	}
-	c.nextWriteTime = base + pacingNano
+	c.nextWriteTime = max(c.nextWriteTime, floor) + pacingNano
 
 	dataLen := len(data)
 	if trackInFlight && dataLen > 0 {
@@ -835,6 +818,13 @@ func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint
 // =============================================================================
 // Helpers
 // =============================================================================
+
+// isInitiator reports whether this side opened the connection (it dialed and
+// sent the init packet). Determines the AEAD nonce direction bit and which
+// message completes the handshake.
+func (c *conn) isInitiator() bool {
+	return c.initMsgType == initSnd || c.initMsgType == initCryptoSnd
+}
 
 // msgType returns the crypto message type based on handshake state.
 func (c *conn) msgType() cryptoMsgType {

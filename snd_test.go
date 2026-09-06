@@ -10,6 +10,16 @@ import (
 // CONSTRUCTOR TESTS
 // =============================================================================
 
+// inFlightSize returns the number of unacked packets across all generations.
+// Test-only: production code checks inFlightAny() instead.
+func (t *transmitBuffer) inFlightSize() int {
+	size := 0
+	for _, m := range t.inFlight {
+		size += m.size()
+	}
+	return size
+}
+
 func TestSendBuffer_New(t *testing.T) {
 	sb := newSendBuffer(1000)
 

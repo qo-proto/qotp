@@ -41,9 +41,8 @@ func TestCryptoChainedEncryptDecrypt_ShortData(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, buf)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1234567890), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -55,9 +54,8 @@ func TestCryptoChainedEncryptDecrypt_LongData(t *testing.T) {
 	buf, err := chainedEncrypt(987654321, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(987654321), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -69,9 +67,8 @@ func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
 	buf, err := chainedEncrypt(1, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:0], buf)
+	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:0], buf)
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(1), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -84,9 +81,8 @@ func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
 	buf, err := chainedEncrypt(maxSn, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, maxSn, sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -98,9 +94,8 @@ func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
 	buf, err := chainedEncrypt(0, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(0), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -113,7 +108,7 @@ func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	_, _, err = chainedDecrypt(false, [][]byte{wrongSecret}, buf[:len(aad)], buf[len(aad):])
+	_, err = chainedDecrypt(false, [][]byte{wrongSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -127,7 +122,7 @@ func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Decrypt as sender instead of receiver - should fail due to direction bit
-	_, _, err = chainedDecrypt(true, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	_, err = chainedDecrypt(true, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -142,7 +137,7 @@ func TestCryptoChainedDecrypt_CorruptedMAC(t *testing.T) {
 	// Corrupt the last byte (MAC)
 	buf[len(buf)-1] ^= 0xFF
 
-	_, _, err = chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	_, err = chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -160,9 +155,8 @@ func TestCryptoChainedDecrypt_MultipleSecrets_FirstMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret1, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -176,9 +170,8 @@ func TestCryptoChainedDecrypt_MultipleSecrets_SecondMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret2, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -192,9 +185,8 @@ func TestCryptoChainedDecrypt_MultipleSecrets_ThirdMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret3, aad, data)
 	assert.NoError(t, err)
 
-	sn, decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
-	assert.Equal(t, uint64(100), sn)
 	assert.Equal(t, data, decrypted)
 }
 
@@ -208,7 +200,7 @@ func TestCryptoChainedDecrypt_MultipleSecrets_NoneMatch(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secretActual, aad, data)
 	assert.NoError(t, err)
 
-	_, _, err = chainedDecrypt(false, [][]byte{secret1, secret2}, buf[:len(aad)], buf[len(aad):])
+	_, err = chainedDecrypt(false, [][]byte{secret1, secret2}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -288,7 +280,7 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 	assert.NotNil(t, sharedSecret)
 	assert.NotNil(t, pubKeyIdRcv)
 	assert.NotNil(t, pubKeyEpRcv)
-	assert.Equal(t, rawData, msg.payloadRaw)
+	assert.Equal(t, rawData, msg)
 }
 
 func TestCryptoInitRcv_NilKeys(t *testing.T) {
@@ -339,7 +331,7 @@ func TestCryptoInitCryptoSnd_BasicFlow(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, bytes.Equal(alicePrvKeyId.PublicKey().Bytes(), pubKeyIdSnd.Bytes()))
 	assert.True(t, bytes.Equal(alicePrvKeyEp.PublicKey().Bytes(), pubKeyEpSnd.Bytes()))
-	assert.Equal(t, rawData, msg.payloadRaw)
+	assert.Equal(t, rawData, msg)
 }
 
 func TestCryptoInitCryptoSnd_NilKeys(t *testing.T) {
@@ -400,7 +392,7 @@ func TestCryptoInitCryptoRcv_BasicFlow(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, sharedSecret)
 	assert.NotNil(t, pubKeyEpRcv)
-	assert.Equal(t, rawData, msg.payloadRaw)
+	assert.Equal(t, rawData, msg)
 }
 
 func TestCryptoInitCryptoRcv_NilKeys(t *testing.T) {
@@ -449,7 +441,7 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 
 	msg, err := decryptData(encData, false, [][]byte{sharedSecret})
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
+	assert.Equal(t, payload, msg)
 }
 
 func TestCryptoData_NilSharedSecret(t *testing.T) {
@@ -490,7 +482,7 @@ func TestCryptoData_MultipleKeys(t *testing.T) {
 	// Decrypt with current and previous secrets
 	msg, err := decryptData(encData, false, [][]byte{curSecret, prevSecret})
 	assert.NoError(t, err)
-	assert.Equal(t, payload, msg.payloadRaw)
+	assert.Equal(t, payload, msg)
 }
 
 func TestCryptoDecryptData_TooSmall(t *testing.T) {
@@ -581,7 +573,7 @@ func TestCryptoFullHandshake_NoCrypto(t *testing.T) {
 	// Step 4: Alice receives InitRcv
 	_, _, _, msg, err := decryptInitRcv(bufferR0, alicePrvKeyEp)
 	assert.NoError(t, err)
-	assert.Equal(t, rawData, msg.payloadRaw)
+	assert.Equal(t, rawData, msg)
 }
 
 func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
@@ -604,7 +596,7 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	// Step 2: Bob receives InitCryptoSnd
 	_, pubKeyEpSnd, msg, err := decryptInitCryptoSnd(bufferS0, bobPrvKeyId)
 	assert.NoError(t, err)
-	assert.Equal(t, initPayload, msg.payloadRaw)
+	assert.Equal(t, initPayload, msg)
 
 	// Step 3: Bob sends InitCryptoRcv
 	responsePayload := []byte("response")
@@ -624,7 +616,7 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	// Step 4: Alice receives InitCryptoRcv
 	_, _, msg, err = decryptInitCryptoRcv(bufferR0, alicePrvKeyEp)
 	assert.NoError(t, err)
-	assert.Equal(t, responsePayload, msg.payloadRaw)
+	assert.Equal(t, responsePayload, msg)
 }
 
 // =============================================================================

@@ -1,7 +1,6 @@
 package qotp
 
 import (
-	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/hex"
@@ -47,12 +46,6 @@ const (
 
 	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 39 bytes
 )
-
-// msg represents a decrypted QOTP message.
-type msg struct {
-	snConn     uint64
-	payloadRaw []byte
-}
 
 // =============================================================================
 // Encryption
@@ -235,7 +228,7 @@ func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, s
 // decryptInitRcv decrypts an InitRcv handshake response.
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv).
 func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
-	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, m *msg, err error) {
+	sharedSecret []byte, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
 	if len(encData) < minInitRcvSizeHdr+footerDataSize {
 		return nil, nil, nil, nil, errors.New("size is below minimum init reply")
 	}
@@ -255,18 +248,18 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := minInitRcvSizeHdr
-	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn}, nil
+	return sharedSecret, pubKeyIdRcv, pubKeyEpRcv, packetData, nil
 }
 
 // decryptInitCryptoSnd decrypts a 0-RTT initiation packet.
 // Uses receiver's identity key for decryption (no PFS for this message).
 func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
-	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, m *msg, err error) {
+	pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, payload []byte, err error) {
 	if len(encData) < conservativeMTU {
 		return nil, nil, nil, errors.New("size is below minimum init")
 	}
@@ -286,22 +279,20 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 	}
 
 	headerLen := minInitCryptoSndSizeHdr
-	snConn, packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	// Remove padding: [fillLen (2 bytes)][filler][actualData]
 	fillerLen := getUint16(packetData)
-	actualData := packetData[2+int(fillerLen):]
-
-	return pubKeyIdSnd, pubKeyEpSnd, &msg{payloadRaw: actualData, snConn: snConn}, nil
+	return pubKeyIdSnd, pubKeyEpSnd, packetData[2+int(fillerLen):], nil
 }
 
 // decryptInitCryptoRcv decrypts a 0-RTT response packet.
 // Derives shared secret from ECDH(prvKeyEpSnd, pubKeyEpRcv) for PFS.
 func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
-	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, m *msg, err error) {
+	sharedSecret []byte, pubKeyEpRcv *ecdh.PublicKey, payload []byte, err error) {
 	if len(encData) < minInitCryptoRcvSizeHdr+footerDataSize {
 		return nil, nil, nil, errors.New("size is below minimum init reply")
 	}
@@ -317,52 +308,42 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := minInitCryptoRcvSizeHdr
-	snConn, packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return sharedSecret, pubKeyEpRcv, &msg{payloadRaw: packetData, snConn: snConn}, nil
+	return sharedSecret, pubKeyEpRcv, packetData, nil
 }
 
 // decryptData decrypts a regular Data packet using the established shared secret.
-func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) (*msg, error) {
+func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, error) {
 	if len(encData) < minDataSizeHdr+footerDataSize {
 		return nil, errors.New("size is below minimum")
 	}
 
 	headerLen := headerSize + connIdSize
-	snConn, packetData, err := chainedDecrypt(isSender, sharedSecret, encData[:headerLen], encData[headerLen:])
-	if err != nil {
-		return nil, err
-	}
-
-	return &msg{payloadRaw: packetData, snConn: snConn}, nil
+	return chainedDecrypt(isSender, sharedSecret, encData[:headerLen], encData[headerLen:])
 }
 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
 // Tries all provided secrets (cur, plus prev/next during key rotation).
-func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) (
-	snConn uint64, packetData []byte, err error) {
-
+func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) ([]byte, error) {
 	encSn := encData[:snSize]
 	encData = encData[snSize:]
 	nonceRand := encData[:24]
 
 	for _, sharedSecret := range sharedSecrets {
-		var aErr error
-		snConnBytes := make([]byte, snSize)
-		snConnBytes, aErr = decryptSnWithoutMAC(sharedSecret, nonceRand, encSn, snConnBytes)
-		if aErr != nil {
-			err = aErr
-			continue // try next secret instead of returning
+		// A wrong secret produces garbage here rather than an error; the
+		// AEAD Open below is what actually rejects it, so failures just
+		// move on to the next secret.
+		snConn, err := decryptSnWithoutMAC(sharedSecret, nonceRand, encSn)
+		if err != nil {
+			continue
 		}
-		snConn = getUint48(snConnBytes)
 
-		var aead cipher.AEAD
-		aead, aErr = chacha20poly1305.New(sharedSecret)
-		if aErr != nil {
-			err = aErr
+		aead, err := chacha20poly1305.New(sharedSecret)
+		if err != nil {
 			continue
 		}
 
@@ -375,12 +356,11 @@ func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byt
 			nonceDet[0] |= 0x80
 		}
 
-		packetData, err = aead.Open(nil, nonceDet, encData, header)
-		if err == nil {
-			return snConn, packetData, nil
+		if packetData, err := aead.Open(nil, nonceDet, encData, header); err == nil {
+			return packetData, nil
 		}
 	}
-	return 0, nil, errors.New("no matching secret found")
+	return nil, errors.New("no matching secret found")
 }
 
 // =============================================================================
@@ -389,14 +369,15 @@ func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byt
 
 // decryptSnWithoutMAC decrypts the sequence number without MAC verification.
 // The MAC is verified on the payload in chainedDecrypt.
-func decryptSnWithoutMAC(sharedSecret, nonce, encoded, snSer []byte) ([]byte, error) {
+func decryptSnWithoutMAC(sharedSecret, nonce, encoded []byte) (uint64, error) {
 	s, err := chacha20.NewUnauthenticatedCipher(sharedSecret, nonce)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	s.SetCounter(1) // Skip first block (used for Poly1305 key in AEAD)
-	s.XORKeyStream(snSer, encoded)
-	return snSer, nil
+	var snSer [snSize]byte
+	s.XORKeyStream(snSer[:], encoded)
+	return getUint48(snSer[:]), nil
 }
 
 func decodeHexPubKey(pubKeyHex string) (*ecdh.PublicKey, error) {

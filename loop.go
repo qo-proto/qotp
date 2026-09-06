@@ -80,13 +80,14 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	}
 
 	// Handshake completes when:
-	// - Sender receives InitRcv/InitCryptoRcv
-	// - Receiver receives first Data message
+	// - Initiator receives InitRcv/InitCryptoRcv
+	// - Responder receives first Data message
 	if c.phase < phaseReady {
-		switch {
-		case (c.initMsgType == initCryptoSnd || c.initMsgType == initSnd) && (msgType == initRcv || msgType == initCryptoRcv):
-			c.phase = phaseReady
-		case !(c.initMsgType == initCryptoSnd || c.initMsgType == initSnd) && (msgType == data):
+		if c.isInitiator() {
+			if msgType == initRcv || msgType == initCryptoRcv {
+				c.phase = phaseReady
+			}
+		} else if msgType == data {
 			c.phase = phaseReady
 		}
 	}
