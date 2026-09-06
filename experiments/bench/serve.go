@@ -230,7 +230,6 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 	}
 	go func() {
 		sessions := map[*qotp.Stream]*qotpSession{}
-		lastDbg := time.Now()
 		err := ln.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
 			if s != nil {
 				sess := sessions[s]
@@ -247,10 +246,6 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 				if sess.pump(st) {
 					delete(sessions, st)
 				}
-			}
-			if os.Getenv("BENCH_DBG") != "" && time.Since(lastDbg) > time.Second {
-				lastDbg = time.Now()
-				fmt.Fprintf(os.Stderr, "DBG sessions=%d\n", len(sessions))
 			}
 			return nil
 		})
