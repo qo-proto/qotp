@@ -52,7 +52,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	msgType := cryptoMsgType(header >> 5)
 
 	// Decrypt and get/create connection
-	c, payload, err := decodePacket(l, encData, rAddr, msgType)
+	c, payload, sn, err := decodePacket(l, encData, rAddr, msgType)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		}
 	}
 
-	s, err := c.processIncomingPayload(p, payload, nowNano)
+	s, err := c.processIncomingPayload(p, payload, sn, nowNano)
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -156,4 +158,40 @@ func ServerTLS() *tls.Config {
 func ClientTLS() *tls.Config {
 	// Self-signed throwaway cert: this measures transport throughput, not PKI.
 	return &tls.Config{InsecureSkipVerify: true, NextProtos: []string{ALPN}}
+}
+
+// SelectProtocols resolves a comma-separated filter to a protocol list; empty
+// means all of them, in the canonical order.
+func SelectProtocols(filter string) ([]string, error) {
+	if filter == "" {
+		return Protocols, nil
+	}
+	want := map[string]bool{}
+	for _, f := range strings.Split(filter, ",") {
+		f = strings.TrimSpace(f)
+		if !slices.Contains(Protocols, f) {
+			return nil, fmt.Errorf("unknown protocol %q, want one of %s", f, strings.Join(Protocols, ", "))
+		}
+		want[f] = true
+	}
+	var out []string
+	for _, p := range Protocols {
+		if want[p] {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// SelectDirs resolves a direction filter; empty means both.
+func SelectDirs(filter string) ([]Dir, error) {
+	switch strings.TrimSpace(filter) {
+	case "":
+		return []Dir{Upload, Download}, nil
+	case "upload", "up":
+		return []Dir{Upload}, nil
+	case "download", "down":
+		return []Dir{Download}, nil
+	}
+	return nil, fmt.Errorf("unknown direction %q, want upload or download", filter)
 }

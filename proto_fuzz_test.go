@@ -17,7 +17,7 @@ func FuzzPayload(f *testing.F) {
 			header: &payloadHeader{
 				streamId:     1,
 				streamOffset: 100,
-				ack:          &ack{streamId: 10, offset: 200, len: 10, rcvWnd: 1000},
+				ack:          &ack{streamId: 10, offset: 200, len: 10},
 			},
 			data: []byte("test data"),
 		},
@@ -35,7 +35,7 @@ func FuzzPayload(f *testing.F) {
 				isClose:      true,
 				streamId:     10,
 				streamOffset: 1000,
-				ack:          &ack{streamId: 20, offset: 500, len: 100, rcvWnd: 5000},
+				ack:          &ack{streamId: 20, offset: 500, len: 100},
 			},
 			data: []byte("closing"),
 		},
@@ -51,7 +51,7 @@ func FuzzPayload(f *testing.F) {
 		{
 			// Type 00: regular ack (nil userData, no data header)
 			header: &payloadHeader{
-				ack: &ack{streamId: 30, offset: 300, len: 50, rcvWnd: 2000},
+				ack: &ack{streamId: 30, offset: 300, len: 50},
 			},
 			data: nil,
 		},
@@ -113,13 +113,15 @@ func FuzzPayload(f *testing.F) {
 			if decoded.ack.len != reDecoded.ack.len {
 				t.Fatal("Ack.len mismatch")
 			}
-			// rcvWnd has lossy encoding - verify both encode to same value
-			enc1 := encodeRcvWindow(decoded.ack.rcvWnd)
-			enc2 := encodeRcvWindow(reDecoded.ack.rcvWnd)
-			if enc1 != enc2 {
-				t.Fatalf("rcvWnd encodes differently: %d->%d vs %d->%d",
-					decoded.ack.rcvWnd, enc1, reDecoded.ack.rcvWnd, enc2)
-			}
+		}
+
+		// rcvWnd rides the header on every packet; its encoding is lossy, so
+		// compare the encoded forms
+		enc1 := encodeRcvWindow(decoded.rcvWnd)
+		enc2 := encodeRcvWindow(reDecoded.rcvWnd)
+		if enc1 != enc2 {
+			t.Fatalf("rcvWnd encodes differently: %d->%d vs %d->%d",
+				decoded.rcvWnd, enc1, reDecoded.rcvWnd, enc2)
 		}
 	})
 }

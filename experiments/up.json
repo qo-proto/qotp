@@ -1,0 +1,3590 @@
+{
+  "config": {
+    "addr": "188.40.119.115",
+    "port": 9000,
+    "size_mb": 32,
+    "runs": 5,
+    "duration": "10s"
+  },
+  "client": {
+    "num_cpu": 32
+  },
+  "server": {
+    "num_cpu": 8,
+    "cpu_busy": 11081096,
+    "cpu_total": 8897407295,
+    "cpu_known": true,
+    "received_bytes": {
+      "qotp": 464933766,
+      "quic": 0,
+      "tcp": 0
+    },
+    "session_seconds": 59.145292259
+  },
+  "measurements": [
+    {
+      "run": 1,
+      "mode": "solo",
+      "dir": "upload",
+      "proto": "qotp",
+      "mbps": 78.67847855201099,
+      "bytes": 96883536,
+      "seconds": 9.998710465,
+      "cores_busy": 0.5247042017328655,
+      "server_cores_busy": 1.1334786511091166
+    },
+    {
+      "run": 2,
+      "mode": "solo",
+      "dir": "upload",
+      "proto": "qotp",
+      "mbps": 62.55315729000564,
+      "bytes": 81337798,
+      "seconds": 9.999385404,
+      "cores_busy": 0.5157283482905319,
+      "server_cores_busy": 1.0786171574903969
+    },
+    {
+      "run": 3,
+      "mode": "solo",
+      "dir": "upload",
+      "proto": "qotp",
+      "mbps": 75.25411160909135,
+      "bytes": 93891536,
+      "seconds": 9.998518264,
+      "cores_busy": 0.5456917438031932,
+      "server_cores_busy": 1.1670733273404392
+    },
+    {
+      "run": 4,
+      "mode": "solo",
+      "dir": "upload",
+      "proto": "qotp",
+      "mbps": 78.60529527961191,
+      "bytes": 97249616,
+      "seconds": 9.999010805,
+      "cores_busy": 0.4740667122181502,
+      "server_cores_busy": 1.1641599177272144
+    },
+    {
+      "run": 5,
+      "mode": "solo",
+      "dir": "upload",
+      "proto": "qotp",
+      "mbps": 76.53048862456798,
+      "bytes": 94853200,
+      "seconds": 9.998968728,
+      "cores_busy": 0.4691703165284379,
+      "server_cores_busy": 1.1276268580215274
+    }
+  ],
+  "samples": [
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.100064602,
+      "cum_bytes": 448689
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.200072784,
+      "cum_bytes": 1628285
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.300069493,
+      "cum_bytes": 2810703
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.400014501,
+      "cum_bytes": 3990299
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.500143769,
+      "cum_bytes": 5171306
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.600051364,
+      "cum_bytes": 6352313
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.700098792,
+      "cum_bytes": 7533320
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.800022599,
+      "cum_bytes": 8712916
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 0.900031161,
+      "cum_bytes": 9480500
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.000190548,
+      "cum_bytes": 9545406
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.100021624,
+      "cum_bytes": 10437158
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.200018203,
+      "cum_bytes": 11618165
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.300070631,
+      "cum_bytes": 12799172
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.400017131,
+      "cum_bytes": 13976040
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.500063698,
+      "cum_bytes": 15106711
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.6001233099999999,
+      "cum_bytes": 15812163
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.700099088,
+      "cum_bytes": 16019580
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.800155083,
+      "cum_bytes": 16479566
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 1.900061235,
+      "cum_bytes": 17042528
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.000099566,
+      "cum_bytes": 17590240
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.100137325,
+      "cum_bytes": 18565984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.200017216,
+      "cum_bytes": 19321224
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.300139711,
+      "cum_bytes": 19838416
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.400220294,
+      "cum_bytes": 20030144
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.500059585,
+      "cum_bytes": 20969313
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.600011497,
+      "cum_bytes": 21816947
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.70008687,
+      "cum_bytes": 21940851
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.80002285,
+      "cum_bytes": 22064755
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 2.900098133,
+      "cum_bytes": 22102774
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.000084853,
+      "cum_bytes": 22252316
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.10004969,
+      "cum_bytes": 22296039
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.200058643,
+      "cum_bytes": 23181716
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.300170627,
+      "cum_bytes": 24358804
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.400048584,
+      "cum_bytes": 24896660
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.500082496,
+      "cum_bytes": 25034644
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.6005162200000003,
+      "cum_bytes": 25217684
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.700830991,
+      "cum_bytes": 25225930
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.800037084,
+      "cum_bytes": 25885136
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 3.900119,
+      "cum_bytes": 27007312
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.0000447,
+      "cum_bytes": 27787344
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.100030126,
+      "cum_bytes": 28671568
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.200277816,
+      "cum_bytes": 29616336
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.300041048,
+      "cum_bytes": 30632912
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.400054149,
+      "cum_bytes": 31694544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.50002088,
+      "cum_bytes": 32813904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.600044391,
+      "cum_bytes": 33982544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.700036482,
+      "cum_bytes": 35159632
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.800095943,
+      "cum_bytes": 36333904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 4.900039619,
+      "cum_bytes": 37496912
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.000015087,
+      "cum_bytes": 38664144
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.100484139,
+      "cum_bytes": 39834192
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.200073943,
+      "cum_bytes": 40981712
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.300034561,
+      "cum_bytes": 42150352
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.400030699,
+      "cum_bytes": 43317584
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.500066745,
+      "cum_bytes": 44493264
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.600018857,
+      "cum_bytes": 45664720
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.700056196,
+      "cum_bytes": 46830544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.800018057,
+      "cum_bytes": 48000592
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 5.900105874,
+      "cum_bytes": 49167824
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.000011706,
+      "cum_bytes": 50335056
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.100126245,
+      "cum_bytes": 51506512
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.200025945,
+      "cum_bytes": 52672336
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.300129543,
+      "cum_bytes": 53846608
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.400261066,
+      "cum_bytes": 55016656
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.500038717,
+      "cum_bytes": 56192336
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.6000425,
+      "cum_bytes": 57353936
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.700045571,
+      "cum_bytes": 58528208
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.800019055,
+      "cum_bytes": 59692624
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 6.900035753,
+      "cum_bytes": 60861264
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.000127308,
+      "cum_bytes": 62027088
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.100056415,
+      "cum_bytes": 63195728
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.200095537,
+      "cum_bytes": 64364368
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.300090332,
+      "cum_bytes": 65542864
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.400075268,
+      "cum_bytes": 66697424
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.500081146,
+      "cum_bytes": 67867472
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.600011475,
+      "cum_bytes": 69030480
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.700125503,
+      "cum_bytes": 70194896
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.800045392,
+      "cum_bytes": 71357904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 7.900050488,
+      "cum_bytes": 72526544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.00007934,
+      "cum_bytes": 73705040
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.10012743,
+      "cum_bytes": 74876496
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.200102597,
+      "cum_bytes": 76047952
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.300047454,
+      "cum_bytes": 77215184
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.400027691,
+      "cum_bytes": 78371152
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.500114316,
+      "cum_bytes": 79548240
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.600221141,
+      "cum_bytes": 80721104
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.700103867,
+      "cum_bytes": 81891152
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.800043645,
+      "cum_bytes": 82964048
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 8.900025986,
+      "cum_bytes": 84135504
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.000136728,
+      "cum_bytes": 85275984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.100138808,
+      "cum_bytes": 86410832
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.200107141,
+      "cum_bytes": 87555536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.300033724,
+      "cum_bytes": 88722768
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.40010062,
+      "cum_bytes": 89894224
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.500133951,
+      "cum_bytes": 91054416
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.600041966,
+      "cum_bytes": 92223056
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.700078884,
+      "cum_bytes": 93393104
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.800024413,
+      "cum_bytes": 94561744
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.900012576,
+      "cum_bytes": 95720528
+    },
+    {
+      "phase": "solo-upload",
+      "run": 1,
+      "proto": "qotp",
+      "t_seconds": 9.999917325,
+      "cum_bytes": 96883536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.100140651,
+      "cum_bytes": 435980
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.200185163,
+      "cum_bytes": 1590178
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.300091446,
+      "cum_bytes": 2796583
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.400110759,
+      "cum_bytes": 3977590
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.500079594,
+      "cum_bytes": 5158597
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.600041766,
+      "cum_bytes": 6338193
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.700070417,
+      "cum_bytes": 7519200
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.800094139,
+      "cum_bytes": 8700207
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 0.900116438,
+      "cum_bytes": 9565150
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.000061657,
+      "cum_bytes": 9618768
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.100099897,
+      "cum_bytes": 10526041
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.200382826,
+      "cum_bytes": 11708459
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.300045031,
+      "cum_bytes": 12886644
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.4001011669999999,
+      "cum_bytes": 14065721
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.5000498420000001,
+      "cum_bytes": 15244217
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.600138792,
+      "cum_bytes": 16328671
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.700074511,
+      "cum_bytes": 17104682
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.8000610209999999,
+      "cum_bytes": 17488399
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 1.900168657,
+      "cum_bytes": 17647842
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.000072875,
+      "cum_bytes": 18147336
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.100129271,
+      "cum_bytes": 18583329
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.200092906,
+      "cum_bytes": 19211753
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.300151997,
+      "cum_bytes": 19672169
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.400090161,
+      "cum_bytes": 19758237
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.5000810490000003,
+      "cum_bytes": 20581049
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.600069272,
+      "cum_bytes": 21755321
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.700161748,
+      "cum_bytes": 21945401
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.800075545,
+      "cum_bytes": 21948217
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 2.900123986,
+      "cum_bytes": 23087289
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.000038163,
+      "cum_bytes": 23813817
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.100050804,
+      "cum_bytes": 23922239
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.200293705,
+      "cum_bytes": 23984320
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.300063771,
+      "cum_bytes": 23985731
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.400037765,
+      "cum_bytes": 23987139
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.500087959,
+      "cum_bytes": 23988550
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.600097894,
+      "cum_bytes": 23988550
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.700117658,
+      "cum_bytes": 25131846
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.800078247,
+      "cum_bytes": 26292038
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 3.9000510090000002,
+      "cum_bytes": 27438150
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.000072557,
+      "cum_bytes": 28278726
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.10009678,
+      "cum_bytes": 29199558
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.200136113,
+      "cum_bytes": 30378054
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.300206105,
+      "cum_bytes": 31341126
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.400045717,
+      "cum_bytes": 32370374
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.500137983,
+      "cum_bytes": 33144774
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.6001606630000005,
+      "cum_bytes": 33651654
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.700124358,
+      "cum_bytes": 34830150
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.800100868,
+      "cum_bytes": 35994566
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 4.900048771,
+      "cum_bytes": 37180102
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.000058686,
+      "cum_bytes": 38344518
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.100127607,
+      "cum_bytes": 39009094
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.200043819,
+      "cum_bytes": 39104838
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.30016456,
+      "cum_bytes": 39438534
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.400061264,
+      "cum_bytes": 39662406
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.5000534850000005,
+      "cum_bytes": 39991878
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.600075573,
+      "cum_bytes": 40117190
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.70039851,
+      "cum_bytes": 40493126
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.800116144,
+      "cum_bytes": 41005638
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 5.900133854,
+      "cum_bytes": 41038022
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.000104152,
+      "cum_bytes": 41040838
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.100095611,
+      "cum_bytes": 41143622
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.200146907,
+      "cum_bytes": 42322118
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.300080042,
+      "cum_bytes": 43499206
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.400099956,
+      "cum_bytes": 43589318
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.500151913,
+      "cum_bytes": 43592134
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.6002159240000005,
+      "cum_bytes": 43594950
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.700521217,
+      "cum_bytes": 43596138
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.800038529,
+      "cum_bytes": 43975110
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 6.900039396,
+      "cum_bytes": 45150790
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.00007938,
+      "cum_bytes": 46327878
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.100039658,
+      "cum_bytes": 47496518
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.200046517,
+      "cum_bytes": 48648262
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.300067464,
+      "cum_bytes": 49840838
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.400041148,
+      "cum_bytes": 51013702
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.500047977,
+      "cum_bytes": 52186566
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.600038023,
+      "cum_bytes": 53350982
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.700090752,
+      "cum_bytes": 54518214
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.800078674,
+      "cum_bytes": 55688262
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 7.900078109,
+      "cum_bytes": 56855494
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.000040471,
+      "cum_bytes": 58025542
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.100136636,
+      "cum_bytes": 59201222
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.200040634,
+      "cum_bytes": 60367046
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.300138941,
+      "cum_bytes": 61521606
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.400066275,
+      "cum_bytes": 62690246
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.500092552,
+      "cum_bytes": 63858886
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.600112857,
+      "cum_bytes": 65019078
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.700105649,
+      "cum_bytes": 66194758
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.800079523,
+      "cum_bytes": 67363398
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 8.900076193,
+      "cum_bytes": 68533446
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.000040789,
+      "cum_bytes": 69702086
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.100047468,
+      "cum_bytes": 70879174
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.200089125,
+      "cum_bytes": 72046406
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.300089912,
+      "cum_bytes": 73213638
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.400105238,
+      "cum_bytes": 74369606
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.500035787,
+      "cum_bytes": 75536838
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.60004939,
+      "cum_bytes": 76708294
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.700045818,
+      "cum_bytes": 77875526
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.800085742,
+      "cum_bytes": 79039942
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 9.900057994,
+      "cum_bytes": 80200134
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 10.00043184,
+      "cum_bytes": 81337798
+    },
+    {
+      "phase": "solo-upload",
+      "run": 2,
+      "proto": "qotp",
+      "t_seconds": 10.00046723,
+      "cum_bytes": 81337798
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.100110542,
+      "cum_bytes": 468443
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.20006086,
+      "cum_bytes": 1648039
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.300137215,
+      "cum_bytes": 2829046
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.400065591,
+      "cum_bytes": 4010053
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.50015962,
+      "cum_bytes": 5189649
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.60010014,
+      "cum_bytes": 6370656
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.700328011,
+      "cum_bytes": 7541786
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.800122104,
+      "cum_bytes": 8732670
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 0.900198249,
+      "cum_bytes": 9543995
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.000096646,
+      "cum_bytes": 9648409
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.100132311,
+      "cum_bytes": 10403294
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.2001484279999999,
+      "cum_bytes": 11585712
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.300093346,
+      "cum_bytes": 12765308
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.400142368,
+      "cum_bytes": 13944502
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.5001193590000002,
+      "cum_bytes": 15124406
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.600156838,
+      "cum_bytes": 16186464
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.70006286,
+      "cum_bytes": 16944168
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.8001192050000001,
+      "cum_bytes": 17161414
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 1.900092449,
+      "cum_bytes": 17474656
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.000170387,
+      "cum_bytes": 17903507
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.100116437,
+      "cum_bytes": 18006291
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.200132113,
+      "cum_bytes": 18820172
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.300141257,
+      "cum_bytes": 19089616
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.400107417,
+      "cum_bytes": 19751430
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.500145286,
+      "cum_bytes": 20763833
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.600068151,
+      "cum_bytes": 21319993
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.7001057,
+      "cum_bytes": 22498489
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.80014386,
+      "cum_bytes": 22870201
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 2.900057387,
+      "cum_bytes": 22925116
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.000190102,
+      "cum_bytes": 23170417
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.100191491,
+      "cum_bytes": 23809480
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.200092062,
+      "cum_bytes": 23830612
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.300078992,
+      "cum_bytes": 23871507
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.400129056,
+      "cum_bytes": 23901075
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.5001751519999997,
+      "cum_bytes": 25059859
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.600081845,
+      "cum_bytes": 25180947
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.700144323,
+      "cum_bytes": 25195027
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.8005581680000002,
+      "cum_bytes": 25195027
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 3.900932306,
+      "cum_bytes": 25195027
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.000167105,
+      "cum_bytes": 25397748
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.100057406,
+      "cum_bytes": 26130128
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.200078763,
+      "cum_bytes": 27257936
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.300610379,
+      "cum_bytes": 28098512
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.400094666,
+      "cum_bytes": 28992592
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.50016526,
+      "cum_bytes": 29972560
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.600074558,
+      "cum_bytes": 30989136
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.700055737,
+      "cum_bytes": 32069072
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.800109428,
+      "cum_bytes": 33220816
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 4.9000705270000005,
+      "cum_bytes": 34383824
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.000102606,
+      "cum_bytes": 35552464
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.10015825,
+      "cum_bytes": 36725328
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.200301556,
+      "cum_bytes": 37891152
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.30029533,
+      "cum_bytes": 39068240
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.400129742,
+      "cum_bytes": 40238288
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.500068858,
+      "cum_bytes": 41415376
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.600202455,
+      "cum_bytes": 42576976
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.700112635,
+      "cum_bytes": 43756880
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.80006084,
+      "cum_bytes": 44928336
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 5.900133007,
+      "cum_bytes": 46091344
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.000068837,
+      "cum_bytes": 47261392
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.100103621,
+      "cum_bytes": 48432848
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.20011046,
+      "cum_bytes": 49601488
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.300074766,
+      "cum_bytes": 50768720
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.400180288,
+      "cum_bytes": 51938768
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.500071,
+      "cum_bytes": 53114448
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.600058922,
+      "cum_bytes": 54280272
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.700119356,
+      "cum_bytes": 55450320
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.800082519,
+      "cum_bytes": 56618960
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 6.900119367,
+      "cum_bytes": 57786192
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.000127729,
+      "cum_bytes": 58963280
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.100082637,
+      "cum_bytes": 60123472
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.200094205,
+      "cum_bytes": 61303376
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.300060054,
+      "cum_bytes": 62418512
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.400129436,
+      "cum_bytes": 63570256
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.500070276,
+      "cum_bytes": 64738896
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.600077997,
+      "cum_bytes": 65910352
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.700195372,
+      "cum_bytes": 67080400
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.8001134069999996,
+      "cum_bytes": 68258896
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 7.900094807,
+      "cum_bytes": 69430352
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.000062459,
+      "cum_bytes": 70597584
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.100072344,
+      "cum_bytes": 71767632
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.200155412,
+      "cum_bytes": 72936272
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.300178373,
+      "cum_bytes": 74106320
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.400084495,
+      "cum_bytes": 75276368
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.500065253,
+      "cum_bytes": 76447824
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.600078836,
+      "cum_bytes": 77615056
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.700063231,
+      "cum_bytes": 78785104
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.80010079,
+      "cum_bytes": 79948112
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 8.90007224,
+      "cum_bytes": 81115344
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.000122414,
+      "cum_bytes": 82289616
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.100093673,
+      "cum_bytes": 83455440
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.200066796,
+      "cum_bytes": 84626896
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.300139334,
+      "cum_bytes": 85795536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.400057269,
+      "cum_bytes": 86958544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.500147792,
+      "cum_bytes": 88096208
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.600103812,
+      "cum_bytes": 89264848
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.70006402,
+      "cum_bytes": 90427856
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.800196595,
+      "cum_bytes": 91576784
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.900066977,
+      "cum_bytes": 92728528
+    },
+    {
+      "phase": "solo-upload",
+      "run": 3,
+      "proto": "qotp",
+      "t_seconds": 9.999943802,
+      "cum_bytes": 93891536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.100072137,
+      "cum_bytes": 457155
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.20008109,
+      "cum_bytes": 1640984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.300111856,
+      "cum_bytes": 2831868
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.400112643,
+      "cum_bytes": 4012875
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.500065066,
+      "cum_bytes": 5192471
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.600072066,
+      "cum_bytes": 6373478
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.700013607,
+      "cum_bytes": 7541786
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.800043942,
+      "cum_bytes": 8734081
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 0.90004512,
+      "cum_bytes": 9483322
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.000018975,
+      "cum_bytes": 9668163
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.1000291,
+      "cum_bytes": 10725002
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.200054576,
+      "cum_bytes": 11906009
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.300085783,
+      "cum_bytes": 13087016
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.400027104,
+      "cum_bytes": 14266066
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.500031328,
+      "cum_bytes": 15443154
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.6000186589999998,
+      "cum_bytes": 16271063
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.700111336,
+      "cum_bytes": 16849489
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.800046284,
+      "cum_bytes": 17072424
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 1.90005164,
+      "cum_bytes": 17495682
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.000099921,
+      "cum_bytes": 18092082
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.100046322,
+      "cum_bytes": 18682307
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.200133488,
+      "cum_bytes": 19542634
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.300017107,
+      "cum_bytes": 19693572
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.400019938,
+      "cum_bytes": 20252827
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.500071214,
+      "cum_bytes": 21341217
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.600060639,
+      "cum_bytes": 21804455
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.700099931,
+      "cum_bytes": 22439463
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.800065901,
+      "cum_bytes": 22744999
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 2.9000144260000003,
+      "cum_bytes": 22963242
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.000197279,
+      "cum_bytes": 23116876
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.100047291,
+      "cum_bytes": 23150704
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.200096033,
+      "cum_bytes": 23178903
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.30013779,
+      "cum_bytes": 23421103
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.400057509,
+      "cum_bytes": 24598191
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.500027826,
+      "cum_bytes": 25731631
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.600135343,
+      "cum_bytes": 25869615
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.700057486,
+      "cum_bytes": 26006191
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.8006732960000003,
+      "cum_bytes": 26315764
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 3.9000607240000003,
+      "cum_bytes": 27291728
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.000792471,
+      "cum_bytes": 28275920
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.100026088,
+      "cum_bytes": 29099600
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.200272796,
+      "cum_bytes": 30033104
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.300054826,
+      "cum_bytes": 31007440
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.400189555,
+      "cum_bytes": 32060624
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.500030199,
+      "cum_bytes": 33160272
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.600095513,
+      "cum_bytes": 34323280
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.700036723,
+      "cum_bytes": 35494736
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.800099933,
+      "cum_bytes": 36663376
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 4.900027888,
+      "cum_bytes": 37830608
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.000023605,
+      "cum_bytes": 39000656
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.100075643,
+      "cum_bytes": 40159440
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.200012755,
+      "cum_bytes": 41336528
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.300023552,
+      "cum_bytes": 42505168
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.400193791,
+      "cum_bytes": 43670992
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.500040627,
+      "cum_bytes": 44835408
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.600019041,
+      "cum_bytes": 46005456
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.700159912,
+      "cum_bytes": 47171280
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.8000679680000005,
+      "cum_bytes": 48338512
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 5.9000304,
+      "cum_bytes": 49467728
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.000040125,
+      "cum_bytes": 50592720
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.100021495,
+      "cum_bytes": 51761360
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.200011791,
+      "cum_bytes": 52924368
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.300034552,
+      "cum_bytes": 54094416
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.400040108,
+      "cum_bytes": 55264464
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.500032249,
+      "cum_bytes": 56433104
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.600014199,
+      "cum_bytes": 57605968
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.700083771,
+      "cum_bytes": 58778832
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.800084348,
+      "cum_bytes": 59955920
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 6.900049726,
+      "cum_bytes": 61124560
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.000026086,
+      "cum_bytes": 62297424
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.100035129,
+      "cum_bytes": 63468880
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.200105523,
+      "cum_bytes": 64641744
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.300134746,
+      "cum_bytes": 65796304
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.400085175,
+      "cum_bytes": 66964944
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.50007999,
+      "cum_bytes": 68130768
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.600073543,
+      "cum_bytes": 69296592
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.7000878969999995,
+      "cum_bytes": 70475088
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.800025742,
+      "cum_bytes": 71643728
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 7.900050596,
+      "cum_bytes": 72809552
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.000027577,
+      "cum_bytes": 73982416
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.100132378,
+      "cum_bytes": 75152464
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.200055814,
+      "cum_bytes": 76319696
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.300048335,
+      "cum_bytes": 77477072
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.400109991,
+      "cum_bytes": 78645712
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.500013208,
+      "cum_bytes": 79814352
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.600029746,
+      "cum_bytes": 80984400
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.700021686,
+      "cum_bytes": 82153040
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.800010761,
+      "cum_bytes": 83331536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 8.900093318,
+      "cum_bytes": 84498768
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.000087733,
+      "cum_bytes": 85585744
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.10011433,
+      "cum_bytes": 86750160
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.200073276,
+      "cum_bytes": 87925840
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.300042321,
+      "cum_bytes": 89094480
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.400015074,
+      "cum_bytes": 90254672
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.500070508,
+      "cum_bytes": 91421904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.600198685,
+      "cum_bytes": 92593360
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.700067033,
+      "cum_bytes": 93756368
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.800031139,
+      "cum_bytes": 94937680
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.900165497,
+      "cum_bytes": 96102096
+    },
+    {
+      "phase": "solo-upload",
+      "run": 4,
+      "proto": "qotp",
+      "t_seconds": 9.999982856,
+      "cum_bytes": 97249616
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.10008411,
+      "cum_bytes": 388016
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.200078846,
+      "cum_bytes": 1624052
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.300050105,
+      "cum_bytes": 2809292
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.400029851,
+      "cum_bytes": 3990299
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.50008247,
+      "cum_bytes": 5171306
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.600089119,
+      "cum_bytes": 6352313
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.700114214,
+      "cum_bytes": 7533320
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.800022711,
+      "cum_bytes": 8536541
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 0.900051763,
+      "cum_bytes": 8738314
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.000102869,
+      "cum_bytes": 9576448
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.100039611,
+      "cum_bytes": 10756044
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.20013831,
+      "cum_bytes": 11935427
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.300026297,
+      "cum_bytes": 12986179
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.400133823,
+      "cum_bytes": 13938604
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.5000999830000001,
+      "cum_bytes": 14795081
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.600058838,
+      "cum_bytes": 15662846
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.700042322,
+      "cum_bytes": 16213136
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.8000645309999999,
+      "cum_bytes": 16385176
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 1.900088914,
+      "cum_bytes": 17148312
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.000102547,
+      "cum_bytes": 18326808
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.100067434,
+      "cum_bytes": 19151832
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.200088912,
+      "cum_bytes": 19687517
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.300142002,
+      "cum_bytes": 19828467
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.400044687,
+      "cum_bytes": 20345260
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.500023572,
+      "cum_bytes": 20821191
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.600115948,
+      "cum_bytes": 20959175
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.700025407,
+      "cum_bytes": 21060719
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.800051013,
+      "cum_bytes": 21204614
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 2.900117769,
+      "cum_bytes": 21299151
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.000355129,
+      "cum_bytes": 21327347
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.100807129,
+      "cum_bytes": 21327347
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.200079532,
+      "cum_bytes": 21327347
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.3000456209999998,
+      "cum_bytes": 21699107
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.40005229,
+      "cum_bytes": 22583376
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.500024963,
+      "cum_bytes": 23761872
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.600033054,
+      "cum_bytes": 24938960
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.700029543,
+      "cum_bytes": 25409232
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.800059778,
+      "cum_bytes": 26237136
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 3.900024004,
+      "cum_bytes": 27415632
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.000089678,
+      "cum_bytes": 28594128
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.100100155,
+      "cum_bytes": 29672656
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.200054932,
+      "cum_bytes": 30468176
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.300725088,
+      "cum_bytes": 31211600
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.400940576,
+      "cum_bytes": 31939536
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.500023889,
+      "cum_bytes": 32843472
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.6000439239999995,
+      "cum_bytes": 33584080
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.700532806,
+      "cum_bytes": 34261328
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.8002405,
+      "cum_bytes": 35020240
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 4.900113858,
+      "cum_bytes": 35845328
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.0000914,
+      "cum_bytes": 36745040
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.100490998,
+      "cum_bytes": 37733456
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.200062476,
+      "cum_bytes": 38771152
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.3002354,
+      "cum_bytes": 39896144
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.400070754,
+      "cum_bytes": 41070416
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.5000762,
+      "cum_bytes": 42241872
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.600023553,
+      "cum_bytes": 43418960
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.700078526,
+      "cum_bytes": 44597456
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.800051539,
+      "cum_bytes": 45775952
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 5.90011554,
+      "cum_bytes": 46954448
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.000036431,
+      "cum_bytes": 48116048
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.100036828,
+      "cum_bytes": 49304400
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.200063506,
+      "cum_bytes": 50481488
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.300044935,
+      "cum_bytes": 51659984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.400098315,
+      "cum_bytes": 52838480
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.500187395,
+      "cum_bytes": 54016976
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.600038861,
+      "cum_bytes": 55179984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.70003012,
+      "cum_bytes": 56347216
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.800028613,
+      "cum_bytes": 57517264
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 6.900058797,
+      "cum_bytes": 58685904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.000040658,
+      "cum_bytes": 59854544
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.100080361,
+      "cum_bytes": 61021776
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.200028957,
+      "cum_bytes": 62189008
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.300122856,
+      "cum_bytes": 63357648
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.400032536,
+      "cum_bytes": 64533328
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.500099422,
+      "cum_bytes": 65682256
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.600053609,
+      "cum_bytes": 66856528
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.700033355,
+      "cum_bytes": 68025168
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.800078128,
+      "cum_bytes": 69202256
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 7.900084607,
+      "cum_bytes": 70372304
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.000110122,
+      "cum_bytes": 71540944
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.100032326000001,
+      "cum_bytes": 72708176
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.200076448,
+      "cum_bytes": 73871184
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.300053479,
+      "cum_bytes": 75041232
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.400117551,
+      "cum_bytes": 76215504
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.50009868,
+      "cum_bytes": 77341904
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.600032336,
+      "cum_bytes": 78493648
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.700066969,
+      "cum_bytes": 79658064
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.800027518,
+      "cum_bytes": 80828112
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 8.900058274,
+      "cum_bytes": 81996752
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.000096104,
+      "cum_bytes": 83163984
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.100033067,
+      "cum_bytes": 84331216
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.200106005,
+      "cum_bytes": 85511120
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.300093647,
+      "cum_bytes": 86665680
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.400102189,
+      "cum_bytes": 87837136
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.500123868,
+      "cum_bytes": 89010000
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.600112832,
+      "cum_bytes": 90175824
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.700047881,
+      "cum_bytes": 91343056
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.800033499,
+      "cum_bytes": 92510288
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 9.900102229,
+      "cum_bytes": 93678928
+    },
+    {
+      "phase": "solo-upload",
+      "run": 5,
+      "proto": "qotp",
+      "t_seconds": 10.000007369,
+      "cum_bytes": 94853200
+    }
+  ]
+}

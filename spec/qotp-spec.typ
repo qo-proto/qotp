@@ -152,7 +152,7 @@ encrypted sequence number (§4).
 47..    payload + MAC
 ```
 
-*Data* -- at least 41 bytes.
+*Data* -- at least 42 bytes.
 
 ```
 0       type
@@ -214,7 +214,8 @@ header. Sizes in bytes, in wire order:
 ```
 flags        1  always
 maxPayload   2  always
-ack         10  if hasAck    (13 if extend)
+rcvWnd       1  always
+ack          9  if hasAck    (12 if extend)
 keyUpdate   32  if isKeyUpdate
 keyUpdAck   32  if isKeyUpdateAck
 streamHdr    7  if hasStream (10 if extend)
@@ -239,6 +240,10 @@ at any time, so no state records whether it has been
 announced. The connection MTU is
 `max(min(local, remote), 1232)`.
 
+`rcvWnd` (u8, §7) is unconditional for the same reason,
+and because it describes the connection, not one
+stream.
+
 That is an upper bound agreed by the two endpoints, not
 a property of the path between them, which may silently
 drop larger packets. A sender MUST be able to fall back
@@ -251,7 +256,6 @@ an implementation matter.
 0..3  stream ID (u32)
 4..6  offset (u24; u48 if extend)
 7..8  length (u16)
-9     receive window (u8, §7)
 ```
 
 *Stream header.*
@@ -267,8 +271,8 @@ acknowledged like any other, and is how a side that
 only receives obtains an RTT sample. A packet without
 `hasStream` MUST have no trailing bytes.
 
-The smallest payload is 10 bytes: flags, `maxPayload`,
-and a stream header with a 24-bit offset.
+The smallest payload is 11 bytes: flags, `maxPayload`,
+`rcvWnd`, and a stream header with a 24-bit offset.
 
 = 6. Streams
 
@@ -299,8 +303,12 @@ have closed and no acknowledgements are outstanding.
 when its timeout expires, or when three later packets
 have been acknowledged.
 
-*Receive window.* The 8-bit field is a logarithm: 8
-steps per power of two, covering 0 B to about 896 GB.
+*Receive window.* Free space in the receiver's buffer,
+connection-wide, on every packet (§5). An 8-bit
+logarithm: 8 steps per power of two, 0 B to about
+896 GB. True only when built, so a sender MUST take it
+from the newest packet seen, ordered by sequence
+number (§4).
 
 ```
 enc 0  -> 0
@@ -313,6 +321,15 @@ else, a = enc - 2:
 A sender MUST NOT put more unacknowledged stream bytes
 in flight than the window. Retransmissions are exempt,
 or a lost packet could deadlock reassembly.
+
+A blocked sender MUST NOT go quiet: the window arrives
+only in a packet, and a peer with nothing to say sends
+none, so both wait for the other. It sends an empty
+packet until the window reopens, backing off but never
+giving up -- a peer refusing data is behaving
+correctly. A receiver draining far below what it
+announced SHOULD send one unprompted, which may be
+lost and so does not replace the probe.
 
 *Congestion control.* A sender paces packets: it
 measures the rate at which its bytes are acknowledged
@@ -344,8 +361,8 @@ scheduled send time run unboundedly ahead of the clock.
   [8], [connection ID],
   [6], [sequence number (48-bit)],
   [16], [Poly1305 MAC],
-  [10], [smallest payload],
-  [41], [smallest Data packet],
+  [11], [smallest payload],
+  [42], [smallest Data packet],
   [`2^31-1`], [largest stream ID],
   [`2^46`], [sn that begins a key change],
   [`2^47`], [sn that completes it],

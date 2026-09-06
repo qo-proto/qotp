@@ -41,7 +41,7 @@ func TestCryptoChainedEncryptDecrypt_ShortData(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, buf)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -54,7 +54,7 @@ func TestCryptoChainedEncryptDecrypt_LongData(t *testing.T) {
 	buf, err := chainedEncrypt(987654321, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -67,7 +67,7 @@ func TestCryptoChainedEncryptDecrypt_EmptyAAD(t *testing.T) {
 	buf, err := chainedEncrypt(1, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:0], buf)
+	decrypted, _, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:0], buf)
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -81,7 +81,7 @@ func TestCryptoChainedEncryptDecrypt_MaxSequenceNumber(t *testing.T) {
 	buf, err := chainedEncrypt(maxSn, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -94,7 +94,7 @@ func TestCryptoChainedEncryptDecrypt_ZeroSequenceNumber(t *testing.T) {
 	buf, err := chainedEncrypt(0, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -108,7 +108,7 @@ func TestCryptoChainedDecrypt_WrongSharedSecret(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, sharedSecret, aad, data)
 	assert.NoError(t, err)
 
-	_, err = chainedDecrypt(false, [][]byte{wrongSecret}, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(false, [][]byte{wrongSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -122,7 +122,7 @@ func TestCryptoChainedDecrypt_WrongDirection(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Decrypt as sender instead of receiver - should fail due to direction bit
-	_, err = chainedDecrypt(true, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(true, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -137,7 +137,7 @@ func TestCryptoChainedDecrypt_CorruptedMAC(t *testing.T) {
 	// Corrupt the last byte (MAC)
 	buf[len(buf)-1] ^= 0xFF
 
-	_, err = chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(false, [][]byte{sharedSecret}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -155,7 +155,7 @@ func TestCryptoChainedDecrypt_MultipleSecrets_FirstMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret1, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -170,7 +170,7 @@ func TestCryptoChainedDecrypt_MultipleSecrets_SecondMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret2, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -185,7 +185,7 @@ func TestCryptoChainedDecrypt_MultipleSecrets_ThirdMatches(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secret3, aad, data)
 	assert.NoError(t, err)
 
-	decrypted, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
+	decrypted, _, err := chainedDecrypt(false, [][]byte{secret1, secret2, secret3}, buf[:len(aad)], buf[len(aad):])
 	assert.NoError(t, err)
 	assert.Equal(t, data, decrypted)
 }
@@ -200,7 +200,7 @@ func TestCryptoChainedDecrypt_MultipleSecrets_NoneMatch(t *testing.T) {
 	buf, err := chainedEncrypt(100, true, secretActual, aad, data)
 	assert.NoError(t, err)
 
-	_, err = chainedDecrypt(false, [][]byte{secret1, secret2}, buf[:len(aad)], buf[len(aad):])
+	_, _, err = chainedDecrypt(false, [][]byte{secret1, secret2}, buf[:len(aad)], buf[len(aad):])
 	assert.Error(t, err)
 }
 
@@ -261,7 +261,7 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 	bobPrvKeyId := generateTestKey(t)
 	bobPrvKeyEp := generateTestKey(t)
 
-	rawData := []byte("test data!!") // >= minProtoSize
+	rawData := []byte("test data!!!") // >= minProtoSize
 	buffer, err := encryptPacket(
 		initRcv,
 		12345,
@@ -439,7 +439,7 @@ func TestCryptoData_BasicFlow(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	msg, err := decryptData(encData, false, [][]byte{sharedSecret})
+	msg, _, err := decryptData(encData, false, [][]byte{sharedSecret})
 	assert.NoError(t, err)
 	assert.Equal(t, payload, msg)
 }
@@ -480,7 +480,7 @@ func TestCryptoData_MultipleKeys(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Decrypt with current and previous secrets
-	msg, err := decryptData(encData, false, [][]byte{curSecret, prevSecret})
+	msg, _, err := decryptData(encData, false, [][]byte{curSecret, prevSecret})
 	assert.NoError(t, err)
 	assert.Equal(t, payload, msg)
 }
@@ -489,7 +489,7 @@ func TestCryptoDecryptData_TooSmall(t *testing.T) {
 	sharedSecret := randomBytes(32)
 	buffer := make([]byte, minDataSizeHdr+footerDataSize-1)
 
-	_, err := decryptData(buffer, false, [][]byte{sharedSecret})
+	_, _, err := decryptData(buffer, false, [][]byte{sharedSecret})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "size is below minimum")
 }
@@ -512,7 +512,7 @@ func TestCryptoDecryptData_WrongSecret(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
-	_, err = decryptData(encData, false, [][]byte{wrongSecret})
+	_, _, err = decryptData(encData, false, [][]byte{wrongSecret})
 	assert.Error(t, err)
 }
 
@@ -599,7 +599,7 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	assert.Equal(t, initPayload, msg)
 
 	// Step 3: Bob sends InitCryptoRcv
-	responsePayload := []byte("response!!") // >= minProtoSize
+	responsePayload := []byte("response!!!") // >= minProtoSize
 	bufferR0, err := encryptPacket(
 		initCryptoRcv,
 		connId,
@@ -848,7 +848,7 @@ func TestCryptoDecrypt_ShortEncryptedPayload(t *testing.T) {
 			case initCryptoRcv:
 				_, _, _, err = decryptInitCryptoRcv(buf, prv)
 			case data:
-				_, err = decryptData(buf, false, [][]byte{make([]byte, 32)})
+				_, _, err = decryptData(buf, false, [][]byte{make([]byte, 32)})
 			}
 			assert.Error(t, err, "msgType=%d encLen=%d must be rejected", msgType, encLen)
 		}

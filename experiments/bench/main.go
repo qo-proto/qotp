@@ -25,6 +25,8 @@ type config struct {
 	runs     int
 	duration time.Duration
 	noSolo   bool
+	only     string
+	dirs     string
 	jsonPath string
 }
 
@@ -44,6 +46,8 @@ func main() {
 	runs := flag.Int("runs", 3, "repeat N times and report median [min-max]")
 	duration := flag.Duration("duration", 0, "measure for this long per transfer instead of a fixed size")
 	noSolo := flag.Bool("no-solo", false, "skip the solo baseline phase")
+	only := flag.String("only", "", "restrict to these protocols, comma separated (default all)")
+	dirs := flag.String("dirs", "", "restrict to \"upload\" or \"download\" (default both)")
 	jsonPath := flag.String("json", "", "write the full result as JSON for plotting")
 	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing)")
 	flag.Usage = usage
@@ -69,7 +73,8 @@ func main() {
 	}
 	runClient(config{
 		addr: *addr, port: *port, sizeMB: *sizeMB, runs: *runs,
-		duration: *duration, noSolo: *noSolo, jsonPath: *jsonPath,
+		duration: *duration, noSolo: *noSolo, only: *only, dirs: *dirs,
+		jsonPath: *jsonPath,
 	})
 }
 

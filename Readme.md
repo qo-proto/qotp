@@ -228,11 +228,11 @@ Byte 0:       Header (version=0, type=011)
 Bytes 1-8:    Connection ID (from InitCryptoSnd)
 Bytes 9-40:   Public Key Ephemeral Receiver (X25519)
 Bytes 41-46:  Encrypted Sequence Number (48-bit)
-Bytes 47+:    Encrypted Payload (min 10 bytes)
+Bytes 47+:    Encrypted Payload (min 11 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
-#### Data (Type 100, Min: 41 bytes)
+#### Data (Type 100, Min: 42 bytes)
 
 All subsequent data messages after handshake.
 
@@ -240,7 +240,7 @@ All subsequent data messages after handshake.
 Byte 0:       Header (version=0, type=100)
 Bytes 1-8:    Connection ID
 Bytes 9-14:   Encrypted Sequence Number (48-bit)
-Bytes 15+:    Encrypted Payload (min 10 bytes)
+Bytes 15+:    Encrypted Payload (min 11 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
@@ -386,10 +386,10 @@ on every change.
 ```
 Byte 0:           Header (flags)
 Bytes 1-2:        maxPayload (16-bit, always present)
-Bytes 3-6:        ACK Stream ID (32-bit) [if hasAck]
-Bytes 7-9/12:     ACK Offset (24 or 48-bit) [if hasAck]
-Bytes 10-11/...:  ACK Length (16-bit) [if hasAck]
-Byte 12/...:      ACK Receive Window (8-bit, encoded) [if hasAck]
+Byte 3:           Receive Window (8-bit, encoded, always present)
+Bytes 4-7:        ACK Stream ID (32-bit) [if hasAck]
+Bytes 8-10/13:    ACK Offset (24 or 48-bit) [if hasAck]
+Bytes 11-12/...:  ACK Length (16-bit) [if hasAck]
 Bytes Y-Y+31:     Key Update Public Key (32 bytes) [if isKeyUpdate]
 Bytes Z-Z+31:     Key Update Ack Public Key (32 bytes) [if isKeyUpdateAck]
 Bytes A-A+3:      Stream ID (32-bit, high bit = best-effort) [if hasStream]
@@ -399,9 +399,31 @@ Bytes A+7/10+:    User Data
 
 #### Receive Window Encoding
 
-The 8-bit receive window field encodes buffer capacity from 0 to ~896GB using logarithmic encoding with 8 substeps per power of 2:
+The 8-bit receive window rides every packet, not just ACK-carrying ones: it
+describes the whole connection's receive buffer, and a sender blocked by it has
+nothing to acknowledge, so inside the ACK block it would be unreachable exactly
+when it matters. It encodes buffer capacity from 0 to ~896GB using logarithmic
+encoding with 8 substeps per power of 2:
 
 ### Flow Control and Congestion
+
+**Stale windows are ignored.** Free space describes the instant a packet was
+built, so a reordered older packet carries a smaller, obsolete value. The
+sender applies a window only from the highest sequence number it has seen,
+which costs no wire bytes — the sequence number is already on every packet. The
+counter resets when the peer's key rotates, because its sequence number does.
+
+**Blocked senders probe.** The window is only ever learned from a received
+packet, and a peer with nothing to acknowledge sends none — so a sender that
+went quiet when blocked would wait for a peer that is waiting for it. A blocked
+sender therefore emits an empty packet until the window reopens, and a receiver
+whose buffer drains well below what it last announced sends one unprompted.
+That update may be lost, so it does not replace the probe.
+
+The probe interval backs off like a retransmit, but the probe never gives up:
+a peer refusing data is behaving correctly, so there is no failure to count. A
+peer that has actually gone away is ended by the 30s read deadline instead —
+the probe reports zero bytes sent, so it cannot hold the connection open.
 
 #### BBR Congestion Control
 
@@ -649,23 +671,23 @@ Enables O(1) in-flight packet tracking and ACK processing.
 
 **Crypto Layer Overhead**:
 - InitSnd: maxPayload bytes (no data, padding)
-- InitRcv: 105+ bytes (73 header + 6 SN + 16 MAC + ≥10 payload)
+- InitRcv: 106+ bytes (73 header + 6 SN + 16 MAC + ≥11 payload)
 - InitCryptoSnd: maxPayload bytes (includes padding)
-- InitCryptoRcv: 73+ bytes (41 header + 6 SN + 16 MAC + ≥10 payload)
-- Data: 41+ bytes (9 header + 6 SN + 16 MAC + ≥10 payload)
+- InitCryptoRcv: 74+ bytes (41 header + 6 SN + 16 MAC + ≥11 payload)
+- Data: 42+ bytes (9 header + 6 SN + 16 MAC + ≥11 payload)
 
 **Transport Layer Overhead** (variable; every packet includes the 2-byte
-`maxPayload` field):
-- No ACK, 24-bit offset: 10 bytes
-- No ACK, 48-bit offset: 13 bytes
+`maxPayload` and 1-byte receive-window fields):
+- No ACK, 24-bit offset: 11 bytes
+- No ACK, 48-bit offset: 14 bytes
 - With ACK, 24-bit offset: 20 bytes
 - With ACK, 48-bit offset: 26 bytes
 - ACK-only (no stream header), 24-bit offset: 13 bytes
 - Each key-update pubkey adds 32 bytes
 
 **Total Minimum Overhead** (Data message with payload):
-- Best case: 41 bytes (9 + 6 + 16 + 10 transport header)
-- Typical: 41-51 bytes for data packets
+- Best case: 42 bytes (9 + 6 + 16 + 11 transport header)
+- Typical: 42-52 bytes for data packets
 - 1452-byte packet: ~2.8-3.5% overhead
 
 ## Implementation Details

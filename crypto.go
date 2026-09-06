@@ -45,7 +45,7 @@ const (
 	// Footer: encrypted sequence number + MAC
 	footerDataSize = snSize + macSize // 22 bytes
 
-	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 41 bytes
+	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 42 bytes
 )
 
 // =============================================================================
@@ -265,7 +265,7 @@ func decryptInitRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := aadLen(initRcv)
-	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, _, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -296,7 +296,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 	}
 
 	headerLen := aadLen(initCryptoSnd)
-	packetData, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, _, err := chainedDecrypt(false, [][]byte{noPFsharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -331,7 +331,7 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	}
 
 	headerLen := aadLen(initCryptoRcv)
-	packetData, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
+	packetData, _, err := chainedDecrypt(true, [][]byte{sharedSecret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -339,10 +339,11 @@ func decryptInitCryptoRcv(encData []byte, prvKeyEpSnd *ecdh.PrivateKey) (
 	return sharedSecret, pubKeyEpRcv, packetData, nil
 }
 
-// decryptData decrypts a regular Data packet using the established shared secret.
-func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, error) {
+// decryptData decrypts a regular Data packet using the established shared
+// secret, returning the payload and the packet's sequence number.
+func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, uint64, error) {
 	if len(encData) < aadLen(data)+footerDataSize+minProtoSize {
-		return nil, errors.New("size is below minimum")
+		return nil, 0, errors.New("size is below minimum")
 	}
 
 	headerLen := aadLen(data)
@@ -351,12 +352,15 @@ func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, 
 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
 // Tries all provided secrets (cur, plus prev/next during key rotation).
-func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) ([]byte, error) {
+// Returns the packet's sequence number as well: it is per-connection and rises
+// with every packet the peer sends, which is the only ordering the receiver
+// gets (see conn.rcvSnHigh).
+func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) ([]byte, uint64, error) {
 	// The sequence-number layer takes its nonce from the front of the sealed
 	// payload, so that much must be present. Asserted here because callers
 	// only guarantee their own header fits.
 	if minEnc := snSize + chacha20poly1305.NonceSizeX; len(encData) < minEnc {
-		return nil, fmt.Errorf("encrypted payload too small: need %d bytes, got %d", minEnc, len(encData))
+		return nil, 0, fmt.Errorf("encrypted payload too small: need %d bytes, got %d", minEnc, len(encData))
 	}
 
 	encSn := encData[:snSize]
@@ -385,10 +389,10 @@ func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byt
 		}
 
 		if packetData, err := aead.Open(nil, nonceDet, encData, header); err == nil {
-			return packetData, nil
+			return packetData, snConn, nil
 		}
 	}
-	return nil, errors.New("no matching secret found")
+	return nil, 0, errors.New("no matching secret found")
 }
 
 // =============================================================================
@@ -508,7 +512,7 @@ func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, share
 		return nil, fmt.Errorf("packet too small for %v: need %d, got %d", msgType, minSize, len(encData))
 	}
 
-	packetData, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
+	packetData, _, err := chainedDecrypt(isSender, [][]byte{secret}, encData[:headerLen], encData[headerLen:])
 	if err != nil {
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}

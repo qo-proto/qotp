@@ -33,8 +33,9 @@ type receiver struct {
 	streams         map[uint32]*reassemblyBuffer
 	finishedStreams map[uint32]bool // Streams that have been fully closed and cleaned up
 	capacity        int
-	len            int
+	len             int
 	ackList         []*ack
+	advertised      uint64 // free space the peer was last told about
 	mu              sync.Mutex
 }
 
@@ -67,9 +68,9 @@ type reassemblyBuffer struct {
 	// Unreliable (best-effort) stream state: lost data is never retransmitted,
 	// so head-of-line gaps are skipped after a reorder deadline
 	unreliable    bool
-	gapStartNano  uint64       // when the current head-of-line gap was first observed (0 = none)
-	skippedRanges [][2]uint64  // recently skipped [from, to) ranges, for late classification
-	latePackets   uint64       // packets that arrived after their range was skipped
+	gapStartNano  uint64      // when the current head-of-line gap was first observed (0 = none)
+	skippedRanges [][2]uint64 // recently skipped [from, to) ranges, for late classification
+	latePackets   uint64      // packets that arrived after their range was skipped
 	lateBytes     uint64
 }
 
@@ -400,4 +401,36 @@ func (rb *receiver) size() int {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.len
+}
+
+// =============================================================================
+// Receive window
+// =============================================================================
+
+// free reports the space left. Caller holds the lock. max(0): size can briefly
+// exceed capacity when an in-order segment is accepted over the limit to break
+// a reassembly deadlock.
+func (rb *receiver) free() uint64 {
+	return uint64(max(rb.capacity-rb.len, 0))
+}
+
+// freeAdvertise returns the window to put on an outgoing packet and records it
+// as announced.
+func (rb *receiver) freeAdvertise() uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	rb.advertised = rb.free()
+	return rb.advertised
+}
+
+// windowReopened reports that the buffer has drained materially since the peer
+// was last told, so a peer blocked on the old value should hear about it now.
+// The margin is the classic silly-window rule: only a usefully larger window
+// is worth a packet, or a slowly draining buffer would generate one per read.
+// Floored at the protocol's own minimum so the margin can never degenerate to
+// zero and turn every drained byte into a packet.
+func (rb *receiver) windowReopened(mtu int) bool {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.free() >= rb.advertised+uint64(2*max(mtu, conservativeMTU))
 }

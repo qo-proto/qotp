@@ -125,6 +125,16 @@ func runClient(cfg config) {
 	}
 	cfg.addr = host
 
+	protos, err := bench.SelectProtocols(cfg.only)
+	if err != nil {
+		die("%v", err)
+	}
+	activeProtocols = protos
+	dirs, err := bench.SelectDirs(cfg.dirs)
+	if err != nil {
+		die("%v", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "checking %s ...\n", cfg.addr)
 	preflight(cfg.addr)
 	mark := markServer(cfg.addr) // responder CPU baseline
@@ -133,8 +143,8 @@ func runClient(cfg config) {
 	var samples []sample
 	for r := 1; r <= cfg.runs; r++ {
 		if !cfg.noSolo {
-			for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
-				for _, p := range bench.Protocols {
+			for _, dir := range dirs {
+				for _, p := range protos {
 					fmt.Fprintf(os.Stderr, "run %d/%d  solo %-8s %s ...\n", r, cfg.runs, dir, p)
 					o, ss := runSolo(p, *addr, dir, size, r)
 					mark = attachServerCPU(cfg.addr, mark, o)
@@ -143,7 +153,10 @@ func runClient(cfg config) {
 				}
 			}
 		}
-		for _, dir := range []bench.Dir{bench.Upload, bench.Download} {
+		if len(protos) < 2 {
+			continue // a single protocol has nothing to compete with
+		}
+		for _, dir := range dirs {
 			fmt.Fprintf(os.Stderr, "run %d/%d  parallel %-8s qotp+tcp+quic ...\n", r, cfg.runs, dir)
 			outs, ss := runParallel(*addr, dir, size, r)
 			mark = attachServerCPU(cfg.addr, mark, outs)
@@ -173,6 +186,9 @@ func runClient(cfg config) {
 // CPU figure that is mostly quantisation. Better no column than a wrong one.
 const minCPUWindow = 500 * time.Millisecond
 
+// activeProtocols is the set this run measures; -only narrows it.
+var activeProtocols = bench.Protocols
+
 // srvMark is a responder CPU reading and when it was taken; two of them
 // difference to the responder's load during the phase between.
 type srvMark struct {
@@ -199,7 +215,7 @@ func runSolo(proto, addr string, dir bench.Dir, size uint64, run int) ([]outcome
 // runParallel starts all three at the same instant, so the shares are measured
 // while they are actually competing.
 func runParallel(addr string, dir bench.Dir, size uint64, run int) ([]outcome, []sample) {
-	return runGroup(bench.Protocols, addr, dir, size, "parallel", run)
+	return runGroup(activeProtocols, addr, dir, size, "parallel", run)
 }
 
 // runGroup runs protos concurrently and measures them all over one window, so
@@ -325,7 +341,7 @@ func rateBetween(samples []sample, proto string, from, to time.Duration) float64
 
 func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 	soloMed := map[string]map[bench.Dir]float64{}
-	for _, p := range bench.Protocols {
+	for _, p := range activeProtocols {
 		soloMed[p] = map[bench.Dir]float64{}
 		for _, d := range []bench.Dir{bench.Upload, bench.Download} {
 			if m, _, _ := stats(rates(all, "solo", d, p)); m > 0 {
@@ -349,12 +365,12 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 			fmt.Printf("\n== %s / %s ==\n", mode, dir)
 			flows := 1
 			if mode == "parallel" {
-				flows = len(bench.Protocols)
+				flows = len(activeProtocols)
 			}
 			fmt.Printf("  %-5s %10s %-16s %8s %8s %s\n", "proto", "Mbps", "[min-max]", "share", "vs solo", "cpu (here / responder)")
 
 			var meds []float64
-			for _, p := range bench.Protocols {
+			for _, p := range activeProtocols {
 				m, _, _ := stats(rates(all, mode, dir, p))
 				meds = append(meds, m)
 			}
@@ -363,7 +379,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 				total += m
 			}
 
-			for i, p := range bench.Protocols {
+			for i, p := range activeProtocols {
 				if e := firstErr(rows, p); e != nil {
 					fmt.Printf("  %-5s  FAILED: %v\n", p, e)
 					continue
@@ -383,7 +399,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 			if mode == "parallel" {
 				jm, jlo, jhi := stats(jains(all, dir))
 				fmt.Printf("  Jain fairness index: %.3f [%.3f-%.3f]   (1.000 = equal shares, %.3f = one flow takes all)\n",
-					jm, jlo, jhi, 1/float64(len(bench.Protocols)))
+					jm, jlo, jhi, 1/float64(len(activeProtocols)))
 				if jhi-jlo > 0.15 {
 					fmt.Printf("  !! spread %.3f across runs: too unstable to compare protocols — raise -runs and check the bottleneck queue\n", jhi-jlo)
 				}
@@ -394,7 +410,7 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 
 	if srv != nil {
 		fmt.Printf("\n== responder ==\n")
-		for _, p := range bench.Protocols {
+		for _, p := range activeProtocols {
 			fmt.Printf("  %-5s received %8.1f MB\n", p, float64(srv.ReceivedBytes[p])/1e6)
 		}
 		fmt.Printf("  session %.0fs, %d cores\n", srv.SessionSecs, srv.NumCPU)
@@ -463,7 +479,7 @@ func jains(all []outcome, dir bench.Dir) []float64 {
 	}
 	var out []float64
 	for _, v := range byRun {
-		if len(v) == len(bench.Protocols) {
+		if len(v) == len(activeProtocols) {
 			out = append(out, bench.JainIndex(v))
 		}
 	}

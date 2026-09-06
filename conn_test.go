@@ -30,7 +30,7 @@ func testDecodeConn(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, [
 	}
 	msgType := cryptoMsgType(header >> 5)
 
-	c, payload, err := decodePacket(l, encData, rAddr, msgType)
+	c, payload, _, err := decodePacket(l, encData, rAddr, msgType)
 	return c, payload, msgType, err
 }
 
@@ -441,7 +441,7 @@ func TestConnEncodeDecodeRoundtrip_EmptyPayload(t *testing.T) {
 	if msgType == initCryptoRcv {
 		p, u, err := decodeProto(payload)
 		assert.NoError(t, err)
-		s, err := connBob.processIncomingPayload(p, u, 0)
+		s, err := connBob.processIncomingPayload(p, u, 0, 0)
 		assert.NoError(t, err)
 		assert.NotNil(t, s)
 	}
@@ -459,8 +459,8 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	connAlice.connId = connId
 
 	// max payload for InitCryptoSnd at conservativeMTU=1232
-	// (1232 - 65 hdr - 22 footer - 2 fillLen - 10 proto = 1133)
-	testData := createTestData(1133)
+	// (1232 - 65 hdr - 22 footer - 2 fillLen - 11 proto = 1132)
+	testData := createTestData(1132)
 
 	p := &payloadHeader{streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
@@ -472,7 +472,7 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 
 	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
-	s, err := connBob.processIncomingPayload(p, u, 0)
+	s, err := connBob.processIncomingPayload(p, u, 0, 0)
 	assert.NoError(t, err)
 	rb := s.conn.rcv.removeOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -500,7 +500,7 @@ func TestConnEncodeDecodeRoundtrip_SingleByte(t *testing.T) {
 
 	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
-	s, err := connBob.processIncomingPayload(p, u, 0)
+	s, err := connBob.processIncomingPayload(p, u, 0, 0)
 	assert.NoError(t, err)
 	rb := s.conn.rcv.removeOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -560,7 +560,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	p, u, err := decodeProto(payload)
 	assert.NoError(t, err)
-	s, err := c.processIncomingPayload(p, u, 0)
+	s, err := c.processIncomingPayload(p, u, 0, 0)
 	assert.NoError(t, err)
 	rb := s.conn.rcv.removeOldestInOrder(s.streamID)
 	assert.Equal(t, testData, rb)
@@ -595,7 +595,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	p, u, err = decodeProto(payload)
 	assert.NoError(t, err)
-	s, err = c.processIncomingPayload(p, u, 0)
+	s, err = c.processIncomingPayload(p, u, 0, 0)
 	assert.NoError(t, err)
 	rb = s.conn.rcv.removeOldestInOrder(s.streamID)
 	assert.Equal(t, dataMsg, rb)
@@ -608,7 +608,7 @@ func TestConnFullHandshake(t *testing.T) {
 func TestConnDecode_UnknownMsgType(t *testing.T) {
 	c := createTestConn(true, false, true)
 
-	_, err := c.decode([]byte{}, cryptoMsgType(99))
+	_, _, err := c.decode([]byte{}, cryptoMsgType(99))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected message type")
 }
@@ -648,7 +648,7 @@ func TestConnProcessIncomingPayload_Basic(t *testing.T) {
 		streamOffset: 0,
 	}
 
-	s, err := c.processIncomingPayload(p, []byte("test data"), 0)
+	s, err := c.processIncomingPayload(p, []byte("test data"), 0, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.Equal(t, uint32(1), s.streamID)
@@ -665,10 +665,10 @@ func TestConnProcessIncomingPayload_WithAck(t *testing.T) {
 	p := &payloadHeader{
 		streamId:     1,
 		streamOffset: 0,
-		ack:          &ack{streamId: 1, offset: 0, len: 11, rcvWnd: 1000},
+		ack:          &ack{streamId: 1, offset: 0, len: 11},
 	}
 
-	s, err := c.processIncomingPayload(p, []byte("response"), 0)
+	s, err := c.processIncomingPayload(p, []byte("response"), 0, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, s)
 }
@@ -687,7 +687,7 @@ func TestConnProcessIncomingPayload_FinishedStream(t *testing.T) {
 		ack:          nil,
 	}
 
-	s, err := c.processIncomingPayload(p, []byte("late data"), 0)
+	s, err := c.processIncomingPayload(p, []byte("late data"), 0, 0)
 	assert.NoError(t, err)
 	assert.Nil(t, s, "should return nil for finished stream")
 }
@@ -703,7 +703,7 @@ func TestConnProcessIncomingPayload_KeyUpdate(t *testing.T) {
 		keyUpdatePub: prvEpNew.PublicKey().Bytes(), // Must be different from current peerPubKeyEp
 	}
 
-	s, err := c.processIncomingPayload(p, []byte{}, 0)
+	s, err := c.processIncomingPayload(p, []byte{}, 0, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.Equal(t, phaseKeyUpdatePending, c.phase)
@@ -723,7 +723,7 @@ func TestConnProcessIncomingPayload_KeyUpdateAck(t *testing.T) {
 		keyUpdatePubAck: prvEpAlice.PublicKey().Bytes(),
 	}
 
-	s, err := c.processIncomingPayload(p, []byte{}, 0)
+	s, err := c.processIncomingPayload(p, []byte{}, 0, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, s)
 	assert.NotNil(t, c.sndKeys.next)
@@ -862,7 +862,7 @@ func TestConnDecode_InitRcv_TooSmall(t *testing.T) {
 	// Packet smaller than MinInitRcvSizeHdr + FooterDataSize
 	smallPacket := make([]byte, minInitRcvSizeHdr-1)
 
-	_, err := c.decode(smallPacket, initRcv)
+	_, _, err := c.decode(smallPacket, initRcv)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decrypt InitRcv")
 }
@@ -873,7 +873,7 @@ func TestConnDecode_InitCryptoRcv_TooSmall(t *testing.T) {
 	// Packet smaller than MinInitCryptoRcvSizeHdr + FooterDataSize
 	smallPacket := make([]byte, minInitCryptoRcvSizeHdr-1)
 
-	_, err := c.decode(smallPacket, initCryptoRcv)
+	_, _, err := c.decode(smallPacket, initCryptoRcv)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "decrypt InitCryptoRcv")
 }
@@ -884,7 +884,7 @@ func TestConnDecode_Data_TooSmall(t *testing.T) {
 	// Packet smaller than MinDataSizeHdr + FooterDataSize
 	smallPacket := make([]byte, minDataSizeHdr-1)
 
-	_, err := c.decode(smallPacket, data)
+	_, _, err := c.decode(smallPacket, data)
 	assert.Error(t, err)
 }
 
@@ -920,7 +920,7 @@ func TestConnDecode_DataWithPrevKey(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Should be able to decode with prev key
-	payload, err := c.decode(encData, data)
+	payload, _, err := c.decode(encData, data)
 	assert.NoError(t, err)
 	assert.NotNil(t, payload)
 }
@@ -953,7 +953,7 @@ func TestConnDecode_DataWithNextKey(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Should be able to decode with next key
-	payload, err := c.decode(encData, data)
+	payload, _, err := c.decode(encData, data)
 	assert.NoError(t, err)
 	assert.NotNil(t, payload)
 }
@@ -1094,7 +1094,7 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	}
 
 	s := c.getOrCreateStream(1)
-	_, err := c.processIncomingPayload(p, []byte{}, 1000)
+	_, err := c.processIncomingPayload(p, []byte{}, 0, 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1300, c.mtu)
 	_ = s
@@ -1155,7 +1155,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	ph, userData, err := decodeProto(payload)
 	assert.NoError(t, err)
-	_, err = connAlice.processIncomingPayload(ph, userData, 1000)
+	_, err = connAlice.processIncomingPayload(ph, userData, 0, 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1300, connAlice.mtu) // min(1300, 1400) = 1300
 }
@@ -1222,8 +1222,8 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 	c.snd.markSent(7, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
 	// An ACK-only packet: no stream header, so streamId defaults to 0
-	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4, rcvWnd: 1000}}
-	got, err := c.processIncomingPayload(p, nil, 2_000_000_000)
+	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4}}
+	got, err := c.processIncomingPayload(p, nil, 0, 2_000_000_000)
 	assert.NoError(t, err)
 	assert.Nil(t, got, "ack-only packet returns no stream")
 
@@ -1274,7 +1274,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	ph, userData, err := decodeProto(payload)
 	assert.NoError(t, err)
-	_, err = connBob.processIncomingPayload(ph, userData, 1000)
+	_, err = connBob.processIncomingPayload(ph, userData, 0, 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1452, connBob.mtu) // min(8952, 1452) = 1452
 
@@ -1288,7 +1288,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	assert.NoError(t, err)
 	ph, userData, err = decodeProto(payload)
 	assert.NoError(t, err)
-	_, err = connAlice.processIncomingPayload(ph, userData, 2000)
+	_, err = connAlice.processIncomingPayload(ph, userData, 0, 2000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1452, connAlice.mtu) // min(1452, 8952) = 1452
 }
@@ -1349,7 +1349,9 @@ func TestConn_FlushStream_RetransmitBypassesRwnd(t *testing.T) {
 }
 
 // TestConn_FlushStream_NewDataBlockedByRwnd verifies that new data (non-retransmit)
-// is still properly blocked when the receive window is zero.
+// is still properly blocked when the receive window is zero. Going silent is
+// not the right response though: the window arrives only in an ACK, so the
+// sender probes for one (see TestConn_FlushStream_RwndBlocked_ProbesForWindowUpdate).
 func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 	connPair := NewConnPair("a", "b")
 	c := createTestConn(true, false, true)
@@ -1371,7 +1373,7 @@ func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 	dataSent, _, err := c.flushStream(s, nowNano)
 	assert.NoError(t, err)
 	assert.Equal(t, 0, dataSent, "new data must be blocked by rwnd=0")
-	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender(), "no packets should be written")
+	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "only a window probe, carrying no data")
 }
 
 // =============================================================================
@@ -1464,8 +1466,8 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
-	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
-	_, err := c.processIncomingPayload(p, nil, 3_000_000_000)
+	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4}}
+	_, err := c.processIncomingPayload(p, nil, 0, 3_000_000_000)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(0), c.srtt, "no RTT sample from retransmitted packet")
 }
@@ -1480,8 +1482,8 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 	c.snd.readyToSend(0, data, nil, 1000, true)
 	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
-	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
-	_, err := c.processIncomingPayload(p, nil, 1_100_000_000)
+	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4}}
+	_, err := c.processIncomingPayload(p, nil, 0, 1_100_000_000)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(100_000_000), c.srtt, "fresh packet yields an RTT sample")
 }
@@ -1580,7 +1582,7 @@ func TestUnreliableMarkerOnCloseOnlyStream(t *testing.T) {
 	s.SetReliable(false)
 
 	p := &payloadHeader{streamId: 3, streamOffset: 0, isClose: true, unreliable: !s.reliable}
-	_, err := c.processIncomingPayload(p, []byte{}, 1000)
+	_, err := c.processIncomingPayload(p, []byte{}, 0, 1000)
 	assert.NoError(t, err)
 
 	c.rcv.mu.Lock()
@@ -1640,9 +1642,7 @@ func TestConn_AckProbe_YieldsRttSample(t *testing.T) {
 	assert.True(t, tracked, "probe must be recorded in flight")
 
 	// Peer ACKs the probe: that is the RTT sample.
-	_, err = c.processIncomingPayload(
-		&payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 0, rcvWnd: rcvBufferCapacity}},
-		nil, 1000+5*uint64(msNano))
+	_, err = c.processIncomingPayload(&payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 0}}, nil, 0, 1000+5*uint64(msNano))
 	assert.NoError(t, err)
 	assert.Positive(t, c.srtt, "the probe's ACK must produce an RTT sample")
 
@@ -1692,4 +1692,327 @@ func TestConn_AckProbe_OnlyOneOutstanding(t *testing.T) {
 	c := createTestConn(true, false, true)
 	assert.True(t, c.snd.trackProbe(0), "first probe is recorded")
 	assert.False(t, c.snd.trackProbe(0), "second probe must not overwrite the first")
+}
+
+// =============================================================================
+// RECEIVE-WINDOW PROBE
+// =============================================================================
+
+// countingConn records how many datagrams were written.
+type countingConn struct {
+	writes int
+}
+
+func (w *countingConn) ReadFromUDPAddrPort([]byte, uint64, uint64) (int, netip.AddrPort, netip.Addr, uint64, error) {
+	return 0, netip.AddrPort{}, netip.Addr{}, 0, nil
+}
+
+func (w *countingConn) WriteToUDPAddrPort(b []byte, _ netip.AddrPort, _ netip.Addr, _ uint64) (uint64, error) {
+	w.writes++
+	return 0, nil
+}
+func (w *countingConn) TimeoutReadNow() error   { return nil }
+func (w *countingConn) Close() error            { return nil }
+func (w *countingConn) LocalAddrString() string { return "counting" }
+
+// A sender blocked on the receive window has nothing to send, so the peer has
+// nothing to acknowledge, so no ACK arrives -- and the window is only ever
+// learned from an ACK. Without a probe the connection is deadlocked until some
+// unrelated packet times out. Measured on a real path: 200ms with sent=0,
+// acksIn=0 and pacing idle, escaped only by a third-generation retransmit.
+func TestConn_FlushStream_RwndBlocked_ProbesForWindowUpdate(t *testing.T) {
+	c := createTestConn(true, false, true)
+	w := &countingConn{}
+	c.listener.localConn = w
+	s := c.getOrCreateStream(1)
+
+	c.snd.queueData(1, make([]byte, 64*1024)) // plenty to send
+	c.srtt, c.rttvar = 100*msNano, msNano     // established RTT, not cold start
+	c.rcvWndSize = 1000                       // peer's buffer is nearly full
+	c.dataInFlight = 5000                     // + mtu exceeds it: blocked
+
+	// Nothing is in flight to time out, so a retransmit cannot rescue this.
+	assert.False(t, c.snd.hasInFlight(s.streamID))
+
+	nowNano := uint64(10 * secondNano)
+	for range 10 {
+		nowNano += c.rtoNano()
+		n, _, err := c.flushStream(s, nowNano)
+		assert.NoError(t, err)
+		assert.Equal(t, 0, n, "a window probe carries no payload")
+	}
+
+	assert.Greater(t, w.writes, 0,
+		"blocked on the receive window: the peer is never asked for an update")
+	assert.LessOrEqual(t, w.writes, 10, "probe should be rate-limited to about one per RTO")
+}
+
+// The probe only works if the peer answers it. A control packet with no ACK of
+// our own carries a stream header, and a stream header with no data is
+// acknowledged like any other packet -- that ACK is what reopens the window.
+func TestConn_RwndProbe_IsAcknowledgedByPeer(t *testing.T) {
+	enc, _ := encodeProto(&payloadHeader{maxPayload: 1452, streamId: 7}, nil)
+	ph, userData, err := decodeProto(enc)
+	assert.NoError(t, err)
+	assert.NotNil(t, userData, "probe must carry a stream header")
+	assert.Empty(t, userData)
+
+	peer := createTestConn(false, false, true)
+	peer.rcv = newReceiveBuffer(1000)
+	_, err = peer.processIncomingPayload(ph, userData, 0, 1)
+	assert.NoError(t, err)
+	assert.True(t, peer.rcv.hasPendingAcks(), "peer must acknowledge the probe")
+
+	// And that ACK carries the window, which is what the sender was missing.
+	queued := peer.rcv.getSndAck()
+	assert.NotNil(t, queued)
+	assert.Equal(t, uint32(7), queued.streamId)
+
+	// An ACK-only packet, by contrast, is not acknowledged back -- which is why
+	// a blocked uploader cannot rely on one to learn the window.
+	encAck, _ := encodeProto(&payloadHeader{maxPayload: 1452, ack: &ack{streamId: 7}}, nil)
+	phAck, dataAck, err := decodeProto(encAck)
+	assert.NoError(t, err)
+	assert.Nil(t, dataAck, "ack-only packet carries no stream header")
+	assert.NotNil(t, phAck.ack)
+}
+
+// The window rides the fixed header, so any packet updates it -- a peer that
+// drained its buffer does not need something to acknowledge in order to say so.
+func TestConn_RcvWnd_TravelsOnEveryPacket(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.rcvWndSize = 1234
+
+	// No ACK block at all, yet the window arrives.
+	p, userData, err := decodeProto(mustEncode(&payloadHeader{maxPayload: 1452, rcvWnd: 1 << 20, streamId: 1}, nil))
+	assert.NoError(t, err)
+	assert.Nil(t, p.ack)
+	_, err = c.processIncomingPayload(p, userData, 0, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, decodeRcvWindow(encodeRcvWindow(1<<20)), c.rcvWndSize,
+		"window must update from a packet carrying no ACK")
+}
+
+func mustEncode(p *payloadHeader, userData []byte) []byte {
+	enc, _ := encodeProto(p, userData)
+	return enc
+}
+
+// A receiver whose buffer drained well past what it last advertised sends an
+// unsolicited update rather than leaving a blocked peer to wait out its probe.
+func TestConn_WindowReopened_PushesUpdate(t *testing.T) {
+	c := createTestConn(true, false, true)
+	w := &countingConn{}
+	c.listener.localConn = w
+	c.rcv = newReceiveBuffer(64 * 1024)
+	c.mtu = conservativeMTU
+	c.rcvWndSize = rcvBufferCapacity // our own sending is not blocked
+	s := c.getOrCreateStream(1)
+
+	// Buffer nearly full, and that is what the peer was told.
+	c.rcv.insert(1, 0, 1, make([]byte, 63*1024))
+	assert.Equal(t, uint64(1024), c.rcv.freeAdvertise())
+	assert.False(t, c.rcv.windowReopened(c.mtu), "no change yet, nothing to announce")
+
+	nowNano := uint64(10 * secondNano)
+	_, _, err := c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	before := w.writes
+
+	// The application reads: the buffer drains and the peer's view is stale.
+	c.rcv.removeOldestInOrder(1)
+	assert.True(t, c.rcv.windowReopened(c.mtu))
+
+	_, _, err = c.flushStream(s, nowNano+secondNano)
+	assert.NoError(t, err)
+	assert.Greater(t, w.writes, before, "reopened window must be announced")
+	assert.False(t, c.rcv.windowReopened(c.mtu), "and only announced once")
+}
+
+// The window is free space, so it means nothing except as of the moment it was
+// built. A reordered older packet carries a smaller, stale value; applying it
+// would block the sender until its next probe for no reason at all.
+func TestConn_RcvWnd_StalePacketDoesNotShrinkWindow(t *testing.T) {
+	c := createTestConn(true, false, true)
+	hdr := func(wnd uint64) (*payloadHeader, []byte) {
+		p, u, err := decodeProto(mustEncode(&payloadHeader{maxPayload: 1452, rcvWnd: wnd, streamId: 1}, nil))
+		assert.NoError(t, err)
+		return p, u
+	}
+	wnd := func(v uint64) uint64 { return decodeRcvWindow(encodeRcvWindow(v)) }
+
+	// Newest packet: the peer has drained and has room again.
+	p, u := hdr(1 << 20)
+	_, err := c.processIncomingPayload(p, u, 100, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, wnd(1<<20), c.rcvWndSize)
+
+	// An older packet arrives late, built when the buffer was nearly full.
+	p, u = hdr(4096)
+	_, err = c.processIncomingPayload(p, u, 99, 2)
+	assert.NoError(t, err)
+	assert.Equal(t, wnd(1<<20), c.rcvWndSize, "stale window must be ignored")
+
+	// A newer one is applied, even when it shrinks: that is real backpressure.
+	p, u = hdr(4096)
+	_, err = c.processIncomingPayload(p, u, 101, 3)
+	assert.NoError(t, err)
+	assert.Equal(t, wnd(4096), c.rcvWndSize)
+
+	// The peer's sequence number restarts when its key rotates, so the
+	// high-water mark must not lock out everything that follows.
+	// A genuinely new key: not the current one, not the pending one, so
+	// handlePeerKeyUpdate rotates rather than treating it as a retransmit.
+	c.rcvKeys.next = bytes.Repeat([]byte{2}, 32)
+	c.rcvKeys.prvKeyEpNext, c.rcvKeys.pubKeyEpNext = prvEpNew, prvEpNew.PublicKey()
+	assert.NoError(t, c.handlePeerKeyUpdate(prvEpAlice.PublicKey().Bytes()))
+	assert.Equal(t, uint64(0), c.rcvSnHigh)
+
+	p, u = hdr(1 << 20)
+	_, err = c.processIncomingPayload(p, u, 0, 4)
+	assert.NoError(t, err)
+	assert.Equal(t, wnd(1<<20), c.rcvWndSize, "window must work again after rotation")
+}
+
+// Empty packets are acknowledged on every arrival, not once per offset. That
+// is what lets the same window probe be re-sent while the window stays shut:
+// each one draws a fresh reply carrying the current window.
+func TestConn_EmptyPacket_AckedOnEveryArrival(t *testing.T) {
+	c := createTestConn(false, false, true)
+	c.rcv = newReceiveBuffer(1000)
+	p, u, err := decodeProto(mustEncode(&payloadHeader{maxPayload: 1452, streamId: 1}, nil))
+	assert.NoError(t, err)
+
+	for i := range 3 {
+		_, err := c.processIncomingPayload(p, u, uint64(i+1), uint64(i+1))
+		assert.NoError(t, err)
+	}
+
+	acked := 0
+	for c.rcv.getSndAck() != nil {
+		acked++
+	}
+	assert.Equal(t, 3, acked, "one acknowledgement per arrival")
+}
+
+// On the sending side the opposite holds: only the first acknowledgement of a
+// packet counts. Later copies are duplicates and must not be counted twice --
+// but they still carry a usable window, which is the point of putting it in
+// the header rather than in the ACK block.
+func TestConn_DuplicateAck_CountedOnce_StillCarriesWindow(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.snd.queueData(1, []byte("hello"))
+	dataOut, offset, _ := c.snd.readyToSend(1, data, nil, 1200, true)
+	assert.Len(t, dataOut, 5)
+	c.snd.markSent(1, offset, 5, 60, 1, 0, 0, 0)
+	c.dataInFlight = 5
+
+	mk := func(wnd uint64) (*payloadHeader, []byte) {
+		p, u, err := decodeProto(mustEncode(&payloadHeader{
+			maxPayload: 1452, rcvWnd: wnd, streamId: 1,
+			ack: &ack{streamId: 1, offset: offset, len: 5},
+		}, nil))
+		assert.NoError(t, err)
+		return p, u
+	}
+
+	p, u := mk(1 << 20)
+	_, err := c.processIncomingPayload(p, u, 10, 100)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, c.dataInFlight)
+	assert.Equal(t, uint64(5), c.deliveredBytes.Load())
+
+	// Same ACK again, from a newer packet: not counted, window still applied.
+	p, u = mk(4096)
+	_, err = c.processIncomingPayload(p, u, 11, 101)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, c.dataInFlight, "duplicate must not double-count")
+	assert.Equal(t, uint64(5), c.deliveredBytes.Load())
+	assert.Equal(t, decodeRcvWindow(encodeRcvWindow(4096)), c.rcvWndSize,
+		"a duplicate ACK still carries a usable window")
+}
+
+// Probing must not go on at full rate forever. It backs off like a
+// retransmit, but unlike one it never gives up: a peer refusing data is
+// behaving correctly, so only silence may end the connection.
+func TestConn_RwndProbe_BacksOffButNeverGivesUp(t *testing.T) {
+	c := createTestConn(true, false, true)
+	w := &countingConn{}
+	c.listener.localConn = w
+	c.mtu = conservativeMTU
+	s := c.getOrCreateStream(1)
+	c.snd.queueData(1, make([]byte, 64*1024))
+	c.srtt, c.rttvar = 100*msNano, msNano
+	c.rcvWndSize, c.dataInFlight = 1000, 5000
+
+	rto := c.rtoNano()
+	nowNano := uint64(10 * secondNano)
+
+	// Probe, then ask how long until the next one is due.
+	probe := func() uint64 {
+		before := w.writes
+		_, _, err := c.flushStream(s, nowNano)
+		assert.NoError(t, err)
+		assert.Equal(t, before+1, w.writes, "a probe goes out when due")
+
+		_, wait, err := c.flushStream(s, nowNano)
+		assert.NoError(t, err)
+		assert.Equal(t, before+1, w.writes, "and not a second time before it is")
+		nowNano += wait
+		return wait
+	}
+
+	var intervals []uint64
+	for range 8 {
+		intervals = append(intervals, probe())
+	}
+
+	assert.Equal(t, rto*2, intervals[0])
+	assert.Equal(t, rto*4, intervals[1])
+	assert.Equal(t, rto*8, intervals[2])
+	for i := 1; i < len(intervals); i++ {
+		assert.GreaterOrEqual(t, intervals[i], intervals[i-1], "interval must not shrink")
+		assert.LessOrEqual(t, intervals[i], maxRTO, "and stays capped")
+	}
+	last := len(intervals) - 1
+	assert.Equal(t, intervals[last-1], intervals[last], "settles flat rather than growing")
+
+	// The window opening resets it, so a later block probes at once again.
+	c.rcvWndSize = rcvBufferCapacity
+	_, _, err := c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	assert.Equal(t, uint64(0), c.rwndProbeNano)
+	assert.Equal(t, uint(0), c.rwndProbeCount)
+}
+
+// A peer that has genuinely gone away stops the probing: nothing it sends
+// updates lastReadTimeNano, so the read deadline tears the connection down.
+// The probe must not keep it alive -- it reports zero bytes sent, so Flush
+// still reaches the deadline check below.
+func TestConn_RwndProbe_DeadPeerIsTornDown(t *testing.T) {
+	w := &countingConn{}
+	c := createTestConn(true, false, true)
+	c.connId, c.mtu = 42, conservativeMTU
+	c.listener = &Listener{
+		connMap: newSharedLinkedMap[uint64, *conn](), prvKeyId: prvIdAlice,
+		maxPayload: testMaxPayload, localConn: w,
+	}
+	c.listener.connMap.getOrPut(c.connId, c)
+
+	s := c.getOrCreateStream(1)
+	c.snd.queueData(s.streamID, make([]byte, 4096))
+	c.srtt, c.rttvar = 100*msNano, msNano
+	c.rcvWndSize, c.dataInFlight = 1000, 5000
+
+	nowNano := uint64(10 * secondNano)
+	c.lastReadTimeNano = nowNano // last heard from the peer here
+
+	c.listener.Flush(nowNano)
+	assert.Greater(t, w.writes, 0, "blocked, so it probes")
+	_, stillThere := c.listener.connMap.get(c.connId)
+	assert.True(t, stillThere, "peer only just went quiet")
+
+	c.listener.Flush(nowNano + readDeadline + 1)
+	_, stillThere = c.listener.connMap.get(c.connId)
+	assert.False(t, stillThere, "read deadline must end a connection whose peer is gone")
 }

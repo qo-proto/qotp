@@ -70,8 +70,22 @@ type conn struct {
 	// Pacing
 	nextWriteTime uint64
 
+	// Receive-window probing: when the last probe went out, and how many have
+	// gone unanswered. Both reset when the window opens, so a fresh block
+	// probes at once rather than waiting out the previous interval.
+	rwndProbeNano  uint64
+	rwndProbeCount uint
+
+	// Sequence number of the newest packet a window was taken from. The window
+	// is free space, so it is only meaningful as of the moment it was built:
+	// an older packet arriving late carries a smaller, stale value, and
+	// applying it would block the sender for no reason. Reset when the receive
+	// key rotates, because the peer's sequence number restarts with it.
+	rcvSnHigh uint64
+
 	// Activity tracking
 	lastReadTimeNano uint64
+	diag             diagState
 
 	// Cumulative acked payload bytes, any order (unlike the contiguous
 	// acked offset, this does not freeze at head-of-line holes). Atomic:
@@ -269,21 +283,22 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 // Packet decoding (receive path)
 // =============================================================================
 
-func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, error) {
+func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, uint64, error) {
 	connId := getUint64(encData[headerSize : headerSize+connIdSize])
 
 	switch msgType {
 	case initSnd, initCryptoSnd:
-		return decodeInitPacket(l, encData, rAddr, connId, msgType)
+		conn, payload, err := decodeInitPacket(l, encData, rAddr, connId, msgType)
+		return conn, payload, 0, err
 	case initRcv, initCryptoRcv, data:
 		conn, exists := l.connMap.get(connId)
 		if !exists {
-			return nil, nil, fmt.Errorf("connection not found: %d", connId)
+			return nil, nil, 0, fmt.Errorf("connection not found: %d", connId)
 		}
-		payload, err := conn.decode(encData, msgType)
-		return conn, payload, err
+		payload, sn, err := conn.decode(encData, msgType)
+		return conn, payload, sn, err
 	}
-	return nil, nil, fmt.Errorf("unknown message type: %v", msgType)
+	return nil, nil, 0, fmt.Errorf("unknown message type: %v", msgType)
 }
 
 func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
@@ -332,30 +347,33 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 	return conn, payload, nil
 }
 
-func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
+// decode returns the payload and, for Data packets, the sequence number that
+// orders it against other packets from the same peer. Init packets return 0:
+// they are the first of a connection, so there is nothing to be stale against.
+func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, uint64, error) {
 	switch msgType {
 	case initRcv:
 		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, payload, err := decryptInitRcv(encData, c.sndKeys.prvKeyEp)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt InitRcv: %w", err)
+			return nil, 0, fmt.Errorf("decrypt InitRcv: %w", err)
 		}
 		c.pubKeyIdRcv = pubKeyIdRcv
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
 		c.listener.logSecret("QOTP_SHARED_SECRET", c.connId, sharedSecret)
-		return payload, nil
+		return payload, 0, nil
 
 	case initCryptoRcv:
 		sharedSecret, pubKeyEpRcv, payload, err := decryptInitCryptoRcv(encData, c.sndKeys.prvKeyEp)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
+			return nil, 0, fmt.Errorf("decrypt InitCryptoRcv: %w", err)
 		}
 		c.rcvKeys.pubKeyEp = pubKeyEpRcv
 		c.rcvKeys.cur = sharedSecret
 		c.sndKeys.cur = sharedSecret
 		c.listener.logSecret("QOTP_SHARED_SECRET", c.connId, sharedSecret)
-		return payload, nil
+		return payload, 0, nil
 
 	case data:
 		secrets := [][]byte{c.rcvKeys.cur}
@@ -368,7 +386,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, error) {
 		return decryptData(encData, c.isInitiator(), secrets)
 
 	}
-	return nil, fmt.Errorf("unexpected message type: %v", msgType)
+	return nil, 0, fmt.Errorf("unexpected message type: %v", msgType)
 }
 
 // =============================================================================
@@ -462,7 +480,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 // processIncomingPayload runs on the event-loop goroutine only; the protocol
 // state it touches is loop-owned (see conn doc). Stream-map access goes
 // through the self-locking getOrCreateStream.
-func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano uint64) (*Stream, error) {
+func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint64, nowNano uint64) (*Stream, error) {
 	// Handle key update from peer
 	if p.isKeyUpdate && len(p.keyUpdatePub) == pubKeySize {
 		if err := c.handlePeerKeyUpdate(p.keyUpdatePub); err != nil {
@@ -479,11 +497,21 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 	if p.maxPayload > 0 {
 		c.negotiateMTU(p.maxPayload)
 	}
+	// Carried by every packet, so a peer that drained its buffer can tell us
+	// with anything at all -- it does not need something to acknowledge. Only
+	// from the newest packet seen, though: free space is a snapshot, and a
+	// reordered older packet carries a smaller, stale one.
+	if sn >= c.rcvSnHigh {
+		c.rcvSnHigh = sn
+		c.rcvWndSize = p.rcvWnd
+	}
 
 	// Process ACK if present
 	if p.ack != nil {
+		if diagOn {
+			c.diag.acks++
+		}
 		ackStatus, ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack)
-		c.rcvWndSize = p.ack.rcvWnd
 
 		if ackStatus == ackStatusOk {
 			c.dataInFlight -= int(p.ack.len)
@@ -585,6 +613,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 		c.rcvKeys.prvKeyEpNext = nil
 		c.rcvKeys.pubKeyEp = c.rcvKeys.pubKeyEpNext // MUST be before setting to nil
 		c.rcvKeys.pubKeyEpNext = nil
+		c.rcvSnHigh = 0 // the peer's sequence number restarts with its key
 		c.phase = phaseReady
 	}
 
@@ -636,11 +665,6 @@ func (c *conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
 // bytesSent=0 with nextWakeupNano>0 means blocked by pacing/rwnd.
 func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	ack := c.rcv.getSndAck()
-	if ack != nil {
-		// max(0): size can briefly exceed capacity when an in-order segment
-		// is accepted over the limit to break a reassembly deadlock
-		ack.rcvWnd = uint64(max(c.rcv.capacity-c.rcv.size(), 0))
-	}
 
 	// Expired best-effort packets (unreliable data, pings) are dropped, not
 	// retransmitted: release their in-flight accounting
@@ -664,10 +688,17 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return 0, 0, errors.New("key update: max retry attempts exceeded")
 	}
 
+	if diagOn {
+		c.diagCheck(s, ack != nil, nowNano)
+	}
+
 	// Check send blockers
 	isBlockedByPacing := c.nextWriteTime > nowNano
 
 	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
+	if !isBlockedByRwnd {
+		c.rwndProbeNano, c.rwndProbeCount = 0, 0
+	}
 
 	// Pacing blocks everything (including retransmits)
 	if isBlockedByPacing {
@@ -725,8 +756,25 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// Receive window blocks new data only. Retransmits are handled above;
 	// ACKs and KU-only packets carry no data and may pass.
 	if isBlockedByRwnd {
+		// The window is only ever learned from an ACK, and a peer with nothing
+		// to acknowledge sends none — so a blocked sender that goes quiet is
+		// deadlocked until some unrelated packet times out. Probe once per RTO
+		// instead: with no ACK of our own to carry, the control packet below
+		// carries a stream header, the peer acknowledges that, and every ACK
+		// refreshes the window.
+		// Backed off like a retransmit, and for the same reason: a peer that
+		// stays shut is not going to answer sooner for being asked more often.
+		// Responsiveness does not depend on the interval anyway -- the peer
+		// announces a reopened window itself, and every probe it does answer
+		// carries the current one. Unlike a retransmit this never gives up:
+		// a peer refusing data is behaving correctly, and only silence, caught
+		// by the read deadline, ends the connection.
 		if ack == nil && !kuSendDue {
-			return 0, minDeadline, nil
+			every := backoff(c.rtoNano(), c.rwndProbeCount)
+			if waited := nowNano - c.rwndProbeNano; waited < every {
+				return 0, every - waited, nil
+			}
+			c.rwndProbeNano, c.rwndProbeCount = nowNano, c.rwndProbeCount+1
 		}
 		return c.sendControlPacket(s, ack, nowNano)
 	}
@@ -748,6 +796,14 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return c.sendControlPacket(s, ack, nowNano)
 	}
 
+	// Nothing to send. If our own receive buffer has drained well past what we
+	// last advertised, a peer blocked on the stale value would sit out its
+	// probe timer for no reason -- any packet carries the new window, so send
+	// one. Best-effort: the sender's probe stays the guarantee.
+	if c.rcv.windowReopened(c.mtu) {
+		return c.sendControlPacket(s, nil, nowNano)
+	}
+
 	return 0, minDeadline, nil
 }
 
@@ -760,6 +816,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 
 	p := &payloadHeader{
 		maxPayload: uint16(c.listener.maxPayload),
+		rcvWnd:     c.rcv.freeAdvertise(),
 		isClose:    isClose,
 		// The stream's property, not the packet's: whether a given packet is
 		// retransmitted is sendPacket.needsReTx.
@@ -787,6 +844,9 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, c.localAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
+	}
+	if diagOn {
+		c.diag.sent++
 	}
 
 	// Stamp with the send-completion time: the write can block (full socket
@@ -844,8 +904,16 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 }
 
 // sendControlPacket sends a packet carrying no stream data (ACK, key update,
-// or handshake re-send) at the stream's current send offset. Key-update and
-// MTU fields are attached by encodeAndWrite from connection state.
+// handshake re-send, or a window probe) at the stream's current send offset.
+// Key-update and MTU fields are attached by encodeAndWrite from connection
+// state.
+//
+// A window probe is deliberately not tracked in the send buffer. It does not
+// need to be: the window rides the packet header, so any reply carries it, and
+// the reply's attribution is irrelevant. Tracking would reserve the
+// zero-payload slot -- one per (stream, offset) -- and a probe whose ACK was
+// lost would then hold that slot until it drained, blocking the next probe:
+// the recovery path stalling itself.
 func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
 	offset := c.snd.getSendOffset(s.streamID)
 

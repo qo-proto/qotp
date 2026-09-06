@@ -621,3 +621,24 @@ func (sb *sender) getOffsetClosedAt(streamID uint32) *uint64 {
 	}
 	return nil
 }
+
+// diagCounts reports queued bytes and in-flight packets per generation.
+func (sb *sender) diagCounts(streamID uint32) (queued, g0, g1, g2plus int) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	stream := sb.streams[streamID]
+	if stream == nil {
+		return 0, 0, 0, 0
+	}
+	for g, m := range stream.inFlight {
+		switch g {
+		case 0:
+			g0 = m.size()
+		case 1:
+			g1 = m.size()
+		default:
+			g2plus += m.size()
+		}
+	}
+	return len(stream.queuedData), g0, g1, g2plus
+}

@@ -367,7 +367,7 @@ func TestSendBuffer_ReadyToRetransmit_Split_Right(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
 
-	d, offset, _, err := sb.readyToRetransmit(1, nil, 45, 45, 50, data, 300)
+	d, offset, _, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 4, len(d))
@@ -583,7 +583,7 @@ func TestSendBuffer_Close_RetransmitSplit_RightHasClose(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
 
-	d, offset, isClose, err := sb.readyToRetransmit(1, nil, 45, 45, 50, data, 300)
+	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 4, len(d))

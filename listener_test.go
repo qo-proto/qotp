@@ -42,7 +42,7 @@ func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byt
 	}
 	msgType := cryptoMsgType(header >> 5)
 
-	c, payload, err := decodePacket(l, encData, rAddr, msgType)
+	c, payload, _, err := decodePacket(l, encData, rAddr, msgType)
 	return c, payload, msgType, err
 }
 
@@ -187,12 +187,12 @@ func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
 		p := &payloadHeader{maxPayload: 1452, streamId: 1}
 		initPkt, err := cA.encode(p, []byte("hello"), initCryptoSnd)
 		assert.NoError(t, err)
-		cB, _, err := decodePacket(lB, initPkt, rAddr, initCryptoSnd)
+		cB, _, _, err := decodePacket(lB, initPkt, rAddr, initCryptoSnd)
 		assert.NoError(t, err)
 		// Bob -> Alice: InitCryptoRcv, then Alice sends a Data packet
 		replyPkt, err := cB.encode(p, []byte("hi"), initCryptoRcv)
 		assert.NoError(t, err)
-		_, _, err = decodePacket(lA, replyPkt, rAddr, initCryptoRcv)
+		_, _, _, err = decodePacket(lA, replyPkt, rAddr, initCryptoRcv)
 		assert.NoError(t, err)
 		cA.phase = phaseReady
 		dataPkt, err := cA.encode(p, []byte("data"), data)
@@ -227,12 +227,12 @@ func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
 
 		initPkt, err := cA.encode(nil, nil, initSnd)
 		assert.NoError(t, err)
-		cB, _, err := decodePacket(lB, initPkt, rAddr, initSnd)
+		cB, _, _, err := decodePacket(lB, initPkt, rAddr, initSnd)
 		assert.NoError(t, err)
 		p := &payloadHeader{maxPayload: 1452, streamId: 1}
 		replyPkt, err := cB.encode(p, []byte("hi"), initRcv)
 		assert.NoError(t, err)
-		_, _, err = decodePacket(lA, replyPkt, rAddr, initRcv)
+		_, _, _, err = decodePacket(lA, replyPkt, rAddr, initRcv)
 		assert.NoError(t, err)
 
 		ss := logged(&logA, "QOTP_SHARED_SECRET", cA.connId)

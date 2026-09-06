@@ -17,19 +17,23 @@ import (
 //   Bit 5: isKeyUpdateAck   32-byte pubkey present
 //   Bits 6-7: reserved
 //
-// Wire layout: [flags][maxPayload][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
+// Wire layout: [flags][maxPayload][rcvWnd][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
 //
 // Stream reliability rides the high bit of the wire streamId rather than a
 // flag, so every packet of a best-effort stream carries it — a once-announced
 // flag could be lost, and best-effort data is never retransmitted.
 //
-// maxPayload is unconditional so a path MTU change reaches the peer on the
-// next packet, with no "already announced" state to keep.
+// maxPayload and rcvWnd are unconditional so a path MTU change or a receive
+// buffer that drained reaches the peer on the next packet, with no "already
+// announced" state to keep. rcvWnd in particular describes the whole
+// connection's buffer, so it does not belong inside a per-stream ACK block:
+// there it would travel only when that one stream was being acknowledged, and
+// a sender blocked on a stale window has nothing to acknowledge.
 // =============================================================================
 
 const (
-	// flags + maxPayload + streamId + 24-bit offset
-	minProtoSize = 1 + 2 + 4 + 3
+	// flags + maxPayload + rcvWnd + streamId + 24-bit offset
+	minProtoSize = 1 + 2 + 1 + 4 + 3
 
 	flagHasAck       = 1 << 0
 	flagHasStream    = 1 << 1
@@ -48,6 +52,7 @@ const (
 
 type payloadHeader struct {
 	maxPayload      uint16 // sender's max UDP payload; always present
+	rcvWnd          uint64 // free space in the connection's receive buffer; always present
 	isClose         bool
 	isKeyUpdate     bool
 	isKeyUpdateAck  bool
@@ -63,7 +68,6 @@ type ack struct {
 	streamId uint32
 	offset   uint64
 	len      uint16
-	rcvWnd   uint64
 }
 
 // =============================================================================
@@ -164,13 +168,13 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	encoded[offset] = flags
 	offset++
 	offset += putUint16(encoded[offset:], p.maxPayload)
+	encoded[offset] = encodeRcvWindow(p.rcvWnd)
+	offset++
 
 	if flags&flagHasAck != 0 {
 		offset += putUint32(encoded[offset:], p.ack.streamId)
 		offset += putOffsetVarint(encoded[offset:], p.ack.offset, isExtend)
 		offset += putUint16(encoded[offset:], p.ack.len)
-		encoded[offset] = encodeRcvWindow(p.ack.rcvWnd)
-		offset++
 	}
 
 	if p.isKeyUpdate {
@@ -201,7 +205,7 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 // =============================================================================
 
 func decodeProto(data []byte) (*payloadHeader, []byte, error) {
-	if len(data) < 3 {
+	if len(data) < 4 {
 		return nil, nil, errors.New("payload too small")
 	}
 
@@ -210,14 +214,15 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 
 	p := &payloadHeader{
 		maxPayload:     getUint16(data[1:]),
+		rcvWnd:         decodeRcvWindow(data[3]),
 		isClose:        flags&flagClose != 0,
 		isKeyUpdate:    flags&flagKeyUpdate != 0,
 		isKeyUpdateAck: flags&flagKeyUpdateAck != 0,
 	}
-	offset := 3
+	offset := 4
 
 	if flags&flagHasAck != 0 {
-		ackSize := 4 + offsetSize(isExtend) + 2 + 1 // streamId + offset + len + rcvWnd
+		ackSize := 4 + offsetSize(isExtend) + 2 // streamId + offset + len
 		if len(data) < offset+ackSize {
 			return nil, nil, errors.New("payload too small for ack")
 		}
@@ -229,8 +234,6 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += offsetSize(isExtend)
 		p.ack.len = getUint16(data[offset:])
 		offset += 2
-		p.ack.rcvWnd = decodeRcvWindow(data[offset])
-		offset++
 	}
 
 	if p.isKeyUpdate {
@@ -274,7 +277,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 // =============================================================================
 
 func calcProtoOverhead(flags uint8) int {
-	overhead := 1 + 2 // flags byte + maxPayload
+	overhead := 1 + 2 + 1 // flags + maxPayload + rcvWnd
 
 	offsetBytes := 3
 	if flags&flagExtend != 0 {
@@ -282,7 +285,7 @@ func calcProtoOverhead(flags uint8) int {
 	}
 
 	if flags&flagHasAck != 0 {
-		overhead += 4 + offsetBytes + 2 + 1 // streamId + offset + len + rcvWnd
+		overhead += 4 + offsetBytes + 2 // streamId + offset + len
 	}
 
 	if flags&flagKeyUpdate != 0 {
