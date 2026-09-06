@@ -285,7 +285,7 @@ listener, err := qotp.Listen(
 )
 ```
 
-Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload during handshake via the MTU update flag.
+Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload. Every packet carries the sender's `maxPayload`, so a path MTU change reaches the peer on the next packet.
 
 To re-detect the interface MTU at runtime (e.g., after switching from WiFi to Ethernet):
 
@@ -469,7 +469,7 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `Write(data)` | Queue data for sending |
 | `Close()` | Initiate graceful close |
 | `Ping()` | Send best-effort ping for RTT measurement |
-| `SetReliable(bool)` | Toggle retransmission (default true; set before first Write) |
+| `SetReliable(bool)` | Toggle retransmission (default true; set before first Write). Carried in the high bit of the wire stream ID, so IDs are limited to 2^31-1 |
 | `SetReorderDeadlineNano(nano)` | Gap-skip deadline for unreliable streams (default 100ms) |
 | `RTTNano()` | Smoothed RTT estimate (0 until first sample) |
 | `RTTVarNano()` | RTT variation (jitter) estimate |

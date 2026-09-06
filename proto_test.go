@@ -31,10 +31,8 @@ func assertPayloadEqual(t *testing.T, expected, actual *payloadHeader) {
 	assert.Equal(t, expected.streamId, actual.streamId)
 	assert.Equal(t, expected.streamOffset, actual.streamOffset)
 	assert.Equal(t, expected.isClose, actual.isClose)
-	assert.Equal(t, expected.isMtuUpdate, actual.isMtuUpdate)
-	if expected.isMtuUpdate {
-		assert.Equal(t, expected.mtuUpdateValue, actual.mtuUpdateValue)
-	}
+	assert.Equal(t, expected.maxPayload, actual.maxPayload)
+	assert.Equal(t, expected.unreliable, actual.unreliable)
 	assert.Equal(t, expected.isKeyUpdate, actual.isKeyUpdate)
 	assert.Equal(t, expected.isKeyUpdateAck, actual.isKeyUpdateAck)
 
@@ -103,7 +101,8 @@ func TestProto_DataNoAck_ZeroStreamID(t *testing.T) {
 
 func TestProto_DataNoAck_MaxStreamID(t *testing.T) {
 	original := &payloadHeader{
-		streamId:     0xFFFFFFFF,
+		// 0x7FFFFFFF: the high bit is the stream-reliability marker
+		streamId:     maxStreamID,
 		streamOffset: 100,
 	}
 	originalData := []byte("data")
@@ -247,30 +246,28 @@ func TestProto_CloseNoAck_WithData(t *testing.T) {
 }
 
 // =============================================================================
-// TYPE: MTU UPDATE
+// TYPE: MAX PAYLOAD (unconditional field)
 // =============================================================================
 
-func TestProto_MtuUpdate_Basic(t *testing.T) {
+func TestProto_MaxPayload_Basic(t *testing.T) {
 	original := &payloadHeader{
-		isMtuUpdate:    true,
-		mtuUpdateValue: 1400,
-		streamId:       1,
-		streamOffset:   0,
+		maxPayload:   1400,
+		streamId:     1,
+		streamOffset: 0,
 	}
 
 	decoded, decodedData := roundTrip(t, original, []byte{})
 
 	assertPayloadEqual(t, original, decoded)
-	assert.Equal(t, uint16(1400), decoded.mtuUpdateValue)
+	assert.Equal(t, uint16(1400), decoded.maxPayload)
 	assert.Empty(t, decodedData)
 }
 
-func TestProto_MtuUpdate_WithData(t *testing.T) {
+func TestProto_MaxPayload_WithData(t *testing.T) {
 	original := &payloadHeader{
-		isMtuUpdate:    true,
-		mtuUpdateValue: 8952,
-		streamId:       1,
-		streamOffset:   100,
+		maxPayload:   8952,
+		streamId:     1,
+		streamOffset: 100,
 	}
 	data := []byte("some data")
 
@@ -280,12 +277,11 @@ func TestProto_MtuUpdate_WithData(t *testing.T) {
 	assert.Equal(t, data, decodedData)
 }
 
-func TestProto_MtuUpdate_48Bit(t *testing.T) {
+func TestProto_MaxPayload_48Bit(t *testing.T) {
 	original := &payloadHeader{
-		isMtuUpdate:    true,
-		mtuUpdateValue: 1232,
-		streamId:       1,
-		streamOffset:   0x1000000,
+		maxPayload:   1232,
+		streamId:     1,
+		streamOffset: 0x1000000,
 	}
 	data := make([]byte, 100)
 
@@ -295,19 +291,17 @@ func TestProto_MtuUpdate_48Bit(t *testing.T) {
 	assert.Equal(t, data, decodedData)
 }
 
-func TestProto_MtuUpdate_WithAck(t *testing.T) {
+func TestProto_MaxPayload_WithAck(t *testing.T) {
 	original := &payloadHeader{
-		isMtuUpdate:    true,
-		mtuUpdateValue: 1452,
-		streamId:       1,
-		streamOffset:   0,
-		ack:            &ack{streamId: 2, offset: 100, len: 50, rcvWnd: 1000},
+		maxPayload:   1452,
+		streamId:     1,
+		streamOffset: 0,
+		ack:          &ack{streamId: 2, offset: 100, len: 50, rcvWnd: 1000},
 	}
 
 	decoded, _ := roundTrip(t, original, []byte{})
 
-	assert.True(t, decoded.isMtuUpdate)
-	assert.Equal(t, uint16(1452), decoded.mtuUpdateValue)
+	assert.Equal(t, uint16(1452), decoded.maxPayload)
 	assert.NotNil(t, decoded.ack)
 }
 
@@ -447,39 +441,53 @@ func TestProto_KeyUpdateAndAck_Both(t *testing.T) {
 // NEEDS RETX FLAG TESTS
 // =============================================================================
 
-func TestProto_NeedsReTx_Set(t *testing.T) {
-	original := &payloadHeader{
-		streamId:     1,
-		streamOffset: 100,
-		needsReTx:    true,
-	}
-	originalData := []byte("data")
-
-	decoded, _ := roundTrip(t, original, originalData)
-
-	assert.True(t, decoded.needsReTx)
-}
-
-func TestProto_NeedsReTx_NotSet(t *testing.T) {
-	original := &payloadHeader{
-		streamId:     1,
-		streamOffset: 100,
-		needsReTx:    false,
-	}
-
+func TestProto_Unreliable_Reliable(t *testing.T) {
+	original := &payloadHeader{streamId: 1, streamOffset: 100}
 	decoded, _ := roundTrip(t, original, []byte("data"))
 
-	assert.False(t, decoded.needsReTx)
+	assert.False(t, decoded.unreliable)
+	assert.Equal(t, uint32(1), decoded.streamId)
 }
 
-func TestProto_NeedsReTx_AckOnly(t *testing.T) {
-	original := &payloadHeader{
-		ack: &ack{streamId: 1, offset: 100, len: 50, rcvWnd: 1000},
-	}
+func TestProto_Unreliable_BestEffort(t *testing.T) {
+	original := &payloadHeader{streamId: 1, streamOffset: 100, unreliable: true}
+	decoded, _ := roundTrip(t, original, []byte("data"))
 
+	assert.True(t, decoded.unreliable)
+	assert.Equal(t, uint32(1), decoded.streamId, "the marker bit must not leak into the id")
+}
+
+// The marker lives in the high bit of the wire streamId, so it costs no flag
+// bit and rides every packet of the stream.
+func TestProto_Unreliable_LivesInStreamIdHighBit(t *testing.T) {
+	enc, _ := encodeProto(&payloadHeader{streamId: 1, streamOffset: 0, unreliable: true}, []byte("d"))
+	dec, _, err := decodeProto(enc)
+	assert.NoError(t, err)
+	assert.True(t, dec.unreliable)
+
+	// Locate the streamId: flags(1) + maxPayload(2), no ack
+	assert.Equal(t, streamUnreliableBit|1, getUint32(enc[3:]))
+
+	// The reliable case leaves the id untouched
+	enc2, _ := encodeProto(&payloadHeader{streamId: 1, streamOffset: 0}, []byte("d"))
+	assert.Equal(t, uint32(1), getUint32(enc2[3:]))
+}
+
+// The whole id range below the marker bit round-trips unharmed.
+func TestProto_Unreliable_MaxStreamID(t *testing.T) {
+	for _, unreliable := range []bool{false, true} {
+		original := &payloadHeader{streamId: maxStreamID, streamOffset: 7, unreliable: unreliable}
+		decoded, _ := roundTrip(t, original, []byte("d"))
+		assert.Equal(t, maxStreamID, decoded.streamId)
+		assert.Equal(t, unreliable, decoded.unreliable)
+	}
+}
+
+func TestProto_Unreliable_AckOnly(t *testing.T) {
+	original := &payloadHeader{ack: &ack{streamId: 1, offset: 100, len: 50, rcvWnd: 1000}}
 	decoded, _ := roundTrip(t, original, nil)
 
-	assert.False(t, decoded.needsReTx)
+	assert.False(t, decoded.unreliable)
 }
 
 // =============================================================================
@@ -645,57 +653,59 @@ func TestProto_RcvWindow_RoundTrip(t *testing.T) {
 // =============================================================================
 
 func TestProto_Overhead_NoAck24Bit(t *testing.T) {
-	// Stream header only: 1 + 4 + 3 = 8
+	// flags + maxPayload + stream header: 1 + 2 + 4 + 3 = 10
 	var flags uint8 = flagHasStream
-	assert.Equal(t, 8, calcProtoOverhead(flags))
+	assert.Equal(t, 10, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_NoAck48Bit(t *testing.T) {
-	// Stream header, extended: 1 + 4 + 6 = 11
+	// Stream header, extended: 1 + 2 + 4 + 6 = 13
 	var flags uint8 = flagHasStream | flagExtend
-	assert.Equal(t, 11, calcProtoOverhead(flags))
+	assert.Equal(t, 13, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_WithAck24Bit(t *testing.T) {
-	// ACK only (no stream header): 1 + 4 + 3 + 2 + 1 = 11
+	// ACK only (no stream header): 1 + 2 + 4 + 3 + 2 + 1 = 13
 	var flags uint8 = flagHasAck
-	assert.Equal(t, 11, calcProtoOverhead(flags))
+	assert.Equal(t, 13, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_WithAck48Bit(t *testing.T) {
-	// ACK only, extended: 1 + 4 + 6 + 2 + 1 = 14
+	// ACK only, extended: 1 + 2 + 4 + 6 + 2 + 1 = 16
 	var flags uint8 = flagHasAck | flagExtend
-	assert.Equal(t, 14, calcProtoOverhead(flags))
+	assert.Equal(t, 16, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_KeyUpdate(t *testing.T) {
 	var flags uint8 = flagKeyUpdate | flagHasStream
-	// 1 (header) + 32 (pubkey) + 4 (streamId) + 3 (offset 24-bit) = 40
-	assert.Equal(t, 40, calcProtoOverhead(flags))
+	// 1 (flags) + 2 (maxPayload) + 32 (pubkey) + 4 (streamId) + 3 (offset) = 42
+	assert.Equal(t, 42, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_KeyUpdateAck(t *testing.T) {
 	var flags uint8 = flagKeyUpdateAck | flagHasStream
-	// 1 (header) + 32 (pubkey) + 4 (streamId) + 3 (offset 24-bit) = 40
-	assert.Equal(t, 40, calcProtoOverhead(flags))
+	// 1 (flags) + 2 (maxPayload) + 32 (pubkey) + 4 (streamId) + 3 (offset) = 42
+	assert.Equal(t, 42, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_KeyUpdateAndAck(t *testing.T) {
 	var flags uint8 = flagKeyUpdate | flagKeyUpdateAck | flagHasStream
-	// 1 (header) + 32 + 32 (both pubkeys) + 4 (streamId) + 3 (offset 24-bit) = 72
-	assert.Equal(t, 72, calcProtoOverhead(flags))
+	// 1 (flags) + 2 (maxPayload) + 32 + 32 (both pubkeys) + 4 + 3 = 74
+	assert.Equal(t, 74, calcProtoOverhead(flags))
 }
 
 func TestProto_Overhead_Close(t *testing.T) {
 	var flags uint8 = flagClose | flagHasStream
-	// 1 (header) + 4 (streamId) + 3 (offset 24-bit) = 8
-	assert.Equal(t, 8, calcProtoOverhead(flags))
+	// 1 (flags) + 2 (maxPayload) + 4 (streamId) + 3 (offset 24-bit) = 10
+	assert.Equal(t, 10, calcProtoOverhead(flags))
 }
 
-func TestProto_Overhead_MtuUpdate(t *testing.T) {
-	var flags uint8 = flagMtuUpdate | flagHasStream
-	// 1 (header) + 2 (mtuUpdateValue) + 4 (streamId) + 3 (offset 24-bit) = 10
-	assert.Equal(t, 10, calcProtoOverhead(flags))
+func TestProto_Overhead_MaxPayloadIsUnconditional(t *testing.T) {
+	// 1 (flags) + 2 (maxPayload) + 4 (streamId) + 3 (offset 24-bit) = 10
+	assert.Equal(t, 10, calcProtoOverhead(flagHasStream))
+	// maxPayload is in the fixed prefix, so it is also charged to an
+	// ACK-only packet: 1 + 2 + (4 + 3 + 2 + 1) = 13
+	assert.Equal(t, 13, calcProtoOverhead(flagHasAck))
 }
 
 // =============================================================================
@@ -748,7 +758,7 @@ func TestProto_Flags_DataNoAck24(t *testing.T) {
 	flags := encoded[0]
 	assert.True(t, flags&flagHasAck == 0)
 	assert.True(t, flags&flagExtend == 0)
-	assert.True(t, flags&(flagClose|flagKeyUpdate|flagKeyUpdateAck|flagMtuUpdate) == 0)
+	assert.True(t, flags&(flagClose|flagKeyUpdate|flagKeyUpdateAck) == 0)
 }
 
 func TestProto_Flags_DataWithAck24(t *testing.T) {
@@ -797,22 +807,27 @@ func TestProto_Flags_CloseWithAck24(t *testing.T) {
 	assert.True(t, flags&flagHasAck != 0)
 }
 
-func TestProto_Flags_MtuUpdate24(t *testing.T) {
-	p := &payloadHeader{isMtuUpdate: true, mtuUpdateValue: 1400, streamId: 1, streamOffset: 100}
+func TestProto_MaxPayload_NoFlagNeeded24(t *testing.T) {
+	p := &payloadHeader{maxPayload: 1400, streamId: 1, streamOffset: 100}
 	encoded, _ := encodeProto(p, []byte{})
 
-	flags := encoded[0]
-	assert.True(t, flags&flagMtuUpdate != 0)
-	assert.True(t, flags&flagExtend == 0)
+	assert.True(t, encoded[0]&flagExtend == 0)
+	// maxPayload sits in the fixed prefix, immediately after the flags byte
+	assert.Equal(t, uint16(1400), getUint16(encoded[1:]))
+	decoded, _, err := decodeProto(encoded)
+	assert.NoError(t, err)
+	assert.Equal(t, uint16(1400), decoded.maxPayload)
 }
 
-func TestProto_Flags_MtuUpdate48(t *testing.T) {
-	p := &payloadHeader{isMtuUpdate: true, mtuUpdateValue: 1400, streamId: 1, streamOffset: 0x1000000}
+func TestProto_MaxPayload_NoFlagNeeded48(t *testing.T) {
+	p := &payloadHeader{maxPayload: 1400, streamId: 1, streamOffset: 0x1000000}
 	encoded, _ := encodeProto(p, []byte{})
 
-	flags := encoded[0]
-	assert.True(t, flags&flagMtuUpdate != 0)
-	assert.True(t, flags&flagExtend != 0)
+	assert.True(t, encoded[0]&flagExtend != 0)
+	assert.Equal(t, uint16(1400), getUint16(encoded[1:]))
+	decoded, _, err := decodeProto(encoded)
+	assert.NoError(t, err)
+	assert.Equal(t, uint16(1400), decoded.maxPayload)
 }
 
 func TestProto_Flags_KeyUpdate(t *testing.T) {

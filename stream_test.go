@@ -149,8 +149,11 @@ func TestStream_MultipleStreams_SendReceive(t *testing.T) {
 	listenerB.Flush(connPair.Conn2.localTime)
 	connPair.recipientToSender(0)
 
-	// Process ACK and send stream 1
-	waitForStream(t, connA.listener, connPair, false)
+	// Process ACK. A pure ACK now yields no stream: maxPayload lives in the
+	// fixed header, so an ACK-only packet no longer drags a stream header
+	// along (see TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream).
+	_, err = connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
+	assert.Nil(t, err)
 	connA.listener.Flush(connPair.Conn1.localTime)
 	connPair.senderToRecipient(0, 1)
 

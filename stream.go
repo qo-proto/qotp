@@ -111,8 +111,9 @@ func (s *Stream) SndClosed() bool {
 // SetReliable controls whether lost data packets are retransmitted.
 // Default is true. Set to false for real-time streams where retransmitting
 // stale data is worse than dropping it. Call before the first Write: the
-// receiver marks a stream unreliable on the first best-effort data packet
-// and the marking is sticky.
+// receiver's marking is sticky, so a stream can be turned best-effort but not
+// back again. The setting travels in the high bit of the wire stream id, so
+// every packet of the stream carries it.
 //
 // On an unreliable stream the delivered byte stream may have lost ranges
 // silently removed (after the reorder deadline), so the application must do

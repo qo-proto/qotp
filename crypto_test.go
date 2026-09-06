@@ -261,7 +261,7 @@ func TestCryptoInitRcv_BasicFlow(t *testing.T) {
 	bobPrvKeyId := generateTestKey(t)
 	bobPrvKeyEp := generateTestKey(t)
 
-	rawData := []byte("test data")
+	rawData := []byte("test data!!") // >= minProtoSize
 	buffer, err := encryptPacket(
 		initRcv,
 		12345,
@@ -599,7 +599,7 @@ func TestCryptoFullHandshake_WithCrypto(t *testing.T) {
 	assert.Equal(t, initPayload, msg)
 
 	// Step 3: Bob sends InitCryptoRcv
-	responsePayload := []byte("response")
+	responsePayload := []byte("response!!") // >= minProtoSize
 	bufferR0, err := encryptPacket(
 		initCryptoRcv,
 		connId,

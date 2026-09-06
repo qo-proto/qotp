@@ -105,13 +105,13 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 
 func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: prvIdAlice,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdAlice,
 		maxPayload: testMaxPayload,
 	}
 	lBob := &Listener{
-		connMap:  newSharedLinkedMap[uint64, *conn](),
-		prvKeyId: prvIdBob,
+		connMap:    newSharedLinkedMap[uint64, *conn](),
+		prvKeyId:   prvIdBob,
 		maxPayload: testMaxPayload,
 	}
 	return lAlice, lBob
@@ -458,8 +458,9 @@ func TestConnEncodeDecodeRoundtrip_MaxPayload(t *testing.T) {
 	lAlice.connMap.put(connId, connAlice)
 	connAlice.connId = connId
 
-	// 1135 bytes is max payload for InitCryptoSnd at conservativeMTU=1232 (1232 - 65 hdr - 22 footer - 2 fillLen - 8 proto = 1135)
-	testData := createTestData(1135)
+	// max payload for InitCryptoSnd at conservativeMTU=1232
+	// (1232 - 65 hdr - 22 footer - 2 fillLen - 10 proto = 1133)
+	testData := createTestData(1133)
 
 	p := &payloadHeader{streamId: 0}
 	encoded, err := connAlice.encode(p, testData, connAlice.msgType())
@@ -1064,10 +1065,9 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 
 	// Simulate receiving a the MTU update field with a smaller value
 	p := &payloadHeader{
-		isMtuUpdate:    true,
-		mtuUpdateValue: 1300,
-		streamId:       1,
-		streamOffset:   0,
+		maxPayload:   1300,
+		streamId:     1,
+		streamOffset: 0,
 	}
 
 	s := c.getOrCreateStream(1)
@@ -1124,7 +1124,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 	assert.Equal(t, lBob.maxPayload, connBob.mtu) // min(1300, 1400) = 1300 = Bob's maxPayload
 
 	// Step 3: Bob responds with InitRcv, including the MTU update field in proto payload
-	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
+	p = &payloadHeader{streamId: 0, maxPayload: uint16(lBob.maxPayload)}
 	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
 	assert.NoError(t, err)
 
@@ -1141,78 +1141,61 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 // =============================================================================
 // WILL INJECT MTU TESTS
 // =============================================================================
+// maxPayload rides every packet now, including the kinds the old flag-based
+// scheme deliberately skipped (close, key update) and ACK-only packets, which
+// previously could not carry it at all.
+func TestConn_MaxPayload_OnEveryPacketKind(t *testing.T) {
+	pub := make([]byte, pubKeySize)
+	cases := map[string]*payloadHeader{
+		"data":      {streamId: 1, streamOffset: 5, maxPayload: 1400},
+		"close":     {streamId: 1, isClose: true, maxPayload: 1400},
+		"keyUpdate": {streamId: 1, isKeyUpdate: true, keyUpdatePub: pub, maxPayload: 1400},
+		"kuAck":     {streamId: 1, isKeyUpdateAck: true, keyUpdatePubAck: pub, maxPayload: 1400},
+		"ackOnly":   {ack: &ack{streamId: 1, offset: 2, len: 3}, maxPayload: 1400},
+	}
+	for name, p := range cases {
+		enc, _ := encodeProto(p, nil)
+		got, _, err := decodeProto(enc)
+		assert.NoError(t, err, name)
+		assert.Equal(t, uint16(1400), got.maxPayload, name)
+	}
 
-func TestConn_WillInjectMtu_InitCryptoSnd(t *testing.T) {
-	c := createTestConn(true, true, false)
-	assert.True(t, c.willInjectMtu(initCryptoSnd))
+	// An ACK-only packet must stay ACK-only: maxPayload no longer drags a
+	// stream header along with it.
+	enc, _ := encodeProto(cases["ackOnly"], nil)
+	assert.True(t, enc[0]&flagHasStream == 0, "ACK-only packet must not carry a stream header")
 }
 
-func TestConn_WillInjectMtu_InitRcv(t *testing.T) {
-	c := createTestConn(false, false, false)
-	assert.True(t, c.willInjectMtu(initRcv))
-}
-
-func TestConn_WillInjectMtu_InitCryptoRcv(t *testing.T) {
-	c := createTestConn(false, true, false)
-	assert.True(t, c.willInjectMtu(initCryptoRcv))
-}
-
-func TestConn_WillInjectMtu_InitSnd(t *testing.T) {
-	c := createTestConn(true, false, false)
-	assert.False(t, c.willInjectMtu(initSnd))
-}
-
-func TestConn_WillInjectMtu_Data_NotSentYet(t *testing.T) {
+// A received maxPayload sets the ceiling, but must not undo a loss-triggered
+// fallback — otherwise the next inbound packet would defeat the MTU
+// black-hole mitigation, which now runs on every packet.
+func TestConn_NegotiateMTU_DoesNotClobberLossFallback(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.mtuSent = false
-	assert.True(t, c.willInjectMtu(data))
+	c.listener.maxPayload = 1400
+
+	c.negotiateMTU(1400)
+	assert.Equal(t, 1400, c.mtu)
+	assert.Equal(t, 1400, c.negotiatedMTU)
+
+	// Simulate the loss-driven fallback
+	c.consecutiveLosses = mtuFallbackThreshold
+	c.mtu = conservativeMTU
+
+	// Peer keeps advertising 1400 on every packet: the ceiling tracks it, the
+	// working value stays down until the losses stop.
+	c.negotiateMTU(1400)
+	assert.Equal(t, conservativeMTU, c.mtu, "fallback must survive inbound MTU advertisements")
+	assert.Equal(t, 1400, c.negotiatedMTU)
+
+	// Once losses clear, an advertisement restores the working value.
+	c.consecutiveLosses = 0
+	c.negotiateMTU(1400)
+	assert.Equal(t, 1400, c.mtu)
 }
 
-func TestConn_WillInjectMtu_Data_AlreadySent(t *testing.T) {
-	c := createTestConn(true, false, true)
-	c.mtuSent = true
-	assert.False(t, c.willInjectMtu(data))
-}
-
-// =============================================================================
-// MTU SENT TRACKING TESTS
-// =============================================================================
-
-func TestConn_MtuSent_InitiallyFalse(t *testing.T) {
-	c := createTestConn(true, false, true)
-	assert.False(t, c.mtuSent)
-}
-
-func TestConn_MtuSent_SetAfterInitCryptoSnd(t *testing.T) {
-	c := createTestConn(true, true, false)
-	c.listener.localConn = NewConnPair("a", "b").Conn1
-	c.remoteAddr = getTestRemoteAddr()
-	c.mtu = testMaxPayload
-	c.measurements = newMeasurements()
-	c.rcvWndSize = rcvBufferCapacity
-
-	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("test"), 0, false, 1000, false)
-	assert.NoError(t, err)
-	assert.True(t, c.mtuSent)
-}
-
-func TestConn_MtuSent_SetOnInitSnd(t *testing.T) {
-	// initSnd embeds localMaxPayload in fixed header, so mtuSent is set after sending
-	c := createTestConn(true, false, false)
-	c.listener.localConn = NewConnPair("a", "b").Conn1
-	c.remoteAddr = getTestRemoteAddr()
-	c.mtu = testMaxPayload
-	c.measurements = newMeasurements()
-	c.rcvWndSize = rcvBufferCapacity
-
-	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, nil, 0, false, 1000, false)
-	assert.NoError(t, err)
-	assert.True(t, c.mtuSent)
-}
-
-func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
+// A local interface change now reaches the peer, because every packet carries
+// the current value instead of a once-only announcement.
+func TestConn_MaxPayload_ChangePropagates(t *testing.T) {
 	c := createTestConn(true, false, true)
 	connPair := NewConnPair("a", "b")
 	c.listener.localConn = connPair.Conn1
@@ -1222,72 +1205,15 @@ func TestConn_MtuSent_NotSetTwiceForData(t *testing.T) {
 	c.rcvWndSize = rcvBufferCapacity
 
 	s := c.Stream(0)
-
-	// First data packet: should inject MTU and set mtuSent
-	_, _, err := c.encodeAndWrite(s, nil, []byte("first"), 0, false, 1000, false)
+	_, _, err := c.encodeAndWrite(s, nil, []byte("one"), 0, false, 1000, false)
 	assert.NoError(t, err)
-	assert.True(t, c.mtuSent)
 
-	// Second data packet: should NOT inject MTU
-	_, _, err = c.encodeAndWrite(s, nil, []byte("second"), 5, false, 2000, false)
+	// Interface changes (RefreshMaxPayload updates the listener) — the very
+	// next packet advertises the new value; there is no latch to reset.
+	c.listener.maxPayload = 1300
+	_, _, err = c.encodeAndWrite(s, nil, []byte("two"), 3, false, 2000, false)
 	assert.NoError(t, err)
-	// mtuSent stays true, no double injection
-	assert.True(t, c.mtuSent)
-}
-
-// =============================================================================
-// MTU INJECTION IN ENCODE AND WRITE TESTS
-// =============================================================================
-
-func TestConn_EncodeAndWrite_InjectsMtuForInitCryptoSnd(t *testing.T) {
-	c := createTestConn(true, true, false)
-	connPair := NewConnPair("a", "b")
-	c.listener.localConn = connPair.Conn1
-	c.remoteAddr = getTestRemoteAddr()
-	c.mtu = testMaxPayload
-	c.measurements = newMeasurements()
-	c.rcvWndSize = rcvBufferCapacity
-
-	s := c.Stream(0)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("hello"), 0, false, 1000, false)
-	assert.NoError(t, err)
-	assert.True(t, c.mtuSent)
-
-	// Verify the packet was written and contains the MTU update field by reading it back
-	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender())
-}
-
-func TestConn_EncodeAndWrite_SkipsMtuOnClose(t *testing.T) {
-	c := createTestConn(true, false, true)
-	connPair := NewConnPair("a", "b")
-	c.listener.localConn = connPair.Conn1
-	c.remoteAddr = getTestRemoteAddr()
-	c.mtu = testMaxPayload
-	c.measurements = newMeasurements()
-	c.rcvWndSize = rcvBufferCapacity
-
-	s := c.Stream(0)
-	// isClose=true → should not inject mtuUpdate (mutually exclusive)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("bye"), 0, true, 1000, false)
-	assert.NoError(t, err)
-	assert.False(t, c.mtuSent)
-}
-
-func TestConn_EncodeAndWrite_SkipsMtuOnKeyUpdate(t *testing.T) {
-	c := createTestConn(true, false, true)
-	connPair := NewConnPair("a", "b")
-	c.listener.localConn = connPair.Conn1
-	c.remoteAddr = getTestRemoteAddr()
-	c.mtu = testMaxPayload
-	c.measurements = newMeasurements()
-	c.rcvWndSize = rcvBufferCapacity
-	c.sndKeys.prvKeyEpNext = prvEpNew
-
-	s := c.Stream(0)
-	// isKeyUpdate=true → should not inject mtuUpdate (mutually exclusive)
-	_, _, err := c.encodeAndWrite(s, nil, []byte("ku"), 0, false, 1000, false)
-	assert.NoError(t, err)
-	assert.False(t, c.mtuSent)
+	assert.Equal(t, 2, connPair.nrOutgoingPacketsSender())
 }
 
 func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
@@ -1343,7 +1269,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	lAlice.connMap.put(connAlice.connId, connAlice)
 
 	// Step 1: Alice encodes InitCryptoSnd with the MTU update field in proto payload
-	p := &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lAlice.maxPayload)}
+	p := &payloadHeader{streamId: 0, maxPayload: uint16(lAlice.maxPayload)}
 	packetData, _ := encodeProto(p, []byte("init data"))
 	encoded, err := connAlice.encode(p, packetData, initCryptoSnd)
 	assert.NoError(t, err)
@@ -1358,7 +1284,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	assert.Equal(t, 1452, connBob.mtu) // min(8952, 1452) = 1452
 
 	// Step 3: Bob responds with InitCryptoRcv, including the MTU update field
-	p = &payloadHeader{streamId: 0, isMtuUpdate: true, mtuUpdateValue: uint16(lBob.maxPayload)}
+	p = &payloadHeader{streamId: 0, maxPayload: uint16(lBob.maxPayload)}
 	encodedR0, err := connBob.encode(p, nil, connBob.msgType())
 	assert.NoError(t, err)
 
@@ -1387,7 +1313,6 @@ func TestConn_FlushStream_RetransmitBypassesRwnd(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.mtuSent = true
 	c.measurements = newMeasurements()
 
 	// Simulate rwnd-blocked: receiver has zero window
@@ -1436,7 +1361,6 @@ func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.mtuSent = true
 	c.measurements = newMeasurements()
 
 	// Simulate rwnd-blocked
@@ -1464,7 +1388,6 @@ func newKuTestConn(connPair *ConnPair) (*conn, *Stream) {
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
 	c.mtu = testMaxPayload
-	c.mtuSent = true
 	c.measurements = newMeasurements()
 	c.rcvWndSize = rcvBufferCapacity
 
@@ -1639,4 +1562,34 @@ func TestConn_FlushStream_KeyUpdate_CompletedStopsSending(t *testing.T) {
 	_, _, err = c.flushStream(s, uint64(2*secondNano))
 	assert.NoError(t, err)
 	assert.Equal(t, 1, connPair.nrOutgoingPacketsSender(), "completed rotation must stop KU sends")
+}
+
+// The high bit of the wire streamId carries reliability, so it cannot also be
+// an identifier — an id that would collide is refused rather than silently
+// aliasing onto another stream.
+func TestConn_GetOrCreateStream_RejectsReservedStreamID(t *testing.T) {
+	c := createTestConn(true, false, true)
+
+	assert.NotNil(t, c.getOrCreateStream(maxStreamID), "the whole usable range is available")
+	assert.NotNil(t, c.getOrCreateStream(0))
+	assert.Nil(t, c.getOrCreateStream(streamUnreliableBit), "reserved bit set")
+	assert.Nil(t, c.getOrCreateStream(0xFFFFFFFF), "reserved bit set")
+}
+
+// Under the old scheme the FIN of a best-effort stream advertised "reliable"
+// (needsReTx was OR'd with isClose), so a stream whose only packet was a FIN
+// left the receiver unmarked. Now the FIN carries the stream's own property.
+func TestUnreliableMarkerOnCloseOnlyStream(t *testing.T) {
+	c := createTestConn(true, false, true)
+	s := c.Stream(3)
+	s.SetReliable(false)
+
+	p := &payloadHeader{streamId: 3, streamOffset: 0, isClose: true, unreliable: !s.reliable}
+	_, err := c.processIncomingPayload(p, []byte{}, 1000)
+	assert.NoError(t, err)
+
+	c.rcv.mu.Lock()
+	marked := c.rcv.streams[3] != nil && c.rcv.streams[3].unreliable
+	c.rcv.mu.Unlock()
+	assert.True(t, marked, "a FIN-only best-effort stream must still be marked")
 }

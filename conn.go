@@ -19,8 +19,8 @@ type keyState struct {
 
 type rcvKeyState struct {
 	keyState
-	pubKeyEp        *ecdh.PublicKey
-	pubKeyEpNext    *ecdh.PublicKey
+	pubKeyEp     *ecdh.PublicKey
+	pubKeyEpNext *ecdh.PublicKey
 }
 
 type connPhase int
@@ -75,9 +75,8 @@ type conn struct {
 	deliveredBytes atomic.Uint64
 
 	// MTU negotiation
-	mtu               int  // current max UDP payload (starts conservative, may fall back on losses)
-	negotiatedMTU     int  // negotiated value (for restoring after fallback)
-	mtuSent           bool // whether we've sent our maxPayload to the peer
+	mtu               int // current max UDP payload (starts conservative, may fall back on losses)
+	negotiatedMTU     int // negotiated value (for restoring after fallback)
 	consecutiveLosses int
 	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
 
@@ -169,11 +168,13 @@ func (c *conn) cleanupStream(streamID uint32) {
 	c.rcv.removeStream(streamID)
 }
 
-// negotiateMTU sets the connection's MTU to min(remoteMaxPayload, localMaxPayload).
+// negotiateMTU sets the MTU ceiling. It runs on every packet, so it must leave
+// a loss-triggered fallback alone; the ACK path restores the working value.
 func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
-	negotiated := max(min(c.listener.maxPayload, int(remoteMaxPayload)), conservativeMTU)
-	c.mtu = negotiated
-	c.negotiatedMTU = negotiated
+	c.negotiatedMTU = max(min(c.listener.maxPayload, int(remoteMaxPayload)), conservativeMTU)
+	if c.consecutiveLosses == 0 {
+		c.mtu = c.negotiatedMTU
+	}
 }
 
 // =============================================================================
@@ -188,6 +189,11 @@ func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
 // concurrent cleanup between the check and the insert could resurrect a
 // finished stream. The map itself is internally locked (sharedLinkedMap).
 func (c *conn) getOrCreateStream(streamID uint32) *Stream {
+	// The high bit is the wire reliability marker, not an identifier.
+	if streamID > maxStreamID {
+		return nil
+	}
+
 	// Fast path: existing stream, no allocation, no c.mu. The finished
 	// check must come first — a finished stream may still be in the map,
 	// and finished trumps presence.
@@ -394,6 +400,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 //   - nil: ACK-only packet, no stream data
 //   - []byte{} (empty): PING packet
 //   - []byte{...}: actual data
+//
 // processIncomingPayload runs on the event-loop goroutine only; the protocol
 // state it touches is loop-owned (see conn doc). Stream-map access goes
 // through the self-locking getOrCreateStream.
@@ -409,6 +416,10 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		if err := c.handleKeyUpdateAck(p.keyUpdatePubAck); err != nil {
 			return nil, fmt.Errorf("key update failed: %w", err)
 		}
+	}
+
+	if p.maxPayload > 0 {
+		c.negotiateMTU(p.maxPayload)
 	}
 
 	// Process ACK if present
@@ -470,16 +481,12 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 		return nil, nil
 	}
 
-	// Handle MTU update from peer
-	if p.isMtuUpdate && p.mtuUpdateValue > 0 {
-		c.negotiateMTU(p.mtuUpdateValue)
+	// Insert data or queue ACK for empty packets (PING/CLOSE)
+	if p.unreliable {
+		c.rcv.markUnreliable(s.streamID)
 	}
 
-	// Insert data or queue ACK for empty packets (PING/CLOSE)
 	if len(userData) > 0 {
-		if !p.needsReTx {
-			c.rcv.markUnreliable(s.streamID)
-		}
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
 		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
 	} else {
@@ -637,10 +644,6 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	if isKeyUpdateAck {
 		effectiveMtu -= pubKeySize
 	}
-	if c.willInjectMtu(msgType) {
-		effectiveMtu -= 2
-	}
-
 	// Try retransmission first (oldest unacked packet).
 	// Retransmissions bypass the receive window check: the data was already
 	// counted in dataInFlight when first sent, and the receiver's window was
@@ -719,19 +722,14 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	isKeyUpdateAck := c.kuAckPending()
 
 	p := &payloadHeader{
-		isClose:      isClose,
-		needsReTx:    s.reliable || isClose || isKeyUpdate || isKeyUpdateAck,
+		maxPayload: uint16(c.listener.maxPayload),
+		isClose:    isClose,
+		// The stream's property, not the packet's: whether a given packet is
+		// retransmitted is sendPacket.needsReTx.
+		unreliable:   !s.reliable,
 		ack:          ack,
 		streamId:     s.streamID,
 		streamOffset: offset,
-	}
-
-	// Include maxPayload via the MTU update field in the proto payload.
-	// Skipped on close/keyUpdate packets to keep them at their expected size.
-	// InitSnd embeds MTU in its fixed crypto header instead (willInjectMtu is false).
-	if !isClose && !isKeyUpdate && !isKeyUpdateAck && c.willInjectMtu(c.msgType()) {
-		p.isMtuUpdate = true
-		p.mtuUpdateValue = uint16(c.listener.maxPayload)
 	}
 
 	if isKeyUpdate {
@@ -760,10 +758,6 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	if data != nil {
 		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano+elapsedNano,
 			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
-	}
-
-	if !c.mtuSent && (p.isMtuUpdate || c.msgType() == initSnd) {
-		c.mtuSent = true
 	}
 
 	if p.isKeyUpdate {
@@ -819,9 +813,8 @@ func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint
 // Helpers
 // =============================================================================
 
-// isInitiator reports whether this side opened the connection (it dialed and
-// sent the init packet). Determines the AEAD nonce direction bit and which
-// message completes the handshake.
+// isInitiator reports whether this side dialed. Sets the AEAD nonce direction
+// bit and decides which message completes the handshake.
 func (c *conn) isInitiator() bool {
 	return c.initMsgType == initSnd || c.initMsgType == initCryptoSnd
 }
@@ -832,17 +825,4 @@ func (c *conn) msgType() cryptoMsgType {
 		return data
 	}
 	return c.initMsgType
-}
-
-// willInjectMtu returns true if the MTU update field will be added to the next packet.
-// Used to reserve space in the data splitting calculation.
-func (c *conn) willInjectMtu(msgType cryptoMsgType) bool {
-	switch msgType {
-	case initCryptoSnd, initRcv, initCryptoRcv:
-		return true
-	case initSnd:
-		return false
-	default:
-		return !c.mtuSent
-	}
 }

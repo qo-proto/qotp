@@ -86,7 +86,7 @@ only mentions 9 primary RFCs and 48 extensions and informational RFCs, totalling
 * Max RTT: Up to 30 seconds connection timeout (no hard RTT limit, but suspicious RTT > 30s logged)
 * Packet identification: Stream offset (24 or 48-bit) + length (16-bit)
 * Max Payload: `interfaceMTU - 48` (typically 1452 for Ethernet; configurable via `WithMaxPayload`)
-  * Connections start at `conservativeMTU` (1232) and negotiate up via the MTU update flag
+  * Connections start at `conservativeMTU` (1232) and negotiate up via the `maxPayload` field carried in every packet
 * Buffer capacity: 16MB send + 16MB receive (configurable constants)
 * Crypto sequence space: 48-bit sequence number per key
   * Separate from transport layer stream offsets
@@ -188,7 +188,7 @@ Bytes 65+:    Padding to maxPayload bytes
 
 **Connection ID**: First 64 bits of pubKeyEpSnd, used for the lifetime of the connection.
 
-#### InitRcv (Type 001, Min: 103 bytes)
+#### InitRcv (Type 001, Min: 105 bytes)
 
 Encrypted with ECDH(prvKeyEpRcv, pubKeyEpSnd). Achieves perfect forward secrecy.
 
@@ -198,7 +198,7 @@ Bytes 1-8:    Connection ID (from InitSnd)
 Bytes 9-40:   Public Key Ephemeral Receiver (X25519)
 Bytes 41-72:  Public Key Identity Receiver (X25519)
 Bytes 73-78:  Encrypted Sequence Number (48-bit)
-Bytes 79+:    Encrypted Payload (min 8 bytes)
+Bytes 79+:    Encrypted Payload (min 10 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
@@ -214,12 +214,12 @@ Bytes 33-64:  Public Key Identity Sender (X25519)
 Bytes 65-70:  Encrypted Sequence Number (48-bit)
 Bytes 71-72:  Filler Length (16-bit, encrypted)
 Bytes 73+:    Filler (variable, encrypted)
-Bytes X+:     Encrypted Payload (min 8 bytes)
+Bytes X+:     Encrypted Payload (min 10 bytes)
 Last 16:      MAC (Poly1305)
 Total:        Padded to maxPayload bytes
 ```
 
-#### InitCryptoRcv (Type 011, Min: 71 bytes)
+#### InitCryptoRcv (Type 011, Min: 73 bytes)
 
 Encrypted with ECDH(prvKeyEpRcv, pubKeyEpSnd). Achieves perfect forward secrecy.
 
@@ -228,11 +228,11 @@ Byte 0:       Header (version=0, type=011)
 Bytes 1-8:    Connection ID (from InitCryptoSnd)
 Bytes 9-40:   Public Key Ephemeral Receiver (X25519)
 Bytes 41-46:  Encrypted Sequence Number (48-bit)
-Bytes 47+:    Encrypted Payload (min 8 bytes)
+Bytes 47+:    Encrypted Payload (min 10 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
-#### Data (Type 100, Min: 39 bytes)
+#### Data (Type 100, Min: 41 bytes)
 
 All subsequent data messages after handshake.
 
@@ -240,7 +240,7 @@ All subsequent data messages after handshake.
 Byte 0:       Header (version=0, type=100)
 Bytes 1-8:    Connection ID
 Bytes 9-14:   Encrypted Sequence Number (48-bit)
-Bytes 15+:    Encrypted Payload (min 8 bytes)
+Bytes 15+:    Encrypted Payload (min 10 bytes)
 Last 16:      MAC (Poly1305)
 ```
 
@@ -324,7 +324,7 @@ previous round) are ignored or re-ACKed without generating new keys.
 
 ### Transport Layer (Payload Format)
 
-After decryption, payload contains transport header + data. Min 8 bytes total.
+After decryption, payload contains transport header + data. Min 10 bytes total.
 
 #### Payload Header Format
 
@@ -333,28 +333,35 @@ After decryption, payload contains transport header + data. Min 8 bytes total.
 Bit 0: hasAck          ACK block present
 Bit 1: hasStream       streamId + streamOffset (+ userData) present
 Bit 2: extend          48-bit offsets instead of 24-bit
-Bit 3: needsReTx       sender retransmits until ACKed (0 = best-effort)
+Bit 3: (reserved)
 Bit 4: isClose         stream close (FIN)
 Bit 5: isKeyUpdate     32-byte pubkey present (key rotation initiation)
 Bit 6: isKeyUpdateAck  32-byte pubkey present (key rotation acknowledgment)
-Bit 7: isMtuUpdate     16-bit max UDP payload present
+Bit 7: (reserved)
 ```
 
 Any flag combination is representable; overhead is computable directly from
-the flag byte. `needsReTx=0` on a data packet tells the receiver the stream
-is best-effort: gaps from lost packets will never be repaired and are skipped
-after a reorder deadline (see Unreliable Streams).
+the flag byte.
 
-**MTU Negotiation (`isMtuUpdate`):**
-- Carries a 2-byte `maxPayload` value from the sender
-- Included in init packets (InitCryptoSnd, InitRcv, InitCryptoRcv) and the first data packet after InitSnd handshake (InitSnd embeds it in the crypto header instead)
-- Not combined with close/keyUpdate packets (sizing policy, not a wire constraint)
-- Both peers exchange their `maxPayload`; connection MTU = `min(local, remote)`, floored at `conservativeMTU` (1232)
-- On consecutive packet losses (`mtuFallbackThreshold` = 5), MTU falls back to `conservativeMTU`; restored on next successful ACK
+**Stream reliability** is not a flag. It travels in the **high bit of the wire
+`streamId`** (set = best-effort), which caps usable stream IDs at 2^31-1. A
+best-effort stream never retransmits, so a once-announced flag could be lost
+and strand the receiver waiting on gaps that never fill; carried in the ID, the
+marker is on every packet of the stream by construction. The receiver's marking
+is sticky: gaps from lost packets are skipped after a reorder deadline (see
+Unreliable Streams). Whether the sender retransmits an individual packet — it
+always does for FIN and key updates, even on a best-effort stream — is local
+state and never appears on the wire.
+
+**MTU Negotiation (`maxPayload`):**
+- A 2-byte field in the fixed header of every packet, immediately after the flags byte (InitSnd embeds it in the crypto header instead, and carries no transport header)
+- Unconditional because MTU is a path property that can change at any time (interface change, and later connection migration or a second path). Costs 2 bytes per packet and removes all "already announced" state; a change reaches the peer on the next packet
+- Both peers exchange their `maxPayload`; connection MTU ceiling = `min(local, remote)`, floored at `conservativeMTU` (1232)
+- On consecutive packet losses (`mtuFallbackThreshold` = 5), the working MTU falls back to `conservativeMTU`; restored on next successful ACK. An inbound `maxPayload` updates the ceiling only, so it cannot undo an active fallback
 - More than 3 fallback→restore cycles on a connection logs an MTU-flapping warning (likely MTU black hole)
 
 **Stream header** (streamId + offset, signaled by `hasStream`) is included when:
-- Any control flag is set (close, key update, MTU update), OR
+- Any control flag is set (close, key update), OR
 - Has user data, OR
 - No ACK (for minimum packet size)
 
@@ -366,15 +373,15 @@ after a reorder deadline (see Unreliable Streams).
 
 **With ACK + Stream Data:**
 ```
-Byte 0:           Header
-Bytes 1-4:        ACK Stream ID (32-bit) [if hasAck]
-Bytes 5-7/10:     ACK Offset (24 or 48-bit) [if hasAck]
-Bytes 8-9/11-12:  ACK Length (16-bit) [if hasAck]
-Byte 10/13:       ACK Receive Window (8-bit, encoded) [if hasAck]
-Bytes X-X+1:      MTU Value (16-bit) [if isMtuUpdate]
+Byte 0:           Header (flags)
+Bytes 1-2:        maxPayload (16-bit, always present)
+Bytes 3-6:        ACK Stream ID (32-bit) [if hasAck]
+Bytes 7-9/12:     ACK Offset (24 or 48-bit) [if hasAck]
+Bytes 10-11/...:  ACK Length (16-bit) [if hasAck]
+Byte 12/...:      ACK Receive Window (8-bit, encoded) [if hasAck]
 Bytes Y-Y+31:     Key Update Public Key (32 bytes) [if isKeyUpdate]
 Bytes Z-Z+31:     Key Update Ack Public Key (32 bytes) [if isKeyUpdateAck]
-Bytes A-A+3:      Stream ID (32-bit) [if hasStream]
+Bytes A-A+3:      Stream ID (32-bit, high bit = best-effort) [if hasStream]
 Bytes A+4-A+6/9:  Stream Offset (24 or 48-bit) [if hasStream]
 Bytes A+7/10+:    User Data
 ```
@@ -480,6 +487,10 @@ and counted as losses (data only).
 
 ### Stream Management
 
+Stream IDs are application-chosen and range from `0` to `2^31-1`; the high bit
+of the wire ID is reserved for the best-effort marker, so `conn.Stream()`
+returns `nil` for an ID outside that range.
+
 #### Stream Lifecycle
 
 ```
@@ -551,14 +562,17 @@ Streams are reliable by default. `SetReliable(false)` (call before the first
 where retransmitting stale data is worse than dropping it.
 
 **Sender side**:
-- Data packets carry `needsReTx=0` and are never retransmitted
+- The high bit of the wire `streamId` is set on every packet of the stream;
+  data packets are never retransmitted
 - Lost packets are dropped from in-flight tracking one RTO after sending
   (no backoff) and counted as losses
 - Close (FIN) and key updates remain reliable even on unreliable streams
 - ACKs are best-effort in both modes (sent once, never retransmitted)
 
 **Receiver side (gap skipping)**:
-- The first `needsReTx=0` data packet marks the stream unreliable (sticky)
+- Any packet with the marker bit set marks the stream unreliable (sticky).
+  Because the marker rides the stream ID, losing a packet cannot leave the
+  receiver treating a best-effort stream as reliable
 - A head-of-line gap (lost packet) is skipped once it has been open longer
   than the reorder deadline: delivery advances to the next buffered segment,
   or to the close offset when the tail of the stream was lost
@@ -624,22 +638,24 @@ Enables O(1) in-flight packet tracking and ACK processing.
 
 **Crypto Layer Overhead**:
 - InitSnd: maxPayload bytes (no data, padding)
-- InitRcv: 103+ bytes (73 header + 6 SN + 16 MAC + ≥8 payload)
+- InitRcv: 105+ bytes (73 header + 6 SN + 16 MAC + ≥10 payload)
 - InitCryptoSnd: maxPayload bytes (includes padding)
-- InitCryptoRcv: 63+ bytes (41 header + 6 SN + 16 MAC + ≥8 payload)
-- Data: 39+ bytes (9 header + 6 SN + 16 MAC + ≥8 payload)
+- InitCryptoRcv: 73+ bytes (41 header + 6 SN + 16 MAC + ≥10 payload)
+- Data: 41+ bytes (9 header + 6 SN + 16 MAC + ≥10 payload)
 
-**Transport Layer Overhead** (variable):
-- No ACK, 24-bit offset: 8 bytes
-- No ACK, 48-bit offset: 11 bytes
-- With ACK, 24-bit offset: 18 bytes
-- With ACK, 48-bit offset: 24 bytes
-- MTU update flag adds 2 bytes (included in init and first data packet)
+**Transport Layer Overhead** (variable; every packet includes the 2-byte
+`maxPayload` field):
+- No ACK, 24-bit offset: 10 bytes
+- No ACK, 48-bit offset: 13 bytes
+- With ACK, 24-bit offset: 20 bytes
+- With ACK, 48-bit offset: 26 bytes
+- ACK-only (no stream header), 24-bit offset: 13 bytes
+- Each key-update pubkey adds 32 bytes
 
 **Total Minimum Overhead** (Data message with payload):
-- Best case: 39 bytes (9 + 6 + 16 + 8 transport header)
-- Typical: 39-47 bytes for data packets
-- 1452-byte packet: ~2.7-3.2% overhead
+- Best case: 41 bytes (9 + 6 + 16 + 10 transport header)
+- Typical: 41-51 bytes for data packets
+- 1452-byte packet: ~2.8-3.5% overhead
 
 ## Implementation Details
 

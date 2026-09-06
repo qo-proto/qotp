@@ -34,13 +34,13 @@ const (
 	pubKeySize         = 32 // X25519 public key
 	headerSize         = 1  // Message type + version
 	connIdSize         = 8
-	msgInitFillLenSize = 2  // Padding length field for InitCryptoSnd
+	msgInitFillLenSize = 2 // Padding length field for InitCryptoSnd
 
 	// Minimum header sizes (before encrypted payload)
 	minInitRcvSizeHdr       = headerSize + connIdSize + (2 * pubKeySize) // 73 bytes
-	minInitCryptoSndSizeHdr = headerSize + (2 * pubKeySize)             // 65 bytes
-	minInitCryptoRcvSizeHdr = headerSize + connIdSize + pubKeySize      // 41 bytes
-	minDataSizeHdr          = headerSize + connIdSize                   // 9 bytes
+	minInitCryptoSndSizeHdr = headerSize + (2 * pubKeySize)              // 65 bytes
+	minInitCryptoRcvSizeHdr = headerSize + connIdSize + pubKeySize       // 41 bytes
+	minDataSizeHdr          = headerSize + connIdSize                    // 9 bytes
 
 	// Footer: encrypted sequence number + MAC
 	footerDataSize = snSize + macSize // 22 bytes
@@ -208,10 +208,8 @@ func chainedEncrypt(snCrypt uint64, isSender bool, sharedSecret []byte, header, 
 // Decryption
 // =============================================================================
 
-// aadLen returns the plaintext header length for a message type: the bytes
-// that precede the encrypted payload and are authenticated as the AEAD's
-// additional data. The encrypted part therefore starts at aadLen(msgType).
-// Returns -1 for InitSnd, which carries no encrypted payload.
+// aadLen returns the plaintext header length for a message type: the AEAD's
+// additional data, and where the encrypted part starts. -1 for InitSnd.
 func aadLen(msgType cryptoMsgType) int {
 	switch msgType {
 	case initRcv:
@@ -303,13 +301,10 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 		return nil, nil, nil, err
 	}
 
-	// Remove padding: [fillLen (2 bytes)][filler][actualData]. fillLen is
-	// attacker-chosen — InitCryptoSnd is sealed to the receiver's *public*
-	// identity key, so anyone able to dial can pick the plaintext, and a
-	// successful AEAD check says nothing about who sent it. Reading the
-	// 2-byte length is safe without its own check: chainedDecrypt rejects a
-	// sealed payload shorter than its 24-byte nonce, so packetData is always
-	// at least minProtoSize (24 - macSize = 8) bytes.
+	// Padding is [fillLen][filler][data]. fillLen is attacker-chosen: this
+	// message is sealed to the receiver's *public* identity key, so decrypting
+	// says nothing about who sent it. The length read itself is in bounds —
+	// chainedDecrypt guarantees at least minProtoSize of plaintext.
 	fillerLen := int(getUint16(packetData))
 	if msgInitFillLenSize+fillerLen > len(packetData) {
 		return nil, nil, nil, errors.New("invalid filler length")
@@ -357,12 +352,9 @@ func decryptData(encData []byte, isSender bool, sharedSecret [][]byte) ([]byte, 
 // chainedDecrypt reverses the double encryption from chainedEncrypt.
 // Tries all provided secrets (cur, plus prev/next during key rotation).
 func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byte) ([]byte, error) {
-	// The sequence-number layer takes its XChaCha20 nonce from the front of
-	// the sealed payload, so the encrypted region must hold the 6-byte
-	// sequence number plus that nonce. Callers only guarantee their own
-	// header fits; this is the only place that knows what the payload must
-	// contain, so the requirement is asserted here rather than restated by
-	// every caller.
+	// The sequence-number layer takes its nonce from the front of the sealed
+	// payload, so that much must be present. Asserted here because callers
+	// only guarantee their own header fits.
 	if minEnc := snSize + chacha20poly1305.NonceSizeX; len(encData) < minEnc {
 		return nil, fmt.Errorf("encrypted payload too small: need %d bytes, got %d", minEnc, len(encData))
 	}
@@ -372,9 +364,7 @@ func chainedDecrypt(isSender bool, sharedSecrets [][]byte, header, encData []byt
 	nonceRand := encData[:chacha20poly1305.NonceSizeX]
 
 	for _, sharedSecret := range sharedSecrets {
-		// A wrong secret produces garbage here rather than an error; the
-		// AEAD Open below is what actually rejects it, so failures just
-		// move on to the next secret.
+		// A wrong secret yields garbage, not an error; Open below rejects it.
 		snConn, err := decryptSnWithoutMAC(sharedSecret, nonceRand, encSn)
 		if err != nil {
 			continue
@@ -462,20 +452,17 @@ func calcCryptoOverheadWithData(msgType cryptoMsgType, ack *ack, offset uint64) 
 // =============================================================================
 // Offline decryption (debugging)
 //
-// WithKeyLogWriter makes the Listener write per-connection secrets in an
-// NSS-key-log-style format; DecryptWithSecrets turns those secrets plus a
-// captured packet back into plaintext, for Wireshark or ad-hoc analysis.
+// WithKeyLogWriter logs the per-connection secrets; DecryptWithSecrets turns
+// those plus a captured packet back into plaintext.
 // =============================================================================
 
-// DecryptWithSecrets decrypts a single captured QOTP packet. The message type
-// is auto-detected from the header; the caller supplies the secrets, which
-// come from a key log written by WithKeyLogWriter:
+// DecryptWithSecrets decrypts one captured packet, auto-detecting its type.
+// Secrets come from a WithKeyLogWriter key log:
 //   - Data, InitRcv, InitCryptoRcv: sharedSecret (ECDH of ephemeral keys)
 //   - InitCryptoSnd:                sharedSecretId (ECDH with identity key)
 //   - InitSnd:                      unencrypted, returns empty
 //
-// Debugging aid only. The live receive path is conn.decode, which additionally
-// tracks connection state and key rotation.
+// Debugging only; the live path is conn.decode, which also tracks key rotation.
 func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, sharedSecretId []byte) ([]byte, error) {
 	if len(encData) < minPacketSize {
 		return nil, fmt.Errorf("packet too small: need %d bytes, got %d", minPacketSize, len(encData))

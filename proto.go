@@ -12,26 +12,35 @@ import (
 //   Bit 0: hasAck        ACK block present
 //   Bit 1: hasStream     streamId + streamOffset (+ userData) present
 //   Bit 2: extend        48-bit offsets instead of 24-bit
-//   Bit 3: needsReTx     sender will retransmit until acked
+//   Bit 3: (reserved)
 //   Bit 4: isClose
 //   Bit 5: isKeyUpdate      32-byte pubkey present
 //   Bit 6: isKeyUpdateAck   32-byte pubkey present
-//   Bit 7: isMtuUpdate      16-bit max UDP payload present
+//   Bit 7: (reserved)
 //
-// Wire layout: [flags][ack?][mtu?][keyPub?][keyPubAck?][streamId+offset?][data]
+// Wire layout: [flags][maxPayload][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
+//
+// Stream reliability rides the high bit of the wire streamId rather than a
+// flag, so every packet of a best-effort stream carries it — a once-announced
+// flag could be lost, and best-effort data is never retransmitted.
+//
+// maxPayload is unconditional so a path MTU change reaches the peer on the
+// next packet, with no "already announced" state to keep.
 // =============================================================================
 
 const (
-	minProtoSize = 8
+	// flags + maxPayload + streamId + 24-bit offset
+	minProtoSize = 1 + 2 + 4 + 3
 
 	flagHasAck       = 1 << 0
 	flagHasStream    = 1 << 1
 	flagExtend       = 1 << 2
-	flagNeedsReTx    = 1 << 3
 	flagClose        = 1 << 4
 	flagKeyUpdate    = 1 << 5
 	flagKeyUpdateAck = 1 << 6
-	flagMtuUpdate    = 1 << 7
+
+	streamUnreliableBit uint32 = 1 << 31
+	maxStreamID         uint32 = streamUnreliableBit - 1
 )
 
 // =============================================================================
@@ -39,14 +48,13 @@ const (
 // =============================================================================
 
 type payloadHeader struct {
-	isMtuUpdate     bool
-	mtuUpdateValue  uint16 // max UDP payload when isMtuUpdate
+	maxPayload      uint16 // sender's max UDP payload; always present
 	isClose         bool
 	isKeyUpdate     bool
 	isKeyUpdateAck  bool
 	keyUpdatePub    []byte // 32 bytes when isKeyUpdate
 	keyUpdatePubAck []byte // 32 bytes when isKeyUpdateAck
-	needsReTx       bool
+	unreliable      bool   // best-effort stream: sender never retransmits its data
 	ack             *ack
 	streamId        uint32
 	streamOffset    uint64
@@ -127,7 +135,7 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	// - any control flag set, OR
 	// - has user data (empty userData = ping), OR
 	// - no ACK (for minimum packet size)
-	hasStreamHeader := p.isMtuUpdate || p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
+	hasStreamHeader := p.isClose || p.isKeyUpdate || p.isKeyUpdateAck ||
 		userData != nil || p.ack == nil
 
 	var flags uint8
@@ -140,9 +148,6 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	if isExtend {
 		flags |= flagExtend
 	}
-	if p.needsReTx {
-		flags |= flagNeedsReTx
-	}
 	if p.isClose {
 		flags |= flagClose
 	}
@@ -152,9 +157,6 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	if p.isKeyUpdateAck {
 		flags |= flagKeyUpdateAck
 	}
-	if p.isMtuUpdate {
-		flags |= flagMtuUpdate
-	}
 
 	overhead := calcProtoOverhead(flags)
 	encoded := make([]byte, overhead+len(userData))
@@ -162,6 +164,7 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 
 	encoded[offset] = flags
 	offset++
+	offset += putUint16(encoded[offset:], p.maxPayload)
 
 	if flags&flagHasAck != 0 {
 		offset += putUint32(encoded[offset:], p.ack.streamId)
@@ -169,10 +172,6 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 		offset += putUint16(encoded[offset:], p.ack.len)
 		encoded[offset] = encodeRcvWindow(p.ack.rcvWnd)
 		offset++
-	}
-
-	if p.isMtuUpdate {
-		offset += putUint16(encoded[offset:], p.mtuUpdateValue)
 	}
 
 	if p.isKeyUpdate {
@@ -186,7 +185,11 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 	}
 
 	if hasStreamHeader {
-		offset += putUint32(encoded[offset:], p.streamId)
+		wireStreamId := p.streamId
+		if p.unreliable {
+			wireStreamId |= streamUnreliableBit
+		}
+		offset += putUint32(encoded[offset:], wireStreamId)
 		offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
 	}
 
@@ -199,7 +202,7 @@ func encodeProto(p *payloadHeader, userData []byte) ([]byte, int) {
 // =============================================================================
 
 func decodeProto(data []byte) (*payloadHeader, []byte, error) {
-	if len(data) < 1 {
+	if len(data) < 3 {
 		return nil, nil, errors.New("payload too small")
 	}
 
@@ -207,13 +210,12 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	isExtend := flags&flagExtend != 0
 
 	p := &payloadHeader{
-		isMtuUpdate:    flags&flagMtuUpdate != 0,
+		maxPayload:     getUint16(data[1:]),
 		isClose:        flags&flagClose != 0,
 		isKeyUpdate:    flags&flagKeyUpdate != 0,
 		isKeyUpdateAck: flags&flagKeyUpdateAck != 0,
-		needsReTx:      flags&flagNeedsReTx != 0,
 	}
-	offset := 1
+	offset := 3
 
 	if flags&flagHasAck != 0 {
 		ackSize := 4 + offsetSize(isExtend) + 2 + 1 // streamId + offset + len + rcvWnd
@@ -230,14 +232,6 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		offset += 2
 		p.ack.rcvWnd = decodeRcvWindow(data[offset])
 		offset++
-	}
-
-	if p.isMtuUpdate {
-		if len(data) < offset+2 {
-			return nil, nil, errors.New("payload too small for mtuUpdate")
-		}
-		p.mtuUpdateValue = getUint16(data[offset:])
-		offset += 2
 	}
 
 	if p.isKeyUpdate {
@@ -262,7 +256,9 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		if len(data) < offset+streamHeaderSize {
 			return nil, nil, errors.New("payload too small for stream header")
 		}
-		p.streamId = getUint32(data[offset:])
+		wireStreamId := getUint32(data[offset:])
+		p.unreliable = wireStreamId&streamUnreliableBit != 0
+		p.streamId = wireStreamId &^ streamUnreliableBit
 		offset += 4
 		p.streamOffset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
@@ -279,7 +275,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 // =============================================================================
 
 func calcProtoOverhead(flags uint8) int {
-	overhead := 1 // flags byte
+	overhead := 1 + 2 // flags byte + maxPayload
 
 	offsetBytes := 3
 	if flags&flagExtend != 0 {
@@ -288,10 +284,6 @@ func calcProtoOverhead(flags uint8) int {
 
 	if flags&flagHasAck != 0 {
 		overhead += 4 + offsetBytes + 2 + 1 // streamId + offset + len + rcvWnd
-	}
-
-	if flags&flagMtuUpdate != 0 {
-		overhead += 2 // mtuUpdateValue
 	}
 
 	if flags&flagKeyUpdate != 0 {
