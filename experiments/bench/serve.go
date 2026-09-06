@@ -5,11 +5,9 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -22,37 +20,47 @@ import (
 	quic "github.com/quic-go/quic-go"
 )
 
-// Long enough that a protocol still waiting its turn during a solo phase does
-// not time out while the others transfer.
-const idleTimeout = 5 * time.Minute
-
 // Bytes the server has received per protocol, so the upload direction can be
 // checked against the client's sender-side numbers.
+// serverStart anchors the CPU measurement the client collects at the end.
+var (
+	serverStart     bench.CPU
+	serverStartTime = time.Now()
+)
+
+// currentReport snapshots what this side measured.
+func currentReport() bench.ServerReport {
+	r := bench.ServerReport{
+		NumCPU:        bench.NumCPU(),
+		ReceivedBytes: map[string]uint64{},
+		SessionSecs:   time.Since(serverStartTime).Seconds(),
+	}
+	for _, p := range bench.Protocols {
+		r.ReceivedBytes[p] = received[p].Load()
+	}
+	r.CoresBusy, r.CoresKnown = bench.CoresBusy(serverStart, bench.ReadCPU())
+	return r
+}
+
 var received = map[string]*atomic.Uint64{
 	"qotp": {}, "tcp": {}, "quic": {},
 }
 
-func main() {
-	addr := flag.String("addr", "0.0.0.0", "bind IP address")
-	base := flag.Int("port", bench.DefaultPortBase, "base port: qotp=port, tcp=port+1, quic=port+2")
-	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing)")
-	flag.Parse()
-
-	level := slog.LevelWarn
-	if *verbose {
-		level = slog.LevelDebug
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+// serve runs the responder side until interrupted.
+func serve(addrStr string, base int) {
+	addr, b := &addrStr, &base
+	serverStart = bench.ReadCPU()
+	serverStartTime = time.Now()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tcpLn := serveTCP(fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "tcp")))
-	quicLn, udpConn := serveQUIC(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "quic")))
-	qotpLn := serveQOTP(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "qotp")))
+	tcpLn := serveTCP(fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "tcp")))
+	quicLn, udpConn := serveQUIC(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "quic")))
+	qotpLn := serveQOTP(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "qotp")))
 
 	fmt.Printf("READY qotp=:%d tcp=:%d quic=:%d\n",
-		bench.Port(*base, "qotp"), bench.Port(*base, "tcp"), bench.Port(*base, "quic"))
+		bench.Port(*b, "qotp"), bench.Port(*b, "tcp"), bench.Port(*b, "quic"))
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -77,7 +85,7 @@ func main() {
 func serveTCP(addr string) net.Listener {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("tcp listen: %v", err)
+		die("tcp listen: %v", err)
 	}
 	go func() {
 		for {
@@ -103,15 +111,15 @@ func serveTCP(addr string) net.Listener {
 func serveQUIC(ctx context.Context, addr string) (*quic.Listener, *net.UDPConn) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		log.Fatalf("quic resolve: %v", err)
+		die("quic resolve: %v", err)
 	}
 	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		log.Fatalf("quic listen: %v", err)
+		die("quic listen: %v", err)
 	}
 	ln, err := quic.Listen(udpConn, bench.ServerTLS(), &quic.Config{MaxIdleTimeout: idleTimeout})
 	if err != nil {
-		log.Fatalf("quic: %v", err)
+		die("quic: %v", err)
 	}
 	go func() {
 		for {
@@ -146,6 +154,15 @@ func serveStream(rw io.ReadWriter, proto string) error {
 	}
 	dir, size, err := bench.DecodeHeader(hdr)
 	if err != nil {
+		return err
+	}
+
+	if dir == bench.Report {
+		body, err := encodeReport(currentReport())
+		if err != nil {
+			return err
+		}
+		_, err = rw.Write(body)
 		return err
 	}
 
@@ -190,12 +207,13 @@ type qotpSession struct {
 	sent    uint64
 	acked   bool
 	filler  []byte
+	reply   []byte // the responder's report, when dir is Report
 }
 
 func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 	ln, err := qotp.Listen(qotp.WithListenAddr(addr))
 	if err != nil {
-		log.Fatalf("qotp listen: %v", err)
+		die("qotp listen: %v", err)
 	}
 	go func() {
 		sessions := map[*qotp.Stream]*qotpSession{}
@@ -242,6 +260,9 @@ func (s *qotpSession) feed(data []byte) {
 		}
 		s.dir, s.size, s.haveHdr = dir, size, true
 	}
+	if s.dir == bench.Report {
+		return
+	}
 	if s.dir == bench.Upload && len(data) > 0 {
 		s.got += uint64(len(data))
 		received["qotp"].Add(uint64(len(data)))
@@ -254,6 +275,18 @@ func (s *qotpSession) pump(st *qotp.Stream) bool {
 		return false
 	}
 	switch s.dir {
+	case bench.Report:
+		if s.reply == nil {
+			body, err := encodeReport(currentReport())
+			if err != nil {
+				return true
+			}
+			s.reply = body
+		}
+		n, _ := st.Write(s.reply[s.sent:])
+		s.sent += uint64(n)
+		return s.sent >= uint64(len(s.reply))
+
 	case bench.Download:
 		if s.sent < s.size {
 			n := uint64(len(s.filler))

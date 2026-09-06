@@ -34,7 +34,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "${BASH_SOURCE[0]}")
 
-Build the benchmark server and client binaries.
+Build the qotp-bench binary (it plays both roles).
 
 OPTIONS:
   -h, --help    Print this help and exit
@@ -61,10 +61,8 @@ parse_params "$@"
 # build has to run from this directory rather than the repo root.
 cd "$SCRIPT_DIR"
 
-msg "Building server..."
-go build -o "$SCRIPT_DIR/server/server" ./server/
-
-msg "Building client..."
-go build -o "$SCRIPT_DIR/client/client" ./client/
+msg "Building qotp-bench..."
+cd "$SCRIPT_DIR"
+go build -o "$SCRIPT_DIR/qotp-bench" ./bench/
 
 msg_ok "Done."
