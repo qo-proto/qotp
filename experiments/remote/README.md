@@ -40,6 +40,25 @@ Three ports, and **two protocols**. This is the usual reason a run hangs:
 Opening only TCP makes qotp and quic time out while tcp succeeds. Use `-port`
 on both sides if 9000-9002 are taken.
 
+The client checks all three before measuring and stops with the exact rules to
+add if any are unreachable, so a firewall problem costs a second rather than
+several minutes of timeouts.
+
+With **ufw** on the responder, restricted to the one client that needs it:
+
+    sudo ufw allow from CLIENT_IP to any port 9000 proto udp
+    sudo ufw allow from CLIENT_IP to any port 9001 proto tcp
+    sudo ufw allow from CLIENT_IP to any port 9002 proto udp
+    sudo ufw status verbose        # confirm
+
+Afterwards:
+
+    sudo ufw status numbered
+    sudo ufw delete <n>            # highest number first
+
+Do **not** use `ufw limit` on these ports: it rate-limits new connections and
+would throttle the benchmark itself. Plain `allow` is what you want.
+
 ## Reading the result
 
 **Check both CPU lines first.** The report gives cores busy on this side per

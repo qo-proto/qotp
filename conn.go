@@ -45,7 +45,11 @@ const (
 type conn struct {
 	connId     uint64
 	remoteAddr netip.AddrPort
-	listener   *Listener
+	// The address this peer sent to, learned from inbound packets. Replies go
+	// out from it so a wildcard-bound socket on a multi-homed host does not
+	// answer from the wrong source. Zero for a dialed connection.
+	localAddr netip.Addr
+	listener  *Listener
 
 	snCrypto    uint64
 	pubKeyIdRcv *ecdh.PublicKey // Identity
@@ -747,7 +751,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		return 0, 0, err
 	}
 
-	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
+	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, c.localAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}

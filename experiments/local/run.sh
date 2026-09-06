@@ -61,6 +61,12 @@ OPTIONS:
                     netem's own default (1000) is several BDP of drop-tail
                     buffer, which bufferbloats the link and makes the
                     fairness numbers swing wildly between runs.
+  --jitter J        Delay variation for --netns (e.g. 5ms; default: none)
+  --loss PCT        Random loss for --netns (e.g. 1%; default: none)
+  --reorder PCT     Packet reordering for --netns (needs --delay > 0)
+  --aqm NAME        Bottleneck queue management: none (tail-drop, the
+                    default) or fq_codel (per-flow fairness enforced by the
+                    queue rather than by the protocols)
   --duration D      Measure for D per transfer instead of a fixed size.
                     Preferred for fairness: every flow is then measured over
                     the same steady-state window.
@@ -81,6 +87,10 @@ parse_params() {
   RATE="100mbit"
   DELAY="10ms"
   QUEUE=""
+  JITTER=""
+  LOSS=""
+  REORDER=""
+  AQM="none"
   DURATION=""
   SIZE="32"
   RUNS="3"
@@ -94,6 +104,10 @@ parse_params() {
     --rate) RATE="${2-}"; shift ;;
     --delay) DELAY="${2-}"; shift ;;
     --queue) QUEUE="${2-}"; shift ;;
+    --jitter) JITTER="${2-}"; shift ;;
+    --loss) LOSS="${2-}"; shift ;;
+    --reorder) REORDER="${2-}"; shift ;;
+    --aqm) AQM="${2-}"; shift ;;
     --duration) DURATION="${2-}"; shift ;;
     --size) SIZE="${2-}"; shift ;;
     --port) PORT="${2-}"; shift ;;
@@ -164,12 +178,26 @@ else
   ip netns exec qotp-cli ip link set vcli up
   ip netns exec qotp-srv ip link set lo up
   ip netns exec qotp-cli ip link set lo up
+  # netem argument order matters: delay and its jitter must stay adjacent,
+  # and reorder is only meaningful once there is a delay to reorder within.
+  NETEM=(rate "$RATE" delay "$DELAY")
+  [[ -n "$JITTER" ]] && NETEM+=("$JITTER")
+  [[ -n "$LOSS" ]] && NETEM+=(loss "$LOSS")
+  [[ -n "$REORDER" ]] && NETEM+=(reorder "$REORDER" 50%)
+  NETEM+=(limit "$QUEUE")
+
   # Shape both directions: the bottleneck must be symmetric or the reverse
   # path silently becomes the limit.
-  ip netns exec qotp-srv tc qdisc add dev vsrv root netem \
-    rate "$RATE" delay "$DELAY" limit "$QUEUE"
-  ip netns exec qotp-cli tc qdisc add dev vcli root netem \
-    rate "$RATE" delay "$DELAY" limit "$QUEUE"
+  for ns_dev in "qotp-srv vsrv" "qotp-cli vcli"; do
+    set -- $ns_dev
+    if [[ "$AQM" == "fq_codel" ]]; then
+      ip netns exec "$1" tc qdisc add dev "$2" root handle 1: netem "${NETEM[@]}"
+      ip netns exec "$1" tc qdisc add dev "$2" parent 1: handle 10: fq_codel
+    else
+      ip netns exec "$1" tc qdisc add dev "$2" root netem "${NETEM[@]}"
+    fi
+  done
+  msg_info "netem: ${NETEM[*]}, aqm=$AQM"
 
   ip netns exec qotp-srv "$ROOT_DIR/qotp-bench" -listen -addr 10.9.0.1 -port "$PORT" \
     > "$OUT_DIR/server.log" 2>&1 &

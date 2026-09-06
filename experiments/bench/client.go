@@ -108,6 +108,22 @@ func runClient(cfg config) {
 	}
 	addr := &cfg.addr
 
+	// Resolve once, here. qotp.DialString takes a literal address by design --
+	// name resolution is the application's job -- and resolving once is right
+	// anyway: a name with several A records could otherwise send the three
+	// protocols to different hosts and quietly invalidate the comparison.
+	host, err := resolveHost(cfg.addr)
+	if err != nil {
+		die("%v", err)
+	}
+	if host != cfg.addr {
+		fmt.Fprintf(os.Stderr, "%s resolves to %s\n", cfg.addr, host)
+	}
+	cfg.addr = host
+
+	fmt.Fprintf(os.Stderr, "checking %s ...\n", cfg.addr)
+	preflight(cfg.addr)
+
 	var all []outcome
 	var samples []sample
 	for r := 1; r <= cfg.runs; r++ {
