@@ -20,7 +20,7 @@ import (
 // Listen reads one packet, decrypts it, and processes the payload.
 // Returns the stream that received data, or nil on timeout/no-data.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
-	n, rAddr, elapsedNano, err := l.localConn.ReadFromUDPAddrPort(l.readBuf, timeoutNano, nowNano)
+	n, rAddr, lAddr, elapsedNano, err := l.localConn.ReadFromUDPAddrPort(l.readBuf, timeoutNano, nowNano)
 	// The read blocked for elapsedNano: advance the timestamp so RTT and
 	// delivery-rate samples see the arrival time, not the pre-wait stamp
 	// (which would under-measure RTT by the blocked duration)
@@ -59,6 +59,11 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 	if nowNano > c.lastReadTimeNano {
 		c.lastReadTimeNano = nowNano
+	}
+	// Answer from the address this peer used, not whichever the kernel would
+	// pick. Tracked per packet so it follows a peer that changes path.
+	if lAddr.IsValid() {
+		c.localAddr = lAddr
 	}
 
 	// Decode transport layer payload

@@ -45,7 +45,7 @@ const (
 	// Footer: encrypted sequence number + MAC
 	footerDataSize = snSize + macSize // 22 bytes
 
-	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 39 bytes
+	minPacketSize = minDataSizeHdr + footerDataSize + minProtoSize // 41 bytes
 )
 
 // =============================================================================

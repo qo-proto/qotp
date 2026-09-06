@@ -23,12 +23,17 @@ func newTestConnection() *conn {
 func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, deliveredAtSend uint64, nowNano uint64) {
 	sentTime := nowNano - rttNano
 	pkt := &sendPacket{
+		// A real data packet: it carries payload, and the estimate counts its
+		// wire size. Here they are the same number so the existing
+		// expectations about totalDelivered still read directly.
+		data:                make([]byte, ackLen),
+		wireLen:             ackLen,
 		sentTimeNano:        sentTime,
 		deliveredAtSend:     deliveredAtSend,
 		deliveredTimeAtSend: sentTime,
 		firstSentTimeAtSend: sentTime,
 	}
-	c.updateMeasurements(rttNano, ackLen, pkt, nowNano)
+	c.updateMeasurements(rttNano, pkt, nowNano)
 }
 
 // =============================================================================
@@ -456,18 +461,35 @@ func TestMeasurements_RTO_Maximum(t *testing.T) {
 func TestMeasurements_Pacing_NoSRTT(t *testing.T) {
 	conn := newTestConnection()
 
-	interval := conn.calcPacing(1000)
-
-	assert.Equal(t, uint64(10*msNano), interval, "should return 10ms default when no SRTT")
+	// The cold-start interval is the cost of one full-size packet...
+	assert.Equal(t, uint64(10*msNano), conn.calcPacing(conservativeMTU),
+		"a full-size packet should cost the 10ms default when no SRTT")
+	// ...and a smaller packet costs proportionally less.
+	assert.Equal(t, uint64(10*msNano)/2, conn.calcPacing(conservativeMTU/2))
 }
 
 func TestMeasurements_Pacing_SRTTNoBandwidth(t *testing.T) {
 	conn := newTestConnection()
 	conn.srtt = 100_000_000
 
-	interval := conn.calcPacing(1000)
+	assert.Equal(t, uint64(10_000_000), conn.calcPacing(conservativeMTU),
+		"a full-size packet should cost SRTT/10 when no bandwidth")
+	assert.Equal(t, uint64(10_000_000)/2, conn.calcPacing(conservativeMTU/2))
+}
 
-	assert.Equal(t, uint64(10_000_000), interval, "should return SRTT/10 when no bandwidth")
+// An ACK is ~3% of a full packet, and must be charged as such: charging it a
+// full packet's interval is what let a receiver run up seconds of pacing debt.
+func TestMeasurements_Pacing_ColdStartIsByteProportional(t *testing.T) {
+	for _, srtt := range []uint64{0, 100_000_000} {
+		conn := newTestConnection()
+		conn.srtt = srtt
+
+		full := conn.calcPacing(conservativeMTU)
+		ackSized := conn.calcPacing(44)
+
+		assert.Equal(t, full*44/conservativeMTU, ackSized, "srtt=%d", srtt)
+		assert.Less(t, ackSized*20, full, "an ACK must cost far less than a full packet")
+	}
 }
 
 func TestMeasurements_Pacing_WithBandwidth(t *testing.T) {
@@ -639,4 +661,43 @@ func TestMeasurements_Integration_StartupToNormal(t *testing.T) {
 	// Verify pacing calculation works
 	interval := conn.calcPacing(1000)
 	assert.Greater(t, interval, uint64(0))
+}
+
+// The bandwidth estimate and the pacer must count the same thing. calcPacing
+// is handed the encrypted packet size, so the estimate counts wire bytes too —
+// otherwise the two drift apart by the header overhead, and an ACK costs send
+// budget while contributing nothing to the rate it is charged against.
+func TestMeasurements_EstimateCountsWireBytes(t *testing.T) {
+	c := newTestConnection()
+	const payload, wire = 1400, 1452
+
+	pkt := &sendPacket{
+		data:                make([]byte, payload),
+		wireLen:             wire,
+		sentTimeNano:        1_000_000,
+		deliveredTimeAtSend: 1_000_000,
+		firstSentTimeAtSend: 1_000_000,
+	}
+	c.updateMeasurements(1_000_000, pkt, 2_000_000)
+
+	assert.Equal(t, uint64(wire), c.totalDelivered,
+		"the estimate counts the packet on the wire, not just its payload")
+}
+
+// A zero-payload packet is only ever sent when there is nothing else to send,
+// so its rate measures our idleness. It must not pull the estimate down.
+func TestMeasurements_ZeroPayloadPacketGivesNoBandwidthSample(t *testing.T) {
+	c := newTestConnection()
+
+	probe := &sendPacket{
+		data:                nil,
+		wireLen:             51,
+		sentTimeNano:        1_000_000,
+		deliveredTimeAtSend: 1_000_000,
+		firstSentTimeAtSend: 1_000_000,
+	}
+	c.updateMeasurements(1_000_000, probe, 2_000_000)
+
+	assert.Positive(t, c.srtt, "a probe still yields an RTT sample")
+	assert.Zero(t, c.bwMax, "but never a bandwidth sample")
 }

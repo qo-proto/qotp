@@ -18,8 +18,8 @@ import (
 // TCP
 // =============================================================================
 
-func runTCP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.Duration, error) {
-	c, err := net.DialTimeout("tcp", addr, 10*time.Second)
+func runTCP(addr string, dir bench.Dir, size uint64, until time.Time, prog *atomic.Uint64) (time.Duration, error) {
+	c, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -32,14 +32,14 @@ func runTCP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.
 	}
 
 	if dir == bench.Download {
-		if err := drain(c, size, prog); err != nil {
+		if err := drain(c, size, until, prog); err != nil {
 			return 0, err
 		}
 		return time.Since(start), nil
 	}
 
 	filler := bench.Filler()
-	for sent := uint64(0); sent < size; {
+	for sent := uint64(0); sent < size && !expired(until); {
 		n := uint64(len(filler))
 		if r := size - sent; r < n {
 			n = r
@@ -59,11 +59,13 @@ func runTCP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.
 		}
 		prog.Store(sent)
 	}
-	var ack [1]byte
-	if _, err := io.ReadFull(c, ack[:]); err != nil {
-		return 0, err
+	if until.IsZero() {
+		var ack [1]byte
+		if _, err := io.ReadFull(c, ack[:]); err != nil {
+			return 0, err
+		}
+		prog.Store(size)
 	}
-	prog.Store(size)
 	return time.Since(start), nil
 }
 
@@ -71,11 +73,13 @@ func runTCP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.
 // QUIC
 // =============================================================================
 
-func runQUIC(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.Duration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), idleTimeout)
+func runQUIC(addr string, dir bench.Dir, size uint64, until time.Time, prog *atomic.Uint64) (time.Duration, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout())
 	defer cancel()
 
-	conn, err := quic.DialAddr(ctx, addr, bench.ClientTLS(), &quic.Config{MaxIdleTimeout: idleTimeout})
+	dialCtx, dialCancel := context.WithTimeout(ctx, dialTimeout)
+	defer dialCancel()
+	conn, err := quic.DialAddr(dialCtx, addr, bench.ClientTLS(), &quic.Config{MaxIdleTimeout: idleTimeout})
 	if err != nil {
 		return 0, err
 	}
@@ -93,14 +97,14 @@ func runQUIC(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 	}
 
 	if dir == bench.Download {
-		if err := drain(s, size, prog); err != nil {
+		if err := drain(s, size, until, prog); err != nil {
 			return 0, err
 		}
 		return time.Since(start), nil
 	}
 
 	filler := bench.Filler()
-	for sent := uint64(0); sent < size; {
+	for sent := uint64(0); sent < size && !expired(until); {
 		n := uint64(len(filler))
 		if r := size - sent; r < n {
 			n = r
@@ -112,11 +116,13 @@ func runQUIC(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 		sent += uint64(w)
 		prog.Store(sent)
 	}
-	var ack [1]byte
-	if _, err := io.ReadFull(s, ack[:]); err != nil {
-		return 0, err
+	if until.IsZero() {
+		var ack [1]byte
+		if _, err := io.ReadFull(s, ack[:]); err != nil {
+			return 0, err
+		}
+		prog.Store(size)
 	}
-	prog.Store(size)
 	return time.Since(start), nil
 }
 
@@ -129,7 +135,7 @@ func runQUIC(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 
 var errDone = errors.New("done")
 
-func runQOTP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time.Duration, error) {
+func runQOTP(addr string, dir bench.Dir, size uint64, until time.Time, prog *atomic.Uint64) (time.Duration, error) {
 	ln, err := qotp.Listen(qotp.WithListenAddr("0.0.0.0:0"))
 	if err != nil {
 		return 0, err
@@ -156,10 +162,14 @@ func runQOTP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 	start := time.Now()
 	var dur time.Duration
 
-	ctx, cancel := context.WithTimeout(context.Background(), idleTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout())
 	defer cancel()
 
 	loopErr := ln.Loop(ctx, func(ctx context.Context, s *qotp.Stream) error {
+		if expired(until) {
+			dur = time.Since(start)
+			return errDone
+		}
 		if sent < toSend {
 			var chunk []byte
 			switch {
@@ -190,14 +200,14 @@ func runQOTP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 			if d := stream.BytesDelivered(); d > uint64(len(hdr)) {
 				prog.Store(d - uint64(len(hdr)))
 			}
-			if recvd >= 1 { // the server's ack
+			if until.IsZero() && recvd >= 1 { // the server's ack
 				dur = time.Since(start)
 				prog.Store(size)
 				return errDone
 			}
 		} else {
 			prog.Store(recvd)
-			if recvd >= size {
+			if until.IsZero() && recvd >= size {
 				dur = time.Since(start)
 				return errDone
 			}
@@ -213,11 +223,15 @@ func runQOTP(addr string, dir bench.Dir, size uint64, prog *atomic.Uint64) (time
 	return dur, nil
 }
 
-// drain reads exactly size bytes, publishing progress as it goes.
-func drain(r io.Reader, size uint64, prog *atomic.Uint64) error {
+func expired(until time.Time) bool {
+	return !until.IsZero() && !time.Now().Before(until)
+}
+
+// drain reads size bytes, or until the deadline in duration mode.
+func drain(r io.Reader, size uint64, until time.Time, prog *atomic.Uint64) error {
 	buf := make([]byte, bench.Chunk)
 	var got uint64
-	for got < size {
+	for got < size && !expired(until) {
 		n := uint64(len(buf))
 		if rem := size - got; rem < n {
 			n = rem

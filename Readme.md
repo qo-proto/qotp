@@ -355,9 +355,21 @@ state and never appears on the wire.
 **MTU Negotiation (`maxPayload`):**
 - A 2-byte field in the fixed header of every packet, immediately after the flags byte (InitSnd embeds it in the crypto header instead, and carries no transport header)
 - Unconditional because MTU is a path property that can change at any time (interface change, and later connection migration or a second path). Costs 2 bytes per packet and removes all "already announced" state; a change reaches the peer on the next packet
-- Both peers exchange their `maxPayload`; connection MTU ceiling = `min(local, remote)`, floored at `conservativeMTU` (1232)
-- On consecutive packet losses (`mtuFallbackThreshold` = 5), the working MTU falls back to `conservativeMTU`; restored on next successful ACK. An inbound `maxPayload` updates the ceiling only, so it cannot undo an active fallback
-- More than 3 fallback→restore cycles on a connection logs an MTU-flapping warning (likely MTU black hole)
+- Both peers exchange their `maxPayload`; connection MTU = `min(local, remote)`, floored at `conservativeMTU` (1232)
+
+**Path MTU.** `maxPayload` says what the peer's *interface* accepts; it says
+nothing about the path in between, which may black-hole larger packets while
+DF is set and the ICMP that would say so is filtered. The MTU therefore moves
+only on evidence, never on loss:
+
+- A connection starts at `conservativeMTU` and is raised to the negotiated size on the peer's word, unconfirmed
+- An ACK for a **first transmission** confirms that size traverses the path. Once confirmed, loss is congestion and never lowers the MTU
+- A packet within `mtuProbeLastAttempts` (2) of giving up is retransmitted at `conservativeMTU`. The retransmit *is* the probe — no separate probe traffic
+- If that probe is acknowledged while the working size was never confirmed, the path cannot carry it: downgrade to `conservativeMTU`, log once, and stay there for the life of the connection. Later `maxPayload` advertisements cannot undo it
+
+Inferring an MTU problem from loss instead, as an earlier version did, made the
+MTU oscillate many times a second on any lossy path and re-split in-flight data
+on every change.
 
 **Stream header** (streamId + offset, signaled by `hasStream`) is included when:
 - Any control flag is set (close, key update), OR

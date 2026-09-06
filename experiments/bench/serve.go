@@ -5,11 +5,9 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net"
 	"os"
 	"os/signal"
@@ -22,37 +20,53 @@ import (
 	quic "github.com/quic-go/quic-go"
 )
 
-// Long enough that a protocol still waiting its turn during a solo phase does
-// not time out while the others transfer.
-const idleTimeout = 5 * time.Minute
-
 // Bytes the server has received per protocol, so the upload direction can be
 // checked against the client's sender-side numbers.
+// A client in duration mode just stops and closes; there is no FIN. Without an
+// idle drop its session lives forever, and because the requested size is
+// effectively unbounded the pump keeps writing into a dead connection on every
+// loop iteration -- which starves the handshakes of later runs.
+const sessionIdle = 15 * time.Second
+
+// How far a download may run ahead of what the peer has acknowledged. Bounds
+// the send buffer per session instead of queueing the whole requested size.
+const downloadWindow = 2 << 20
+
+var serverStartTime = time.Now()
+
+// currentReport snapshots what this side measured.
+func currentReport() bench.ServerReport {
+	r := bench.ServerReport{
+		NumCPU:        bench.NumCPU(),
+		ReceivedBytes: map[string]uint64{},
+		SessionSecs:   time.Since(serverStartTime).Seconds(),
+	}
+	for _, p := range bench.Protocols {
+		r.ReceivedBytes[p] = received[p].Load()
+	}
+	c := bench.ReadCPU()
+	r.CPUBusy, r.CPUTotal, r.CPUKnown = c.Busy, c.Total, c.OK
+	return r
+}
+
 var received = map[string]*atomic.Uint64{
 	"qotp": {}, "tcp": {}, "quic": {},
 }
 
-func main() {
-	addr := flag.String("addr", "0.0.0.0", "bind IP address")
-	base := flag.Int("port", bench.DefaultPortBase, "base port: qotp=port, tcp=port+1, quic=port+2")
-	verbose := flag.Bool("v", false, "enable qotp debug logging (skews timing)")
-	flag.Parse()
-
-	level := slog.LevelWarn
-	if *verbose {
-		level = slog.LevelDebug
-	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+// serve runs the responder side until interrupted.
+func serve(addrStr string, base int) {
+	addr, b := &addrStr, &base
+	serverStartTime = time.Now()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tcpLn := serveTCP(fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "tcp")))
-	quicLn, udpConn := serveQUIC(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "quic")))
-	qotpLn := serveQOTP(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*base, "qotp")))
+	tcpLn := serveTCP(fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "tcp")))
+	quicLn, udpConn := serveQUIC(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "quic")))
+	qotpLn := serveQOTP(ctx, fmt.Sprintf("%s:%d", *addr, bench.Port(*b, "qotp")))
 
 	fmt.Printf("READY qotp=:%d tcp=:%d quic=:%d\n",
-		bench.Port(*base, "qotp"), bench.Port(*base, "tcp"), bench.Port(*base, "quic"))
+		bench.Port(*b, "qotp"), bench.Port(*b, "tcp"), bench.Port(*b, "quic"))
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -77,7 +91,7 @@ func main() {
 func serveTCP(addr string) net.Listener {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("tcp listen: %v", err)
+		die("tcp listen: %v", err)
 	}
 	go func() {
 		for {
@@ -103,15 +117,15 @@ func serveTCP(addr string) net.Listener {
 func serveQUIC(ctx context.Context, addr string) (*quic.Listener, *net.UDPConn) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
-		log.Fatalf("quic resolve: %v", err)
+		die("quic resolve: %v", err)
 	}
 	udpConn, err := net.ListenUDP("udp", udpAddr)
 	if err != nil {
-		log.Fatalf("quic listen: %v", err)
+		die("quic listen: %v", err)
 	}
 	ln, err := quic.Listen(udpConn, bench.ServerTLS(), &quic.Config{MaxIdleTimeout: idleTimeout})
 	if err != nil {
-		log.Fatalf("quic: %v", err)
+		die("quic: %v", err)
 	}
 	go func() {
 		for {
@@ -146,6 +160,15 @@ func serveStream(rw io.ReadWriter, proto string) error {
 	}
 	dir, size, err := bench.DecodeHeader(hdr)
 	if err != nil {
+		return err
+	}
+
+	if dir == bench.Report {
+		body, err := encodeReport(currentReport())
+		if err != nil {
+			return err
+		}
+		_, err = rw.Write(body)
 		return err
 	}
 
@@ -190,12 +213,16 @@ type qotpSession struct {
 	sent    uint64
 	acked   bool
 	filler  []byte
+	reply   []byte // the responder's report, when dir is Report
+
+	lastMark     uint64 // bytes moved as of lastProgress
+	lastProgress time.Time
 }
 
 func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 	ln, err := qotp.Listen(qotp.WithListenAddr(addr))
 	if err != nil {
-		log.Fatalf("qotp listen: %v", err)
+		die("qotp listen: %v", err)
 	}
 	go func() {
 		sessions := map[*qotp.Stream]*qotpSession{}
@@ -225,6 +252,21 @@ func serveQOTP(ctx context.Context, addr string) *qotp.Listener {
 	return ln
 }
 
+// stalled reports whether the peer has stopped moving bytes for long enough
+// that the session should be dropped.
+func (s *qotpSession) stalled(st *qotp.Stream) bool {
+	// Any forward movement counts, including a partly received header.
+	moved := uint64(len(s.hdr)) + s.got
+	if s.haveHdr && s.dir != bench.Upload {
+		moved = st.BytesDelivered()
+	}
+	if moved != s.lastMark || s.lastProgress.IsZero() {
+		s.lastMark, s.lastProgress = moved, time.Now()
+		return false
+	}
+	return time.Since(s.lastProgress) > sessionIdle
+}
+
 func (s *qotpSession) feed(data []byte) {
 	if !s.haveHdr {
 		need := bench.HeaderSize - len(s.hdr)
@@ -242,20 +284,43 @@ func (s *qotpSession) feed(data []byte) {
 		}
 		s.dir, s.size, s.haveHdr = dir, size, true
 	}
+	if s.dir == bench.Report {
+		return
+	}
 	if s.dir == bench.Upload && len(data) > 0 {
 		s.got += uint64(len(data))
 		received["qotp"].Add(uint64(len(data)))
 	}
 }
 
-// pump makes progress on a session; reports whether it is finished.
+// pump makes progress on a session; reports whether it is finished or has been
+// abandoned by its peer.
 func (s *qotpSession) pump(st *qotp.Stream) bool {
+	// The stall check comes first: a session whose peer vanished before the
+	// header was complete would otherwise never be examined again.
+	if s.stalled(st) {
+		return true
+	}
 	if !s.haveHdr {
 		return false
 	}
 	switch s.dir {
+	case bench.Report:
+		if s.reply == nil {
+			body, err := encodeReport(currentReport())
+			if err != nil {
+				return true
+			}
+			s.reply = body
+		}
+		n, _ := st.Write(s.reply[s.sent:])
+		s.sent += uint64(n)
+		return s.sent >= uint64(len(s.reply))
+
 	case bench.Download:
-		if s.sent < s.size {
+		// Stay within a window of what the peer has acknowledged, so a session
+		// cannot queue the whole requested size into the send buffer.
+		if s.sent < s.size && s.sent-st.BytesDelivered() < downloadWindow {
 			n := uint64(len(s.filler))
 			if r := s.size - s.sent; r < n {
 				n = r

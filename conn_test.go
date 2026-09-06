@@ -969,7 +969,6 @@ func TestConn_NegotiateMTU_Symmetric(t *testing.T) {
 	c.negotiateMTU(uint16(testMaxPayload))
 
 	assert.Equal(t, testMaxPayload, c.mtu)
-	assert.Equal(t, testMaxPayload, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_RemoteSmaller(t *testing.T) {
@@ -979,7 +978,6 @@ func TestConn_NegotiateMTU_RemoteSmaller(t *testing.T) {
 	c.negotiateMTU(1300)
 
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_LocalSmaller(t *testing.T) {
@@ -989,7 +987,6 @@ func TestConn_NegotiateMTU_LocalSmaller(t *testing.T) {
 	c.negotiateMTU(1400)
 
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_BelowFloor(t *testing.T) {
@@ -999,7 +996,6 @@ func TestConn_NegotiateMTU_BelowFloor(t *testing.T) {
 	c.negotiateMTU(500) // below conservativeMTU
 
 	assert.Equal(t, conservativeMTU, c.mtu)
-	assert.Equal(t, conservativeMTU, c.negotiatedMTU)
 }
 
 func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
@@ -1009,7 +1005,6 @@ func TestConn_NegotiateMTU_JumboFrames(t *testing.T) {
 	c.negotiateMTU(8952)
 
 	assert.Equal(t, 8952, c.mtu)
-	assert.Equal(t, 8952, c.negotiatedMTU)
 }
 
 func TestConn_InitialMTU_StartsAtConservativeMTU(t *testing.T) {
@@ -1025,42 +1020,70 @@ func TestConn_InitialMTU_StartsAtConservativeMTU(t *testing.T) {
 	_ = lBob // suppress unused
 }
 
-func TestConn_FallbackOnConsecutiveLosses(t *testing.T) {
+// Ordinary congestion loss must not move the MTU. Inferring an MTU problem
+// from loss made it oscillate many times a second on a lossy path.
+func TestConn_MTU_LossAloneDoesNotLowerIt(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.mtu = 1400
-	c.negotiatedMTU = 1400
 
-	// Simulate consecutive losses
-	for i := 0; i < mtuFallbackThreshold; i++ {
-		c.consecutiveLosses++
-		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
-			c.mtu = conservativeMTU
-		}
+	// A full-size packet gets through: that is what confirms the path.
+	c.observeMTU(&sendPacket{wireLen: 1400, sentCount: 0})
+	assert.Equal(t, 1400, c.mtuConfirmed)
+	assert.Equal(t, 1400, c.mtu)
+
+	// Retransmits that still carry the working size say nothing about the MTU,
+	// however many there are.
+	for i := uint(1); i < maxRetry; i++ {
+		c.observeMTU(&sendPacket{wireLen: 1400, sentCount: i})
 	}
-
-	assert.Equal(t, conservativeMTU, c.mtu)
-	assert.Equal(t, 1400, c.negotiatedMTU) // original preserved
+	assert.Equal(t, 1400, c.mtu, "loss at the working size must not downgrade")
+	assert.False(t, c.mtuDowngraded)
 }
 
-func TestConn_RestoreAfterFallback(t *testing.T) {
+// A packet that only got through once shrunk, on a size never seen to work,
+// is what an MTU black hole looks like, and is the one thing that lowers it.
+func TestConn_MTU_DowngradesWhenOnlySmallGetsThrough(t *testing.T) {
 	c := createTestConn(true, false, true)
-	c.mtu = conservativeMTU // currently in fallback
-	c.negotiatedMTU = 1400
-	c.consecutiveLosses = mtuFallbackThreshold
+	c.mtu = 1400 // raised on the peer's word, unconfirmed
 
-	// Simulate successful ACK
-	c.consecutiveLosses = 0
-	if c.mtu < c.negotiatedMTU {
-		c.mtu = c.negotiatedMTU
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+
+	assert.Equal(t, conservativeMTU, c.mtu)
+	assert.True(t, c.mtuDowngraded)
+}
+
+// Once the working size is confirmed, a probe succeeding is just loss. Without
+// this a burst of losses on one packet downgrades a path already proven to
+// carry the larger size — seen on a 2% loss link with no MTU problem at all.
+func TestConn_MTU_ConfirmedSizeSurvivesProbeSuccess(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.mtu = 1400
+	c.observeMTU(&sendPacket{wireLen: 1400, sentCount: 0}) // proven to work
+
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+
+	assert.Equal(t, 1400, c.mtu, "a confirmed size must survive loss")
+	assert.False(t, c.mtuDowngraded)
+}
+
+// The downgrade lasts for the life of the connection: the peer re-advertising
+// its interface MTU on every packet says nothing about the path in between.
+func TestConn_MTU_DowngradeIsSticky(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.listener.maxPayload = 1400
+	c.mtu = 1400
+	c.observeMTU(&sendPacket{wireLen: conservativeMTU, sentCount: maxRetry - mtuProbeLastAttempts})
+	assert.True(t, c.mtuDowngraded)
+
+	for i := 0; i < 10; i++ {
+		c.negotiateMTU(1400)
 	}
-
-	assert.Equal(t, 1400, c.mtu)
+	assert.Equal(t, conservativeMTU, c.mtu, "advertisements must not undo a downgrade")
 }
 
 func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.mtu = 1400
-	c.negotiatedMTU = 1400
 	c.listener.maxPayload = 1400
 
 	// Simulate receiving a the MTU update field with a smaller value
@@ -1074,7 +1097,6 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 	_, err := c.processIncomingPayload(p, []byte{}, 1000)
 	assert.NoError(t, err)
 	assert.Equal(t, 1300, c.mtu)
-	assert.Equal(t, 1300, c.negotiatedMTU)
 	_ = s
 }
 
@@ -1166,33 +1188,6 @@ func TestConn_MaxPayload_OnEveryPacketKind(t *testing.T) {
 	assert.True(t, enc[0]&flagHasStream == 0, "ACK-only packet must not carry a stream header")
 }
 
-// A received maxPayload sets the ceiling, but must not undo a loss-triggered
-// fallback — otherwise the next inbound packet would defeat the MTU
-// black-hole mitigation, which now runs on every packet.
-func TestConn_NegotiateMTU_DoesNotClobberLossFallback(t *testing.T) {
-	c := createTestConn(true, false, true)
-	c.listener.maxPayload = 1400
-
-	c.negotiateMTU(1400)
-	assert.Equal(t, 1400, c.mtu)
-	assert.Equal(t, 1400, c.negotiatedMTU)
-
-	// Simulate the loss-driven fallback
-	c.consecutiveLosses = mtuFallbackThreshold
-	c.mtu = conservativeMTU
-
-	// Peer keeps advertising 1400 on every packet: the ceiling tracks it, the
-	// working value stays down until the losses stop.
-	c.negotiateMTU(1400)
-	assert.Equal(t, conservativeMTU, c.mtu, "fallback must survive inbound MTU advertisements")
-	assert.Equal(t, 1400, c.negotiatedMTU)
-
-	// Once losses clear, an advertisement restores the working value.
-	c.consecutiveLosses = 0
-	c.negotiateMTU(1400)
-	assert.Equal(t, 1400, c.mtu)
-}
-
 // A local interface change now reaches the peer, because every packet carries
 // the current value instead of a once-only announcement.
 func TestConn_MaxPayload_ChangePropagates(t *testing.T) {
@@ -1224,7 +1219,7 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 	s := c.getOrCreateStream(7)
 	c.snd.queueData(7, []byte("data"))
 	c.snd.readyToSend(7, data, nil, 1000, true)
-	c.snd.markSent(7, 0, 4, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(7, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
 	// An ACK-only packet: no stream header, so streamId defaults to 0
 	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4, rcvWnd: 1000}}
@@ -1465,8 +1460,8 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	// A packet that was sent, then retransmitted
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
-	c.snd.readyToRetransmit(0, nil, 1000, 50, data, 2_000_000_000)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
+	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
@@ -1483,7 +1478,7 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 	// A packet sent exactly once
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
 
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4, rcvWnd: 1000}}
 	_, err := c.processIncomingPayload(p, nil, 1_100_000_000)
@@ -1592,4 +1587,109 @@ func TestUnreliableMarkerOnCloseOnlyStream(t *testing.T) {
 	marked := c.rcv.streams[3] != nil && c.rcv.streams[3].unreliable
 	c.rcv.mu.Unlock()
 	assert.True(t, marked, "a FIN-only best-effort stream must still be marked")
+}
+
+// Packets that bypass the pacing gate (ACKs) must not push nextWriteTime
+// arbitrarily far out. Before the cap, acknowledging a bulk transfer ran the
+// receiver's next send seconds into the future and stalled its own data.
+func TestConn_PacingDebtIsBounded(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.Stream(0)
+
+	nowNano := uint64(1000)
+	for i := 0; i < 2000; i++ {
+		a := &ack{streamId: 0, offset: uint64(i), len: 1}
+		_, _, err := c.sendControlPacket(s, a, nowNano)
+		assert.NoError(t, err)
+	}
+
+	debt := c.nextWriteTime - nowNano
+	limit := maxBurstPackets * c.calcPacing(uint64(c.mtu))
+	assert.LessOrEqual(t, debt, limit,
+		"2000 bypassing ACKs pushed nextWriteTime %dms into the future", debt/uint64(msNano))
+	assert.Less(t, debt, uint64(secondNano), "debt must not reach seconds")
+}
+
+// A receiver-only connection gets no RTT sample on its own, because nothing it
+// sends is ever ACKed. The first control packet carries a stream header and is
+// tracked so the peer's ACK for it becomes that sample.
+func TestConn_AckProbe_YieldsRttSample(t *testing.T) {
+	c := createTestConn(true, false, true)
+	connPair := NewConnPair("a", "b")
+	c.listener.localConn = connPair.Conn1
+	c.remoteAddr = getTestRemoteAddr()
+	c.mtu = testMaxPayload
+	c.measurements = newMeasurements()
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.Stream(0)
+
+	assert.Equal(t, uint64(0), c.srtt, "receiver-only: no sample yet")
+	_, _, err := c.sendControlPacket(s, &ack{streamId: 0, offset: 0, len: 1}, 1000)
+	assert.NoError(t, err)
+
+	// The probe is tracked, so the peer's ACK for it can be matched.
+	c.snd.mu.Lock()
+	_, tracked := c.snd.streams[0].inFlightGet(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	assert.True(t, tracked, "probe must be recorded in flight")
+
+	// Peer ACKs the probe: that is the RTT sample.
+	_, err = c.processIncomingPayload(
+		&payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 0, rcvWnd: rcvBufferCapacity}},
+		nil, 1000+5*uint64(msNano))
+	assert.NoError(t, err)
+	assert.Positive(t, c.srtt, "the probe's ACK must produce an RTT sample")
+
+	// Once a sample exists the probe stops: no more stream headers on ACKs.
+	c.snd.mu.Lock()
+	c.snd.streams[0].inFlight[0].remove(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	_, _, err = c.sendControlPacket(s, &ack{streamId: 0, offset: 1, len: 1}, 2000)
+	assert.NoError(t, err)
+	c.snd.mu.Lock()
+	_, again := c.snd.streams[0].inFlightGet(createPacketKey(0, 0))
+	c.snd.mu.Unlock()
+	assert.False(t, again, "probe must not repeat once srtt is known")
+}
+
+// packetKey is offset+length, so every zero-payload packet at one offset shares
+// a key. A pending FIN or ping owns it; the probe must stand down for both, or
+// their ACKs get misattributed to each other.
+func TestConn_AckProbe_StandsDownOnKeyCollision(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(c *conn)
+	}{
+		{"close pending", func(c *conn) { c.snd.close(0) }},
+		{"ping pending", func(c *conn) { c.snd.queuePing(0) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := createTestConn(true, false, true)
+			connPair := NewConnPair("a", "b")
+			c.listener.localConn = connPair.Conn1
+			c.remoteAddr = getTestRemoteAddr()
+			c.mtu = testMaxPayload
+			c.measurements = newMeasurements()
+			c.rcvWndSize = rcvBufferCapacity
+			s := c.Stream(0)
+			tc.setup(c)
+
+			assert.False(t, c.snd.trackProbe(0), "probe must not claim an occupied key")
+			_, _, err := c.sendControlPacket(s, &ack{streamId: 0, offset: 0, len: 1}, 1000)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// Only one probe may be outstanding, for the same key-collision reason.
+func TestConn_AckProbe_OnlyOneOutstanding(t *testing.T) {
+	c := createTestConn(true, false, true)
+	assert.True(t, c.snd.trackProbe(0), "first probe is recorded")
+	assert.False(t, c.snd.trackProbe(0), "second probe must not overwrite the first")
 }

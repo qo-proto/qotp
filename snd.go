@@ -70,6 +70,7 @@ type sendPacket struct {
 	// ACK- and send-side sample intervals for this packet's bw sample
 	deliveredTimeAtSend uint64 // measurements.deliveredTimeNano at send
 	firstSentTimeAtSend uint64 // measurements.firstSentTimeNano at send
+	wireLen             uint16 // encrypted packet size, the unit pacing works in
 	sentCount           uint   // Number of transmission attempts
 	ackGap              uint8  // Later-sent gen-0 packets ACKed (fast retransmit, capped at threshold)
 	isClose             bool
@@ -147,6 +148,23 @@ func (t *transmitBuffer) inFlightRemove(key packetKey) (*sendPacket, bool) {
 	return nil, false
 }
 
+// reserveZeroPayloadKey claims the in-flight slot for a zero-payload packet
+// (ping or ACK probe) at the current send offset. packetKey is offset+length,
+// so every zero-payload packet at one offset shares a key: at most one may be
+// outstanding, and a pending close owns it for the FIN. Both callers go
+// through here so the collision rule is stated once.
+func (t *transmitBuffer) reserveZeroPayloadKey() (packetKey, bool) {
+	if t.closeAtOffset != nil {
+		return 0, false
+	}
+	key := createPacketKey(t.bytesSentOffset, 0)
+	if _, exists := t.inFlightGet(key); exists {
+		return 0, false
+	}
+	t.inFlight[0].put(key, &sendPacket{needsReTx: false})
+	return key, true
+}
+
 // inFlightAny reports whether any generation holds an unacked packet.
 func (t *transmitBuffer) inFlightAny() bool {
 	for _, m := range t.inFlight {
@@ -190,6 +208,21 @@ func (sb *sender) queueData(streamID uint32, userData []byte) (n int, status ins
 	return len(chunk), status
 }
 
+// trackProbe reserves the zero-payload key for an ACK probe, so a
+// receiver-only connection can get its first RTT sample. Stands down for a
+// pending ping, which will claim the same key from readyToSend.
+func (sb *sender) trackProbe(streamID uint32) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+
+	stream := sb.getOrCreateStream(streamID)
+	if stream.pingRequested {
+		return false
+	}
+	_, ok := stream.reserveZeroPayloadKey()
+	return ok
+}
+
 func (sb *sender) queuePing(streamID uint32) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -214,14 +247,12 @@ func (sb *sender) readyToSend(streamID uint32, msgType cryptoMsgType, ack *ack, 
 	}
 
 	// Priority 1: Ping request (best-effort: dropped at RTO, never
-	// retransmitted). Skipped once close is requested: a ping entry would
-	// collide with the FIN's zero-length packet key at the same offset, and
-	// a stale ping ACK could then be misattributed to the FIN.
+	// retransmitted). Dropped if the zero-payload key is already taken by a
+	// FIN or an outstanding ACK probe, whose ACK would otherwise be
+	// misattributed to the ping.
 	if stream.pingRequested {
 		stream.pingRequested = false
-		if stream.closeAtOffset == nil {
-			key := createPacketKey(stream.bytesSentOffset, 0)
-			stream.inFlight[0].put(key, &sendPacket{needsReTx: false})
+		if key, ok := stream.reserveZeroPayloadKey(); ok {
 			return []byte{}, key.offset(), false
 		}
 	}
@@ -289,8 +320,11 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 
 // readyToRetransmit returns expired in-flight data for retransmission.
 // May split packets if MTU decreased. Increments retry counter.
+// probeMtu is the size used for a packet close to giving up: if the smaller
+// one gets through where the working size did not, the path cannot carry the
+// working size (see conn.observeMTU).
 func (sb *sender) readyToRetransmit(
-	streamID uint32, ack *ack, mtu int,
+	streamID uint32, ack *ack, mtu, probeMtu int,
 	baseRTO uint64, msgType cryptoMsgType,
 	nowNano uint64) (data []byte, offset uint64, isClose bool, err error) {
 
@@ -354,6 +388,10 @@ func (sb *sender) readyToRetransmit(
 
 	if pkt.sentCount >= maxRetry {
 		return nil, 0, false, errors.New("max retry attempts exceeded")
+	}
+
+	if pkt.sentCount >= maxRetry-mtuProbeLastAttempts && probeMtu < mtu {
+		mtu = probeMtu
 	}
 
 	// Calculate max data for current MTU
@@ -492,8 +530,10 @@ func (sb *sender) acknowledgeRange(ack *ack) (status ackStatus, ackedPkt *sendPa
 	return ackStatusOk, pkt, 0
 }
 
-// markSent stamps send time and delivery snapshots after the packet is built.
-func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNano uint64,
+// markSent stamps send time, wire size and delivery snapshots after the packet
+// is built. length is the payload (it identifies the packet); wireLen is the
+// encrypted size, which is what the bandwidth estimate and pacing both count.
+func (sb *sender) markSent(streamID uint32, offset uint64, length, wireLen uint16, nowNano uint64,
 	deliveredAtSend uint64, deliveredTimeNano uint64, firstSentTimeNano uint64) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -506,6 +546,7 @@ func (sb *sender) markSent(streamID uint32, offset uint64, length uint16, nowNan
 	key := createPacketKey(offset, length)
 	if pkt, ok := stream.inFlightGet(key); ok {
 		pkt.sentTimeNano = nowNano
+		pkt.wireLen = wireLen
 		pkt.deliveredAtSend = deliveredAtSend
 		// First flight: no delivery event yet — anchor the intervals at
 		// this send, so the first samples fall back to delivered/RTT

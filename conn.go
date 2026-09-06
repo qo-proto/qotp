@@ -45,7 +45,11 @@ const (
 type conn struct {
 	connId     uint64
 	remoteAddr netip.AddrPort
-	listener   *Listener
+	// The address this peer sent to, learned from inbound packets. Replies go
+	// out from it so a wildcard-bound socket on a multi-homed host does not
+	// answer from the wrong source. Zero for a dialed connection.
+	localAddr netip.Addr
+	listener  *Listener
 
 	snCrypto    uint64
 	pubKeyIdRcv *ecdh.PublicKey // Identity
@@ -75,10 +79,12 @@ type conn struct {
 	deliveredBytes atomic.Uint64
 
 	// MTU negotiation
-	mtu               int // current max UDP payload (starts conservative, may fall back on losses)
-	negotiatedMTU     int // negotiated value (for restoring after fallback)
-	consecutiveLosses int
-	mtuFlapCount      int // completed fallback→restore cycles; high count hints at an MTU black hole
+	mtu int // current max UDP payload
+	// Largest wire size an ACK has proven the path carries. Only first
+	// transmissions count: an ACK for a retransmit could answer either send,
+	// so its size is ambiguous.
+	mtuConfirmed  int
+	mtuDowngraded bool // path black-holed the working size; stay conservative
 
 	// Key update retransmission: the pending KU is re-attached once per RTO
 	// until acked; on an idle connection, KU-only packets are re-sent
@@ -168,13 +174,57 @@ func (c *conn) cleanupStream(streamID uint32) {
 	c.rcv.removeStream(streamID)
 }
 
+// observeMTU folds one acknowledged packet into what is known about the path.
+// The MTU only ever moves on evidence: an ACK proves a size traverses the
+// path, and a smaller retransmit succeeding where larger sends failed proves
+// the working size does not. Ordinary loss says nothing either way.
+func (c *conn) observeMTU(pkt *sendPacket) {
+	size := int(pkt.wireLen)
+
+	// A first transmission is unambiguous, so it can raise the confirmed size.
+	if pkt.sentCount == 0 {
+		if size > c.mtuConfirmed {
+			c.mtuConfirmed = size
+		}
+		return
+	}
+
+	// Otherwise this is a retransmit. Only the probe-sized ones say anything:
+	// the packet failed at the working size repeatedly and got through once
+	// shrunk, which is what an MTU black hole looks like. (An ACK for a
+	// retransmit is transmission-ambiguous, but after this many failed
+	// attempts a late ACK for the original is remote.)
+	if c.mtuDowngraded || c.mtu <= conservativeMTU {
+		return
+	}
+	// Once the working size has been seen to get through, loss is congestion,
+	// not an MTU problem, and a probe succeeding proves nothing new. Only an
+	// unconfirmed size can be downgraded. (A path that shrinks mid-connection
+	// is caught by clearing mtuConfirmed when the network changes, which needs
+	// migration support QOTP does not have yet.)
+	if c.mtuConfirmed >= c.mtu {
+		return
+	}
+	if pkt.sentCount >= maxRetry-mtuProbeLastAttempts && size <= conservativeMTU {
+		slog.Warn("path does not carry the negotiated MTU; downgraded for this connection",
+			"was", c.mtu,
+			"confirmed", c.mtuConfirmed,
+			"now", conservativeMTU)
+		c.mtu = conservativeMTU
+		c.mtuDowngraded = true
+	}
+}
+
 // negotiateMTU sets the MTU ceiling. It runs on every packet, so it must leave
 // a loss-triggered fallback alone; the ACK path restores the working value.
 func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
-	c.negotiatedMTU = max(min(c.listener.maxPayload, int(remoteMaxPayload)), conservativeMTU)
-	if c.consecutiveLosses == 0 {
-		c.mtu = c.negotiatedMTU
+	// A downgrade is permanent for the life of the connection: the path has
+	// demonstrated it cannot carry the larger size, and no amount of the peer
+	// re-advertising its interface MTU changes that.
+	if c.mtuDowngraded {
+		return
 	}
+	c.mtu = max(min(c.listener.maxPayload, int(remoteMaxPayload)), conservativeMTU)
 }
 
 // =============================================================================
@@ -433,7 +483,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
 			// (original or retransmit?) - never measure RTT/bandwidth from it
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
-				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, p.ack.len, ackedPkt, nowNano)
+				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, ackedPkt, nowNano)
 			}
 			// Losses feed the windowed fairness throttle (see
 			// updateThrottle); no per-event reaction — the throttle's
@@ -441,19 +491,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, nowNano
 			if lostCount > 0 {
 				c.windowLostPackets += uint64(lostCount)
 			}
-			if c.consecutiveLosses > 0 {
-				c.consecutiveLosses = 0
-				if c.mtu < c.negotiatedMTU {
-					c.mtu = c.negotiatedMTU
-					c.mtuFlapCount++
-					if c.mtuFlapCount > mtuFlapWarnThreshold {
-						slog.Warn("MTU flapping: repeated fallback/restore cycles, path may drop large packets",
-							"cycles", c.mtuFlapCount,
-							"negotiatedMTU", c.negotiatedMTU,
-							"conservativeMTU", conservativeMTU)
-					}
-				}
-			}
+			c.observeMTU(ackedPkt)
 			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed.Load() && c.snd.checkStreamFullyAcked(p.ack.streamId) {
 				ackStream.sndClosed.Store(true)
 			}
@@ -649,15 +687,14 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// counted in dataInFlight when first sent, and the receiver's window was
 	// open at that time. Blocking retransmits on rwnd causes deadlocks when
 	// a lost packet creates a gap in the receiver's reassembly buffer.
-	splitData, offset, isClose, err := c.snd.readyToRetransmit(s.streamID, ack, effectiveMtu, c.rtoNano(), msgType, nowNano)
+	// The probe carries the same reservations, just at the conservative size.
+	probeMtu := effectiveMtu - (c.mtu - conservativeMTU)
+	splitData, offset, isClose, err := c.snd.readyToRetransmit(
+		s.streamID, ack, effectiveMtu, probeMtu, c.rtoNano(), msgType, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
 	if splitData != nil {
-		c.consecutiveLosses++
-		if c.consecutiveLosses >= mtuFallbackThreshold && c.mtu > conservativeMTU {
-			c.mtu = conservativeMTU
-		}
 		return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, false)
 	}
 
@@ -747,7 +784,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		return 0, 0, err
 	}
 
-	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, nowNano)
+	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, c.localAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -756,7 +793,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// buffer), and a pre-block stamp would inflate this packet's RTT sample
 	// by our own send stall
 	if data != nil {
-		c.snd.markSent(s.streamID, offset, uint16(len(data)), nowNano+elapsedNano,
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano+elapsedNano,
 			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
 	}
 
@@ -787,12 +824,16 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// a short back-to-back burst instead, so the achieved rate tracks the
 	// paced rate. The credit is floored at maxBurstPackets so a long-idle
 	// connection can't dump an unbounded burst into the queue.
+	// Credit and debt are both capped at maxBurstPackets: a long-idle
+	// connection cannot bank an unbounded burst, and packets that bypass the
+	// pacing gate (ACKs) cannot push the next send arbitrarily far out.
 	pacingNano := c.calcPacing(uint64(len(encData)))
+	burst := maxBurstPackets * pacingNano
 	floor := uint64(0)
-	if debt := maxBurstPackets * pacingNano; nowNano > debt {
-		floor = nowNano - debt
+	if nowNano > burst {
+		floor = nowNano - burst
 	}
-	c.nextWriteTime = max(c.nextWriteTime, floor) + pacingNano
+	c.nextWriteTime = min(max(c.nextWriteTime, floor)+pacingNano, nowNano+burst)
 
 	dataLen := len(data)
 	if trackInFlight && dataLen > 0 {
@@ -806,7 +847,19 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 // or handshake re-send) at the stream's current send offset. Key-update and
 // MTU fields are attached by encodeAndWrite from connection state.
 func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
-	return c.encodeAndWrite(s, ack, nil, c.snd.getSendOffset(s.streamID), false, nowNano, false)
+	offset := c.snd.getSendOffset(s.streamID)
+
+	// A connection that only ever receives sends nothing the peer will ACK, so
+	// it never gets an RTT sample and stays on the cold-start pacing fallback
+	// for its whole life. Until the first sample, carry a stream header on an
+	// outgoing control packet and track it: the peer ACKs any packet with a
+	// stream header, and that ACK is the sample. This rides the ACK path
+	// deliberately — ACKs bypass the pacing gate, so unlike a ping it still
+	// gets out when the connection is pacing-blocked.
+	if c.srtt == 0 && c.msgType() == data && c.snd.trackProbe(s.streamID) {
+		return c.encodeAndWrite(s, ack, []byte{}, offset, false, nowNano, false)
+	}
+	return c.encodeAndWrite(s, ack, nil, offset, false, nowNano, false)
 }
 
 // =============================================================================
