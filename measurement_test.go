@@ -126,7 +126,7 @@ func TestMeasurements_FirstMeasurement_StartupState(t *testing.T) {
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 
 	assert.True(t, conn.inStartup(), "should remain in startup state")
-	assert.Equal(t, uint64(277), conn.pacingGainPct, "should maintain startup gain")
+	assert.Equal(t, startupGain, conn.pacingGainPct, "should maintain startup gain")
 }
 
 // =============================================================================
@@ -388,7 +388,7 @@ func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 
 	assert.Equal(t, probeGain, conn.pacingGainPct, "should probe with 1.25x gain")
 	assert.Equal(t, uint64(2_300_000_000), conn.lastProbeTimeNano, "should update probe time")
-	assert.Equal(t, probeCycleRounds, conn.probeRoundsRemaining, "should set probe cycle rounds")
+	assert.Equal(t, uint64(2), conn.probeRoundsRemaining, "should set probe cycle rounds")
 }
 
 func TestMeasurements_Probing_CycleProbeDrainNormal(t *testing.T) {
@@ -462,11 +462,11 @@ func TestMeasurements_RTO_Maximum(t *testing.T) {
 func TestMeasurements_Pacing_NoSRTT(t *testing.T) {
 	conn := newTestConnection()
 
-	// The cold-start interval is the cost of one full-size packet...
-	assert.Equal(t, uint64(10*msNano), conn.calcPacing(conservativeMTU),
-		"a full-size packet should cost the 10ms default when no SRTT")
+	// The initial-window interval is the cost of one full-size packet...
+	assert.Equal(t, initialWindowInterval, conn.calcPacing(conservativeMTU),
+		"a full-size packet should cost the initial-window interval when no SRTT")
 	// ...and a smaller packet costs proportionally less.
-	assert.Equal(t, uint64(10*msNano)/2, conn.calcPacing(conservativeMTU/2))
+	assert.Equal(t, initialWindowInterval/2, conn.calcPacing(conservativeMTU/2))
 }
 
 func TestMeasurements_Pacing_SRTTNoBandwidth(t *testing.T) {
@@ -480,7 +480,7 @@ func TestMeasurements_Pacing_SRTTNoBandwidth(t *testing.T) {
 
 // An ACK is ~3% of a full packet, and must be charged as such: charging it a
 // full packet's interval is what let a receiver run up seconds of pacing debt.
-func TestMeasurements_Pacing_ColdStartIsByteProportional(t *testing.T) {
+func TestMeasurements_Pacing_InitialWindowIsByteProportional(t *testing.T) {
 	for _, srtt := range []uint64{0, 100_000_000} {
 		conn := newTestConnection()
 		conn.srtt = srtt
@@ -695,7 +695,7 @@ func TestMeasurements_HealthyAqmDoesNotDrain(t *testing.T) {
 func runThrottleWindow(m *measurements, lost, acked, nowNano uint64) {
 	m.windowLostPackets += lost
 	m.windowAckedPackets += acked
-	for range throttleWindowRounds {
+	for range cycleRounds {
 		m.updateThrottle(nowNano)
 	}
 }
@@ -704,21 +704,28 @@ func TestMeasurements_ThrottleRespondsToCongestion(t *testing.T) {
 	m := newMeasurements()
 	m.setState(ccSteady)
 
-	runThrottleWindow(&m, 100, 200, secondNano)
-	assert.Equal(t, throttleBetaPct, m.throttlePct, "a congested window backs off")
+	runThrottleWindow(&m, 200, 400, secondNano)
+	assert.Equal(t, throttleDrainGain, m.throttlePct, "a congested window backs off")
 
-	// A clean window ratchets back, one step at a time.
+	// A clean window probes back up, one gain step at a time.
 	runThrottleWindow(&m, 0, 500, 2*secondNano)
-	assert.Equal(t, throttleBetaPct+throttleRecoverPct, m.throttlePct)
+	assert.Equal(t, throttleDrainGain*throttleProbeGain/100, m.throttlePct)
 }
 
 func TestMeasurements_ThrottleIgnoresWeakEvidence(t *testing.T) {
 	m := newMeasurements()
 	m.setState(ccSteady)
 
-	// Below throttleMinLost: too few losses to call it congestion.
-	runThrottleWindow(&m, throttleMinLost-1, 100, secondNano)
+	// A window too small for the threshold to be a meaningful count stays
+	// open: 7 losses in 100 packets is 7%, but not evidence of anything.
+	runThrottleWindow(&m, 7, 93, secondNano)
 	assert.Equal(t, uint64(100), m.throttlePct)
+	assert.Equal(t, cycleRounds, m.windowRoundsDone, "window must stay open until it holds enough packets")
+
+	// Once it holds throttleMinPackets, those 7 losses are under 2%: clean.
+	runThrottleWindow(&m, 0, 300, 2*secondNano)
+	assert.Equal(t, uint64(100), m.throttlePct)
+	assert.Equal(t, uint64(0), m.windowLostPackets, "window must have closed")
 
 	// Enough losses, but well under the rate threshold: random loss on a lossy
 	// link must not read as congestion.
@@ -730,9 +737,9 @@ func TestMeasurements_ThrottleFloor(t *testing.T) {
 	m := newMeasurements()
 	m.setState(ccSteady)
 	for i := range 20 {
-		runThrottleWindow(&m, 100, 200, uint64(i+1)*secondNano)
+		runThrottleWindow(&m, 200, 400, uint64(i+1)*secondNano)
 	}
-	assert.Equal(t, throttleFloorPct, m.throttlePct, "the flow must stay alive")
+	assert.Equal(t, throttleDrainMin, m.throttlePct, "the flow must stay alive")
 }
 
 // Startup's overshoot is how the ceiling gets found; it is not competition.
@@ -740,14 +747,29 @@ func TestMeasurements_StartupLossEndsStartupWithoutThrottling(t *testing.T) {
 	m := newMeasurements()
 	assert.True(t, m.inStartup())
 
-	runThrottleWindow(&m, 100, 200, secondNano) // 33% loss, as startup produces
+	runThrottleWindow(&m, 200, 400, secondNano) // 33% loss, as startup produces
 	assert.False(t, m.inStartup(), "a full pipe announcing itself ends startup")
 	assert.Equal(t, uint64(100), m.throttlePct, "our own probe is not congestion")
 
 	// Out of startup the response is normal again. The packets must postdate
 	// the epoch that exitStartup opened, or they are the same episode.
-	runThrottleWindow(&m, 100, 200, 2*secondNano)
-	assert.Equal(t, throttleBetaPct, m.throttlePct)
+	runThrottleWindow(&m, 200, 400, 2*secondNano)
+	assert.Equal(t, throttleDrainGain, m.throttlePct)
+}
+
+// A slow path carries few packets per round, so a fixed loss count would
+// demand an absurd loss rate before acting. The window extends in time
+// instead, and 2.5% loss is caught once enough packets have been seen.
+func TestMeasurements_ThrottleSlowPathExtendsWindow(t *testing.T) {
+	m := newMeasurements()
+	m.setState(ccSteady)
+
+	for i := range 9 { // 40 packets per cycleRounds, 1 lost: 2.5%
+		runThrottleWindow(&m, 1, 39, uint64(i+1)*secondNano)
+		assert.Equal(t, uint64(100), m.throttlePct, "not enough evidence yet")
+	}
+	runThrottleWindow(&m, 1, 39, 10*secondNano) // 400 packets, 10 lost
+	assert.Equal(t, throttleDrainGain, m.throttlePct, "2.5% over a full sample is congestion")
 }
 
 // Leaving startup discards the window in progress, so the overshoot that ended
@@ -755,7 +777,7 @@ func TestMeasurements_StartupLossEndsStartupWithoutThrottling(t *testing.T) {
 func TestMeasurements_ExitStartupDiscardsWindow(t *testing.T) {
 	m := newMeasurements()
 	m.srtt = 20 * msNano
-	m.windowRoundsDone = throttleWindowRounds - 1
+	m.windowRoundsDone = cycleRounds - 1
 	m.windowLostPackets, m.windowAckedPackets = 500, 100
 
 	m.exitStartup(secondNano)

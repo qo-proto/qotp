@@ -347,7 +347,7 @@ the flag byte.
 best-effort stream never retransmits, so a once-announced flag could be lost
 and strand the receiver waiting on gaps that never fill; carried in the ID, the
 marker is on every packet of the stream by construction. The receiver's marking
-is sticky: gaps from lost packets are skipped after a reorder deadline (see
+is sticky: gaps from lost packets are skipped after a gap timeout (see
 Unreliable Streams). Whether the sender retransmits an individual packet — it
 always does for FIN and key updates, even on a best-effort stream — is local
 state and never appears on the wire.
@@ -441,7 +441,7 @@ Normal → Probe (1 round) → Drain (1 round) → Normal
 ```
 
 **Pacing Gains**:
-- Startup: 277% (2.77x) - aggressive growth
+- Startup: 289% (2.885x = 2/ln2) - aggressive growth
 - Normal: 100% (1.0x) - steady state
 - Probe: 125% (1.25x) - probe for spare bandwidth (one round)
 - Drain: 75% (0.75x) - drain the queue the probe built (one round)
@@ -492,7 +492,7 @@ survives until the next probe re-validates it.
 pacing_interval = (packet_size × 1e9) / (BW_max × gain_percent / 100)
 ```
 
-If no bandwidth estimate: use `SRTT / 10` or fallback to 10ms
+If no bandwidth estimate: use `SRTT / 10` or fallback to `defaultRTO / 10` (20ms)
 (≈10 packets per RTT, comparable to TCP's initial window).
 
 #### Retransmission (RTO)
@@ -621,11 +621,12 @@ where retransmitting stale data is worse than dropping it.
   Because the marker rides the stream ID, losing a packet cannot leave the
   receiver treating a best-effort stream as reliable
 - A head-of-line gap (lost packet) is skipped once it has been open longer
-  than the reorder deadline: delivery advances to the next buffered segment,
+  than the gap timeout: delivery advances to the next buffered segment,
   or to the close offset when the tail of the stream was lost
-- Reorder deadline: 100ms default, per-stream override via
-  `SetReorderDeadlineNano` — tune with `RTTNano()`/`RTTVarNano()`
-  (e.g. srtt/2 or 4×rttvar)
+- Gap timeout: 100ms default, per-stream `SetGapTimeoutNano`/`GapTimeoutNano`
+  — tune with `RTTNano()`/`RTTVarNano()` (e.g. srtt/2 or 4×rttvar). In-order
+  data is never delayed, so this is not a jitter buffer; it only bounds the
+  stall after a loss
 - Data arriving for an already-skipped range is dropped and counted;
   poll `LatePackets()`/`LateBytes()` to observe it
 
@@ -829,9 +830,10 @@ func (s *Stream) Ping()
 // Set to false for real-time streams; call before the first Write.
 func (s *Stream) SetReliable(reliable bool)
 
-// SetReorderDeadlineNano sets how long an unreliable stream waits for
-// out-of-order data before skipping a gap (default 100ms).
-func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64)
+// SetGapTimeoutNano sets how long an unreliable stream waits for a missing
+// packet before skipping it and delivering the data behind it (default 100ms).
+func (s *Stream) SetGapTimeoutNano(timeoutNano uint64)
+func (s *Stream) GapTimeoutNano() uint64
 
 // RTTNano / RTTVarNano expose the smoothed RTT and jitter estimates.
 // Read them from the Loop callback: the send path updates them without a

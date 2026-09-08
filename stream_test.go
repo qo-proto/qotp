@@ -520,7 +520,7 @@ func TestStream_DuplicatePacket_DeliveredOnce(t *testing.T) {
 // =============================================================================
 
 // A best-effort stream with a permanently lost middle packet must skip the gap
-// after the reorder deadline and deliver the data past it, rather than stalling.
+// after the gap timeout and deliver the data past it, rather than stalling.
 func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
 	connA, listenerB, connPair := setupStreamTest(t)
 
@@ -551,7 +551,7 @@ func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
 	dropped := false
 
 	// Advance time by 50ms/iteration so both the sender RTO (drops the lost
-	// best-effort packet) and the receiver reorder deadline (100ms) elapse.
+	// best-effort packet) and the receiver gap timeout (100ms) elapse.
 	for i := 0; i < 80; i++ {
 		connA.listener.Listen(minDeadline, connPair.Conn1.localTime)
 		connA.listener.Flush(connPair.Conn1.localTime)

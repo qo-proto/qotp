@@ -1603,7 +1603,7 @@ func TestConn_PacingDebtIsBounded(t *testing.T) {
 	}
 
 	debt := c.nextWriteTime - nowNano
-	limit := maxBurstPackets * c.calcPacing(uint64(c.mtu))
+	limit := maxBurstLen * c.calcPacing(uint64(c.mtu))
 	assert.LessOrEqual(t, debt, limit,
 		"2000 bypassing ACKs pushed nextWriteTime %dms into the future", debt/uint64(msNano))
 	assert.Less(t, debt, uint64(secondNano), "debt must not reach seconds")
@@ -1718,7 +1718,7 @@ func TestConn_FlushStream_RwndBlocked_ProbesForWindowUpdate(t *testing.T) {
 	s := c.getOrCreateStream(1)
 
 	c.snd.queueData(1, make([]byte, 64*1024)) // plenty to send
-	c.srtt, c.rttvar = 100*msNano, msNano     // established RTT, not cold start
+	c.srtt, c.rttvar = 100*msNano, msNano     // established RTT, past the initial window
 	c.rcvWndSize = 1000                       // peer's buffer is nearly full
 	c.dataInFlight = 5000                     // + mtu exceeds it: blocked
 

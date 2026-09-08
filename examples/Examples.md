@@ -395,16 +395,16 @@ if conn.HasActiveStreams() {
 ## Example 16: Unreliable (Best-Effort) Streams
 
 For real-time traffic (audio, video, game state) where retransmitting stale
-data is worse than dropping it. Lost data is skipped after a reorder deadline
+data is worse than dropping it. Lost data is skipped after a gap timeout
 instead of being retransmitted, so the application must frame its own messages.
 
 ```go
 stream := conn.Stream(1)
 stream.SetReliable(false) // call before the first Write
 
-// Optional: tune how long the receiver waits for reordered packets
-// before declaring a gap lost (default 100ms). RTT stats can guide this:
-stream.SetReorderDeadlineNano(4 * stream.RTTVarNano())
+// Optional: tune how long the receiver waits for a missing packet
+// before skipping it as lost (default 100ms). RTT stats can guide this:
+stream.SetGapTimeoutNano(4 * stream.RTTVarNano())
 
 stream.Write(frame) // sent once, never retransmitted
 
@@ -470,7 +470,8 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `Close()` | Initiate graceful close |
 | `Ping()` | Send best-effort ping for RTT measurement |
 | `SetReliable(bool)` | Toggle retransmission (default true; set before first Write). Carried in the high bit of the wire stream ID, so IDs are limited to 2^31-1 |
-| `SetReorderDeadlineNano(nano)` | Gap-skip deadline for unreliable streams (default 100ms) |
+| `SetGapTimeoutNano(nano)` | How long an unreliable stream waits for a missing packet before skipping it (default 100ms) |
+| `GapTimeoutNano()` | Current gap timeout |
 | `RTTNano()` | Smoothed RTT estimate (0 until first sample) |
 | `RTTVarNano()` | RTT variation (jitter) estimate |
 | `LatePackets()` | Packets that arrived after their range was skipped |

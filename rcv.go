@@ -72,7 +72,7 @@ type reassemblyBuffer struct {
 	closeAtOffset *uint64                    // Stream closes at this offset (FIN received)
 
 	// Unreliable (best-effort) stream state: lost data is never retransmitted,
-	// so head-of-line gaps are skipped after a reorder deadline
+	// so head-of-line gaps are skipped after a gap timeout
 	unreliable    bool
 	gapStartNano  uint64      // when the current head-of-line gap was first observed (0 = none)
 	skippedRanges [][2]uint64 // recently skipped [from, to) ranges, for late classification
@@ -290,11 +290,11 @@ func (rb *receiver) markUnreliable(streamID uint32) {
 }
 
 // checkGap skips the head-of-line gap on an unreliable stream once it has been
-// open longer than deadlineNano. Lost best-effort data is never retransmitted,
+// open longer than timeoutNano. Lost best-effort data is never retransmitted,
 // so waiting beyond a reorder window blocks delivery for nothing. The gap
 // target is the next buffered segment, or the close offset when the tail of
 // the stream was lost.
-func (rb *receiver) checkGap(streamID uint32, nowNano uint64, deadlineNano uint64) {
+func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -319,7 +319,7 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, deadlineNano uint6
 		stream.gapStartNano = nowNano
 		return
 	}
-	if nowNano-stream.gapStartNano <= deadlineNano {
+	if nowNano-stream.gapStartNano <= timeoutNano {
 		return
 	}
 

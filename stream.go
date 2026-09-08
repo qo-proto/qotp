@@ -5,6 +5,10 @@ import (
 	"sync/atomic"
 )
 
+// defaultGapTimeoutNano is the gap timeout a stream starts with, see
+// SetGapTimeoutNano.
+const defaultGapTimeoutNano = uint64(100 * msNano)
+
 // =============================================================================
 // Stream - Bidirectional byte stream within a connection
 //
@@ -14,10 +18,10 @@ import (
 // =============================================================================
 
 type Stream struct {
-	streamID            uint32
-	conn                *conn
-	reliable            bool   // Retransmit lost data (default true)
-	reorderDeadlineNano uint64 // Max wait for reordered data before skipping a gap (unreliable streams)
+	streamID       uint32
+	conn           *conn
+	reliable       bool   // Retransmit lost data (default true)
+	gapTimeoutNano uint64 // Unreliable streams: how long a head-of-line gap waits before it is skipped
 
 	// Close flags are written by the event loop and by user-goroutine Read,
 	// and read lock-free by both sides — hence atomic. All other stream
@@ -111,20 +115,26 @@ func (s *Stream) SndClosed() bool {
 // every packet of the stream carries it.
 //
 // On an unreliable stream the delivered byte stream may have lost ranges
-// silently removed (after the reorder deadline), so the application must do
+// silently removed (after the gap timeout), so the application must do
 // its own message framing. Close (FIN) and key updates are always
 // retransmitted, and ACKs are best-effort in both modes.
 func (s *Stream) SetReliable(reliable bool) {
 	s.reliable = reliable
 }
 
-// SetReorderDeadlineNano sets how long the receiver waits for out-of-order
-// data to fill a gap on an unreliable stream before skipping it (default
-// 100ms). Lower values reduce added latency after a loss; higher values
-// tolerate more network reordering. RTTNano/RTTVarNano can guide tuning,
-// e.g. srtt/2 or 4*rttvar.
-func (s *Stream) SetReorderDeadlineNano(deadlineNano uint64) {
-	s.reorderDeadlineNano = deadlineNano
+// SetGapTimeoutNano sets how long an unreliable stream waits for a missing
+// packet before giving it up as lost and delivering the data behind it
+// (default 100ms). In-order data is never delayed; the timer only runs while
+// a head-of-line gap is open. Lower values cut the stall after a loss, higher
+// values tolerate more reordering. RTTNano/RTTVarNano can guide tuning, e.g.
+// srtt/2 or 4*rttvar. Has no effect on reliable streams.
+func (s *Stream) SetGapTimeoutNano(timeoutNano uint64) {
+	s.gapTimeoutNano = timeoutNano
+}
+
+// GapTimeoutNano returns the current gap timeout, see SetGapTimeoutNano.
+func (s *Stream) GapTimeoutNano() uint64 {
+	return s.gapTimeoutNano
 }
 
 // RTTNano returns the connection's smoothed RTT estimate in nanoseconds

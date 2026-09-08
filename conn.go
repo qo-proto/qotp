@@ -288,7 +288,7 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 	if c.rcv.isFinished(streamID) {
 		return nil
 	}
-	s := &Stream{streamID: streamID, conn: c, reliable: true, reorderDeadlineNano: defaultReorderDeadlineNano}
+	s := &Stream{streamID: streamID, conn: c, reliable: true, gapTimeoutNano: defaultGapTimeoutNano}
 	s, _ = c.streams.getOrPut(streamID, s)
 	return s
 }
@@ -572,7 +572,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 
 	if len(userData) > 0 {
 		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
-		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
+		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
 	} else {
 		// Empty packet (ping/close/key-update): still ACK it
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
@@ -581,7 +581,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 	// Handle stream close
 	if p.isClose {
 		c.rcv.close(s.streamID, p.streamOffset+uint64(len(userData)))
-		c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
+		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
 	}
 
 	// Update stream close state
@@ -678,9 +678,9 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// retransmitted: release their in-flight accounting
 	c.dataInFlight -= c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
 
-	// Skip receive gaps on unreliable streams whose reorder deadline passed
+	// Skip receive gaps on unreliable streams whose gap timeout passed
 	// (covers the case where the sender went silent mid-gap)
-	c.rcv.checkGap(s.streamID, nowNano, s.reorderDeadlineNano)
+	c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
 
 	// Key update handling: the pending KU is attached to the next outgoing
 	// packet by encodeAndWrite, then re-attached once per RTO until the
@@ -882,12 +882,12 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// one packet per wakeup and locking the bw estimator onto that
 	// artifact. Carrying the pacing credit forward lets a late wakeup send
 	// a short back-to-back burst instead, so the achieved rate tracks the
-	// paced rate. Credit and debt are both capped at maxBurstPackets: a
+	// paced rate. Credit and debt are both capped at maxBurstLen: a
 	// long-idle connection cannot bank an unbounded burst, and packets that
 	// bypass the pacing gate (ACKs) cannot push the next send arbitrarily
 	// far out.
 	pacingNano := c.calcPacing(uint64(len(encData)))
-	burst := maxBurstPackets * pacingNano
+	burst := maxBurstLen * pacingNano
 	floor := uint64(0)
 	if nowNano > burst {
 		floor = nowNano - burst
@@ -917,7 +917,7 @@ func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint
 	offset := c.snd.getSendOffset(s.streamID)
 
 	// A connection that only ever receives sends nothing the peer will ACK, so
-	// it never gets an RTT sample and stays on the cold-start pacing fallback
+	// it never gets an RTT sample and stays on the initial-window pacing fallback
 	// for its whole life. Until the first sample, carry a stream header on an
 	// outgoing control packet and track it: the peer ACKs any packet with a
 	// stream header, and that ACK is the sample. This rides the ACK path

@@ -47,31 +47,47 @@ var (
 	fastRetxThreshold = uint8(3)
 
 	// BBR pacing gains (percentage, 100 = 1.0x)
-	startupGain = uint64(277) // 2.77x aggressive growth
+	startupGain = uint64(289) // 2/ln2 = 2.885x, BBR's startup gain, rounded up as Linux does
 	normalGain  = uint64(100) // 1.0x steady state
 	probeGain   = uint64(125) // 1.25x probe for spare bandwidth
 	drainGain   = uint64(75)  // 0.75x drain the queue the probe built
 
-	// BBR probing and startup exit
-	probeIntervalRtts = uint64(8)   // probe for more bandwidth every 8x rttMin
-	probeCycleRounds  = uint64(2)   // one probe round + one drain round
+	// Decision cadence, in rounds (one round is about one RTT): probe for
+	// more bandwidth every cycleRounds x rttMin, and evaluate loss for the
+	// fairness throttle every cycleRounds rounds. One value for both means
+	// each loss window spans about one probe cycle, so the probe's own
+	// overshoot is a steady share of every sample rather than landing in
+	// some windows and not others.
+	cycleRounds = uint64(8)
+
+	// BBR startup exit
 	startupGrowthPct  = uint64(125) // startup expects >=25% bandwidth growth per round
 	startupExitRounds = uint64(3)   // exit startup after this many rounds without growth
 
 	// Queue feedback: smoothed delay above queueLimit() means a standing queue
-	// is building at the bottleneck — drain instead of probe. The allowance is
-	// proportional to the path but floored, because a bottleneck running
-	// fq_codel or CAKE deliberately holds a few milliseconds of delay, and on
-	// a short path that target is a large fraction of rttMin. Reading an AQM
-	// meeting its own target as congestion keeps a healthy flow draining for
-	// no reason: measured at 27% of the time on an 11ms path, where codel's
-	// 5ms target alone is 44% of rttMin.
-	queueTolerancePct = uint64(25)         // of rttMin
-	aqmTargetNano     = uint64(5 * msNano) // fq_codel/CAKE default target
+	// is building at the bottleneck — drain instead of probe. The allowed
+	// queue is the larger of two things, both expressed as delay:
+	//
+	// - What one probe round builds on purpose. Pacing at probeGain for one
+	//   RTT sends (probeGain-100)% of a BDP more than the link drains, and the
+	//   drain round takes it back out. Delay up to that much is probe residue,
+	//   not a standing queue, and treating it as one would abort the probe
+	//   cycle it belongs to. In delay units a fraction of BDP is the same
+	//   fraction of rttMin, since bandwidth cancels out.
+	// - The delay a bottleneck AQM holds by design. fq_codel and CAKE keep a
+	//   few milliseconds of queue as their target; on a short path that is a
+	//   large fraction of rttMin. Reading an AQM meeting its own target as
+	//   congestion keeps a healthy flow draining for no reason: measured at
+	//   27% of the time on an 11ms path, where codel's 5ms target alone is
+	//   44% of rttMin.
+	queueSizeRttPct  = probeGain - 100    // allowed queue as % of rttMin (= % of BDP): one probe round's overshoot
+	queueSizeMinNano = uint64(5 * msNano) // allowed queue floor: fq_codel/CAKE default target
 
-	// Fairness throttle: a persistent pacing multiplier with TCP-like
-	// dynamics (multiplicative decrease, gradual recovery), so loss-based
-	// flows sharing a bottleneck can claim their share. bwMax is never
+	// Fairness throttle: a persistent pacing multiplier so loss-based flows
+	// sharing a bottleneck can claim their share. It follows the same
+	// normal/probe/drain principle as the pacing state machine, with its own
+	// gains and per window instead of per round: a congested window drains,
+	// a clean window probes, and normal is the ceiling. bwMax is never
 	// touched: policy lives here, the sensor stays truthful.
 	//
 	// Loss is judged over a multi-round window, not per round: single-round
@@ -81,27 +97,27 @@ var (
 	// window also gives episode semantics for free: at most one decrease
 	// per window. Random loss below the threshold stays ignored, which
 	// preserves lossy-link performance.
-	lossRateThresholdPct = uint64(2)  // congestion = >2% loss per window
-	throttleWindowRounds = uint64(8)  // rounds per evaluation window
-	throttleMinLost      = uint64(8)  // min losses to act (small-sample guard)
-	throttleBetaPct      = uint64(70) // multiplicative decrease per event
-	throttleFloorPct     = uint64(30) // keep the flow alive
-	// Recovery is deliberately modest so regaining bandwidth after
-	// congestion stays comparable to TCP's additive increase — faster
-	// values let qotp out-regain loss-based flows after every shared-loss
-	// episode and skew fairness.
-	throttleRecoverPct = uint64(5) // points regained per clean window
+	throttleNormalGain   = uint64(100) // 1.0x no throttle (ceiling)
+	throttleProbeGain    = uint64(125) // 1.25x per clean window
+	throttleDrainGain    = uint64(75)  // 0.75x per congested window; CUBIC uses 0.7, Reno 0.5
+	throttleDrainMin     = uint64(30)  // draining stops here: keeps the flow alive and measuring
+	lossRateThresholdPct = uint64(2)   // congestion = >2% loss per window of cycleRounds
+	throttleMinPackets   = cycleRounds * 100 / lossRateThresholdPct
 
-	// Cold-start pacing, used until the first bandwidth sample exists:
-	// one packet per srtt/coldStartRttDivisor, or per coldStartInterval
-	// before the first RTT sample
-	coldStartInterval   = uint64(10 * msNano)
-	coldStartRttDivisor = uint64(10)
+	// Initial-window pacing, used until the first bandwidth sample exists: send
+	// initialWindowPackets per RTT, like TCP's initial window of 10 (RFC 6928),
+	// spread evenly over the RTT. Before the first RTT sample the RTT is
+	// assumed to be the same one the RTO assumes.
+	initialWindowPackets  = uint64(10)
+	initialWindowInterval = defaultRTO / initialWindowPackets
 
 	// Pacing burst allowance: how many unspent send opportunities may be
 	// carried across late wakeups (token-bucket depth, in packets). Lets a
 	// late wakeup catch up in a short burst instead of losing the slots.
-	maxBurstPackets = uint64(10)
+	// Must be at least initialWindowPackets: a wakeup late by a full RTT
+	// during the initial window banks exactly that many slots, and a smaller
+	// bucket would throttle the initial window further.
+	maxBurstLen = uint64(10)
 
 	// Timeouts
 	minDeadline  = uint64(100 * msNano)
@@ -109,10 +125,6 @@ var (
 
 	// Min-RTT filter: samples older than this can no longer be the minimum
 	rttMinTTLNano = uint64(10 * secondNano)
-
-	// Unreliable streams: how long a receive gap may wait for reordered data
-	// before being skipped. Per-stream override via Stream.SetReorderDeadlineNano.
-	defaultReorderDeadlineNano = uint64(100 * msNano)
 )
 
 // rttMinEntry is a min-RTT candidate: a sample that may become the window
@@ -127,7 +139,7 @@ type rttMinEntry struct {
 type ccState uint8
 
 const (
-	ccStartup  ccState = iota // exponential growth (2.77x) until bandwidth flattens
+	ccStartup  ccState = iota // exponential growth (2.885x) until bandwidth flattens
 	ccSteady                  // pace at measured bandwidth (1.0x)
 	ccProbing                 // probe for spare bandwidth (1.25x, one round)
 	ccDraining                // drain the bottleneck queue (0.75x): probe-cycle
@@ -202,7 +214,7 @@ func newMeasurements() measurements {
 	return measurements{
 		state:         ccStartup,
 		pacingGainPct: startupGain,
-		throttlePct:   100,
+		throttlePct:   throttleNormalGain,
 		rttMinNano:    math.MaxUint64,
 	}
 }
@@ -354,7 +366,7 @@ func (m *measurements) finishRound(nowNano uint64) {
 	// further — a self-clamp spiral (hit live on short-RTT paths where the
 	// drain runs long). The sensor keeps the last honest capacity reading
 	// until pacing is back at 100%.
-	if m.throttlePct >= 100 && m.state != ccDraining {
+	if m.throttlePct >= throttleNormalGain && m.state != ccDraining {
 		m.bwRounds[m.bwRoundIdx] = m.roundBwBest
 		m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
 		m.bwMax = slices.Max(m.bwRounds[:])
@@ -364,7 +376,8 @@ func (m *measurements) finishRound(nowNano uint64) {
 	m.prevRoundBwBest = m.roundBwBest
 	m.roundBwBest = 0
 
-	// Probe gain cycle: probe (1.25x) -> drain (0.75x) -> steady (1.0x)
+	// Probe gain cycle: probe (1.25x) -> drain (0.75x) -> steady (1.0x). The
+	// cycle length is fixed by this switch, not tunable.
 	if m.probeRoundsRemaining > 0 {
 		m.probeRoundsRemaining--
 		switch m.probeRoundsRemaining {
@@ -392,12 +405,11 @@ func (m *measurements) trackGrowth() {
 	}
 }
 
-// updateThrottle runs at each round end and evaluates once per
-// throttleWindowRounds: the fairness response with TCP-like dynamics. A
-// window whose loss rate exceeds lossRateThresholdPct (with at least
-// throttleMinLost losses as evidence) is a congestion event: multiplicative
-// decrease, at most once per window. A clean window ratchets the throttle
-// back toward 100%.
+// updateThrottle runs at each round end and evaluates once per window of
+// cycleRounds rounds and at least throttleMinPackets packets: the fairness
+// response with TCP-like dynamics. A window whose loss rate exceeds
+// lossRateThresholdPct is a congestion event: drain, at most once per
+// window. A clean window probes the throttle back toward throttleNormalGain.
 //
 // Loss during startup ends startup but does not throttle: startup finds the
 // ceiling by doubling until the path objects, so the loss that ends it is our
@@ -408,30 +420,26 @@ func (m *measurements) trackGrowth() {
 // startup.
 func (m *measurements) updateThrottle(nowNano uint64) {
 	m.windowRoundsDone++
-	if m.windowRoundsDone < throttleWindowRounds {
+	total := m.windowLostPackets + m.windowAckedPackets
+	if m.windowRoundsDone < cycleRounds || total < throttleMinPackets {
 		return
 	}
 	m.windowRoundsDone = 0
 
-	lost, acked := m.windowLostPackets, m.windowAckedPackets
+	lost := m.windowLostPackets
 	m.windowLostPackets, m.windowAckedPackets = 0, 0
 
-	total := lost + acked
-	if total == 0 {
-		return
-	}
-
-	isCongested := lost >= throttleMinLost && lost*100 > total*lossRateThresholdPct
+	isCongested := lost*100 > total*lossRateThresholdPct
 	switch {
 	case isCongested && m.inStartup():
 		// A full pipe announcing itself: end startup (BBRv2-style exit) but do
 		// not read our own probe as congestion.
 		m.exitStartup(nowNano)
 	case isCongested:
-		m.throttlePct = max((m.throttlePct*throttleBetaPct)/100, throttleFloorPct)
+		m.throttlePct = max((m.throttlePct*throttleDrainGain)/100, throttleDrainMin)
 		m.lossEpochNano = nowNano
-	case m.throttlePct < 100:
-		m.throttlePct = min(m.throttlePct+throttleRecoverPct, 100)
+	case m.throttlePct < throttleNormalGain:
+		m.throttlePct = min((m.throttlePct*throttleProbeGain)/100, throttleNormalGain)
 	}
 }
 
@@ -481,17 +489,14 @@ func (m *measurements) updateStartup(nowNano uint64) {
 }
 
 // queueLimit is the smoothed delay above which a standing queue is assumed to
-// be building: the path's own minimum, plus whichever is larger of a
-// proportion of it and the delay a bottleneck AQM deliberately maintains. The
-// floor matters because fq_codel and CAKE hold a few milliseconds of delay on
-// purpose, and on a short path that target is a large fraction of rttMin -- a
-// flat percentage would read a healthy AQM meeting its own target as
-// congestion and drain for no reason.
+// be building: the path's own minimum, plus whichever is larger of one probe
+// round's overshoot and the delay a bottleneck AQM deliberately maintains
+// (see queueSizeRttPct).
 func (m *measurements) queueLimit() uint64 {
 	if m.rttMinNano == math.MaxUint64 {
 		return math.MaxUint64 // no sample yet, nothing to compare against
 	}
-	return m.rttMinNano + max((m.rttMinNano*queueTolerancePct)/100, aqmTargetNano)
+	return m.rttMinNano + max((m.rttMinNano*queueSizeRttPct)/100, queueSizeMinNano)
 }
 
 func (m *measurements) updateNormal(nowNano uint64) {
@@ -508,9 +513,9 @@ func (m *measurements) updateNormal(nowNano uint64) {
 		// Not draining, not probing: restore steady state (also the exit path
 		// from a queue-drain episode)
 		m.setState(ccSteady)
-		if nowNano-m.lastProbeTimeNano > m.rttMinNano*probeIntervalRtts {
+		if nowNano-m.lastProbeTimeNano > m.rttMinNano*cycleRounds {
 			m.setState(ccProbing)
-			m.probeRoundsRemaining = probeCycleRounds
+			m.probeRoundsRemaining = 2 // one probe round + one drain round
 			m.lastProbeTimeNano = nowNano
 		}
 	}
@@ -543,14 +548,14 @@ func backoff(rtoNano uint64, attempt uint) uint64 {
 // =============================================================================
 
 func (m *measurements) calcPacing(packetSize uint64) uint64 {
-	// Cold start: no bandwidth sample yet. Both fallbacks are the cost of one
+	// Initial window: no bandwidth sample yet. Both fallbacks are the cost of one
 	// full-size packet, so scale by the actual size — otherwise a 44-byte ACK
 	// costs as much send budget as a 1452-byte data packet, and a receiver
 	// runs up seconds of pacing debt just acknowledging a bulk transfer.
 	if m.bwMax == 0 {
-		interval := coldStartInterval
+		interval := initialWindowInterval
 		if m.srtt > 0 {
-			interval = m.srtt / coldStartRttDivisor
+			interval = m.srtt / initialWindowPackets
 		}
 		return (packetSize * interval) / conservativeMTU
 	}
@@ -559,7 +564,7 @@ func (m *measurements) calcPacing(packetSize uint64) uint64 {
 	// (fairness policy, persistent)
 	pacedBw := (m.bwMax * m.pacingGainPct * m.throttlePct) / 10_000
 	if pacedBw == 0 {
-		return coldStartInterval
+		return initialWindowInterval
 	}
 
 	return (packetSize * secondNano) / pacedBw
