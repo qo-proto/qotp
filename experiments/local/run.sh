@@ -6,11 +6,15 @@ trap 'cleanup $?' SIGINT SIGTERM ERR EXIT
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRV_PID=""
+PING_PID=""
 
 cleanup() {
   trap - SIGINT SIGTERM ERR EXIT
   if [[ -n "$SRV_PID" ]]; then
     kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null
+  fi
+  if [[ -n "$PING_PID" ]]; then
+    kill "$PING_PID" 2>/dev/null; wait "$PING_PID" 2>/dev/null
   fi
 }
 
@@ -77,6 +81,11 @@ OPTIONS:
                     One run of a fairness measurement is noise.
   --out DIR         Output directory; relative names are placed under
                     experiments/results/ (default: results/manual)
+  --bench PATH      Which qotp-bench binary to run (default: ../qotp-bench).
+                    Use it to A/B two builds: copying over the default one
+                    fails with "text file busy" if a previous run still holds
+                    it open, and the comparison then silently runs the same
+                    build twice.
 EOF
   exit
 }
@@ -113,6 +122,7 @@ parse_params() {
     --port) PORT="${2-}"; shift ;;
     --runs) RUNS="${2-}"; shift ;;
     --out) OUT_DIR="${2-}"; shift ;;
+    --bench) BENCH="${2-}"; shift ;;
     -?*) die "Unknown option: $1" ;;
     *) break ;;
     esac
@@ -139,6 +149,10 @@ bdp_packets() {
 setup_colors
 parse_params "$@"
 
+BENCH="${BENCH:-$ROOT_DIR/qotp-bench}"
+[[ "$BENCH" != /* ]] && BENCH="$(cd "$(dirname "$BENCH")" && pwd)/$(basename "$BENCH")"
+[[ -x "$BENCH" ]] || die "no such benchmark binary: $BENCH (build it with experiments/build.sh)"
+
 # All results live under experiments/results/: relative --out names are
 # placed there, absolute paths are respected
 [[ "$OUT_DIR" != /* ]] && OUT_DIR="$ROOT_DIR/results/$OUT_DIR"
@@ -149,12 +163,12 @@ CLI_ARGS=(-size "$SIZE" -runs "$RUNS" -port "$PORT" -json "$OUT_DIR/result.json"
 
 if [[ "$NETNS" -eq 0 ]]; then
   msg_info "Loopback (no bottleneck): solo numbers are real, fairness is not."
-  "$ROOT_DIR/qotp-bench" -listen -addr 127.0.0.1 -port "$PORT" > "$OUT_DIR/server.log" 2>&1 &
+  "$BENCH" -listen -addr 127.0.0.1 -port "$PORT" > "$OUT_DIR/server.log" 2>&1 &
   SRV_PID=$!
   trap 'kill $SRV_PID 2>/dev/null || true' EXIT
   sleep 1
   grep -q READY "$OUT_DIR/server.log" || die "server failed to start: $(cat "$OUT_DIR/server.log")"
-  "$ROOT_DIR/qotp-bench" -addr 127.0.0.1 "${CLI_ARGS[@]}" | tee "$OUT_DIR/report.txt"
+  "$BENCH" -addr 127.0.0.1 "${CLI_ARGS[@]}" | tee "$OUT_DIR/report.txt"
 else
   [[ "$(id -u)" -eq 0 ]] || die "--netns requires root"
   [[ -z "$QUEUE" ]] && QUEUE="$(bdp_packets "$RATE" "$DELAY")"
@@ -199,12 +213,29 @@ else
   done
   msg_info "netem: ${NETEM[*]}, aqm=$AQM"
 
-  ip netns exec qotp-srv "$ROOT_DIR/qotp-bench" -listen -addr 10.9.0.1 -port "$PORT" \
+  # Measure the path rather than trusting the configured delay. Every claim
+  # about a protocol's RTT is judged against this floor, and netem applying
+  # what it was asked for is an assumption worth one second to check.
+  ip netns exec qotp-cli ping -q -c 20 -i 0.05 -W 2 10.9.0.1 2>&1 | tail -2 \
+    > "$OUT_DIR/path-rtt-idle.txt" || true
+  msg_info "path RTT, idle link: $(tail -1 "$OUT_DIR/path-rtt-idle.txt")"
+
+  ip netns exec qotp-srv "$BENCH" -listen -addr 10.9.0.1 -port "$PORT" \
     > "$OUT_DIR/server.log" 2>&1 &
   sleep 1
   grep -q READY "$OUT_DIR/server.log" || die "server failed to start: $(cat "$OUT_DIR/server.log")"
-  ip netns exec qotp-cli "$ROOT_DIR/qotp-bench" -addr 10.9.0.1 "${CLI_ARGS[@]}" \
+  # netem is per-device, so this shares the bottleneck and its queue with the
+  # transfer: it is the floor the protocols' own RTT samples belong against.
+  ( ip netns exec qotp-cli ping -q -c 200 -i 0.2 -W 2 10.9.0.1 2>&1 | tail -2 \
+      > "$OUT_DIR/path-rtt-loaded.txt" || true ) &
+  PING_PID=$!
+
+  ip netns exec qotp-cli "$BENCH" -addr 10.9.0.1 "${CLI_ARGS[@]}" \
     | tee "$OUT_DIR/report.txt"
+
+  kill "$PING_PID" 2>/dev/null || true
+  wait "$PING_PID" 2>/dev/null || true
+  msg_info "path RTT, loaded link: $(tail -1 "$OUT_DIR/path-rtt-loaded.txt" 2>/dev/null)"
 fi
 
 msg ""
