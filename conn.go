@@ -836,16 +836,19 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		return 0, 0, err
 	}
 
-	elapsedNano, err := c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, c.localAddr, nowNano)
+	// The reported write duration is unused; see the stamp below.
+	_, err = c.listener.localConn.WriteToUDPAddrPort(encData, c.remoteAddr, c.localAddr, nowNano)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	// Stamp with the send-completion time: the write can block (full socket
-	// buffer), and a pre-block stamp would inflate this packet's RTT sample
-	// by our own send stall
+	// Stamped before the write. A write reports its duration from a clock read
+	// after the syscall returns, so a deschedule in between lands inside it and
+	// dates the packet later than it left, making RTT samples come out short --
+	// and rttMin, a minimum filter, keeps the worst one for its whole TTL.
+	// Erring early instead only inflates a sample, which the filter discards.
 	if data != nil {
-		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano+elapsedNano,
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano,
 			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
 	}
 
