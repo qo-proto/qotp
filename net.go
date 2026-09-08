@@ -16,12 +16,14 @@ import (
 // =============================================================================
 
 // Absolute time is always supplied by the caller (nowNano); implementations
-// never generate absolute timestamps. Blocking calls instead report how long
-// they blocked (elapsedNano, monotonic), so the caller can compute the
-// completion time as nowNano+elapsedNano — a pre-block timestamp must not be
-// used for events that happen after the block (RTT samples would come out
-// too small by the blocked duration). Mock implementations return synthetic
-// durations.
+// never generate absolute timestamps, only durations measured from the
+// caller's stamp (elapsedNano), so the caller can compute the completion time
+// as nowNano+elapsedNano. Mock implementations return synthetic durations.
+//
+// Elapsed must run from nowNano and not from wherever the implementation
+// starts counting: whatever sits in between — arming the read deadline, and
+// any scheduling delay — is real waiting, and dropping it dates the arrival
+// too early, which makes every RTT sample computed from it short.
 // localAddr carries the address the peer actually sent to. A socket bound to
 // a wildcard address on a multi-homed host would otherwise reply from whatever
 // source the kernel picks, which is often not the address the peer contacted —
@@ -71,15 +73,23 @@ func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint
 		return 0, netip.AddrPort{}, netip.Addr{}, 0, err
 	}
 
-	// time.Since is monotonic: a wall-clock jump during the blocked read
-	// cannot corrupt the elapsed duration
-	start := time.Now()
+	// Measured from nowNano: arming the deadline above and any scheduling
+	// before the read are part of the wait too.
 	if c.oob == nil {
 		n, addr, err := c.conn.ReadFromUDPAddrPort(p)
-		return n, addr, netip.Addr{}, uint64(time.Since(start)), err
+		return n, addr, netip.Addr{}, sinceNano(nowNano), err
 	}
 	n, oobn, _, addr, err := c.conn.ReadMsgUDPAddrPort(p, c.oob)
-	return n, addr, parseLocalAddr(c.oob[:oobn]), uint64(time.Since(start)), err
+	return n, addr, parseLocalAddr(c.oob[:oobn]), sinceNano(nowNano), err
+}
+
+// sinceNano is the time since a wall-clock nanosecond stamp, clamped at zero
+// so that a clock stepped backwards during the read cannot wrap the result.
+func sinceNano(nowNano uint64) uint64 {
+	if n := uint64(time.Now().UnixNano()); n > nowNano {
+		return n - nowNano
+	}
+	return 0
 }
 
 // TimeoutReadNow cancels any pending Read by setting deadline to the past.
