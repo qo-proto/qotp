@@ -231,7 +231,7 @@ func TestSendBuffer_AcknowledgeRange_Basic(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.NotNil(t, pkt)
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
@@ -241,9 +241,9 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
-	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.Nil(t, pkt, "a duplicate matches nothing in flight")
 }
@@ -251,7 +251,7 @@ func TestSendBuffer_AcknowledgeRange_Duplicate(t *testing.T) {
 func TestSendBuffer_AcknowledgeRange_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	pkt, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4})
+	pkt, _ := sb.acknowledgeRange(&ack{streamId: 999, offset: 0, len: 4}, 0)
 
 	assert.Nil(t, pkt, "an unknown stream matches nothing in flight")
 }
@@ -263,7 +263,7 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Middle(t *testing.T) {
 	sb.readyToSend(1, data, nil, dataOverhead+4, true) // 4 bytes
 	sb.readyToSend(1, data, nil, dataOverhead+4, true) // 4 bytes
 
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4}, 0)
 
 	assert.Equal(t, 2, sb.streams[1].inFlightSize())
 }
@@ -274,9 +274,9 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_Last(t *testing.T) {
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4}, 0)
 
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4}, 0)
 
 	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 }
@@ -287,10 +287,10 @@ func TestSendBuffer_AcknowledgeRange_OutOfOrder_First(t *testing.T) {
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
 	sb.readyToSend(1, data, nil, dataOverhead+4, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4})
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 4, len: 4}, 0)
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 8, len: 4}, 0)
 
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.Equal(t, 0, sb.streams[1].inFlightSize())
 }
@@ -335,7 +335,7 @@ func TestSendBuffer_ReadyToRetransmit_EmptyInFlight(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
 
@@ -465,7 +465,7 @@ func TestSendBuffer_Close_AfterSend(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	sb.close(1)
 
@@ -476,7 +476,7 @@ func TestSendBuffer_Close_AfterSend_EmptyClosePacket(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 	sb.close(1)
 
 	d, offset, isClose := sb.readyToSend(1, data, nil, 1000, true)
@@ -597,7 +597,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200) // one retransmit
 
-	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.NotNil(t, ackedPkt)
 	assert.Equal(t, uint(1), ackedPkt.sentCount, "ack after retransmit must be flagged as ambiguous")
@@ -757,7 +757,7 @@ func TestSendBuffer_CheckStreamFullyAcked_FullyAcked(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.True(t, sb.checkStreamFullyAcked(1))
 }
@@ -810,7 +810,7 @@ func TestSendBuffer_GetOffsetAcked_PartialAck(t *testing.T) {
 	sb.queueData(1, []byte("01234567"))
 	sb.readyToSend(1, data, nil, dataOverhead+5, true)
 	sb.readyToSend(1, data, nil, dataOverhead+5, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5}, 0)
 
 	assert.Equal(t, uint64(5), sb.getOffsetAcked(1))
 }
@@ -820,8 +820,8 @@ func TestSendBuffer_GetOffsetAcked_FullAck(t *testing.T) {
 	sb.queueData(1, []byte("01234567"))
 	sb.readyToSend(1, data, nil, dataOverhead+5, true)
 	sb.readyToSend(1, data, nil, dataOverhead+5, true)
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5})
-	sb.acknowledgeRange(&ack{streamId: 1, offset: 5, len: 3})
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 5}, 0)
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 5, len: 3}, 0)
 
 	assert.Equal(t, uint64(8), sb.getOffsetAcked(1))
 }
@@ -866,7 +866,7 @@ func TestSendBuffer_MultipleStreams_AckIsolation(t *testing.T) {
 	sb.readyToSend(2, data, nil, 1000, true)
 	sb.readyToSend(3, data, nil, 1000, true)
 
-	sb.acknowledgeRange(&ack{streamId: 2, offset: 0, len: 7})
+	sb.acknowledgeRange(&ack{streamId: 2, offset: 0, len: 7}, 0)
 
 	assert.Equal(t, 1, sb.streams[1].inFlightSize())
 	assert.Equal(t, 0, sb.streams[2].inFlightSize())
@@ -912,7 +912,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
 
-	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4})
+	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.NotNil(t, ackedPkt)
 	assert.Equal(t, uint64(12345), ackedPkt.sentTimeNano)
@@ -1085,4 +1085,54 @@ func TestSendBuffer_InitSnd_DoesNotBookAPhantomPacket(t *testing.T) {
 
 	// The queued data is untouched and goes out once the handshake completes.
 	assert.Equal(t, 34, len(sb.streams[1].queuedData))
+}
+
+// A loss burst is one congestion event, not many. Packets already in flight
+// when the episode opened were doomed before we could respond, so their loss
+// is not new evidence however late the gap evidence arrives. RFC 6582 for
+// NewReno, RFC 9002 §7.3.2 for QUIC.
+//
+// Five packets go out; acking the last three completes the three-ACK gap
+// evidence against the first two, which is what declares them lost.
+func sendFivePackets(t *testing.T) *sender {
+	t.Helper()
+	sb := newSendBuffer(1000)
+	for i := range 5 {
+		sb.queueData(1, []byte("abcd"))
+		sb.readyToSend(1, data, nil, 1000, true)
+		sb.markSent(1, uint64(i*4), 4, 40, uint64(i+1)*msNano, 0, 0, 0)
+	}
+	return sb
+}
+
+func ackLastThree(sb *sender, epochNano uint64) int {
+	total := 0
+	for _, off := range []uint64{8, 12, 16} {
+		_, lost := sb.acknowledgeRange(&ack{streamId: 1, offset: off, len: 4}, epochNano)
+		total += lost
+	}
+	return total
+}
+
+func TestSendBuffer_LossEpochCountsOneEpisode(t *testing.T) {
+	sb := sendFivePackets(t)
+
+	// Everything went out at or before 5ms, so an episode opened at 5ms owns
+	// all of it.
+	assert.Equal(t, 0, ackLastThree(sb, 5*msNano),
+		"the tail of an answered episode must not count again")
+
+	// Gating the report must not gate the repair.
+	splitData, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, msNano, data, 6*msNano)
+	assert.Nil(t, err)
+	assert.NotNil(t, splitData, "the packet is still lost and must retransmit")
+	assert.Equal(t, uint64(0), offset, "the oldest hole goes first")
+}
+
+func TestSendBuffer_LossAfterEpochCounts(t *testing.T) {
+	sb := sendFivePackets(t)
+
+	// The episode closed before these packets went out, so their loss is new
+	// evidence: both head packets are reported.
+	assert.Equal(t, 2, ackLastThree(sb, 0))
 }

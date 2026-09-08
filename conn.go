@@ -522,20 +522,25 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 
 	// Process ACK if present
 	if p.ack != nil {
-		ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack)
+		ackedPkt, lostCount := c.snd.acknowledgeRange(p.ack, c.lossEpochNano)
 		if ackedPkt != nil {
 			c.dataInFlight -= int(p.ack.len)
 			c.deliveredBytes.Add(uint64(p.ack.len))
+			// Losses feed the windowed fairness throttle (see updateThrottle);
+			// no per-event reaction — the throttle's window is the
+			// congestion-event granularity.
+			//
+			// Counted before updateMeasurements: that call can end a round,
+			// and ending a round is what evaluates the window. Counting after
+			// put this ACK's losses in the window that opens next, so a burst
+			// was always judged one window late.
+			if lostCount > 0 {
+				c.windowLostPackets += uint64(lostCount)
+			}
 			// Karn's algorithm: an ACK for retransmitted data is ambiguous
 			// (original or retransmit?) - never measure RTT/bandwidth from it
 			if ackedPkt.sentCount == 0 && nowNano > ackedPkt.sentTimeNano {
 				c.updateMeasurements(nowNano-ackedPkt.sentTimeNano, ackedPkt, nowNano)
-			}
-			// Losses feed the windowed fairness throttle (see
-			// updateThrottle); no per-event reaction — the throttle's
-			// window is the congestion-event granularity
-			if lostCount > 0 {
-				c.windowLostPackets += uint64(lostCount)
 			}
 			c.observeMTU(ackedPkt)
 			if ackStream := c.getOrCreateStream(p.ack.streamId); ackStream != nil && !ackStream.sndClosed.Load() && c.snd.checkStreamFullyAcked(p.ack.streamId) {
