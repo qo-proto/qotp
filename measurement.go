@@ -60,9 +60,10 @@ var (
 	// some windows and not others.
 	cycleRounds = uint64(8)
 
-	// BBR startup exit
-	startupGrowthPct  = uint64(125) // startup expects >=25% bandwidth growth per round
-	startupExitRounds = uint64(3)   // exit startup after this many rounds without growth
+	// BBR startup exit: startup expects each round to grow bandwidth by at
+	// least a probe's worth (probeGain), and ends after this many rounds
+	// in a row that do not
+	startupExitRounds = uint64(3)
 
 	// Queue feedback: smoothed delay above queueLimit() means a standing queue
 	// is building at the bottleneck — drain instead of probe. The allowed
@@ -389,15 +390,15 @@ func (m *measurements) finishRound(nowNano uint64) {
 	}
 }
 
-// trackGrowth counts consecutive rounds without startup-level bandwidth
-// growth; updateStartup exits startup once the count reaches
+// trackGrowth counts consecutive rounds without a probe's worth of
+// bandwidth growth; updateStartup exits startup once the count reaches
 // startupExitRounds.
 func (m *measurements) trackGrowth() {
 	if m.prevRoundBwBest == 0 {
 		return
 	}
-	// Did bandwidth grow by at least 25% this round?
-	threshold := (m.prevRoundBwBest * startupGrowthPct) / 100
+	// Did bandwidth grow by at least a probe's worth this round?
+	threshold := (m.prevRoundBwBest * probeGain) / 100
 	if m.roundBwBest >= threshold {
 		m.noGrowthRounds = 0
 	} else {

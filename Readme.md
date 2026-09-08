@@ -448,7 +448,7 @@ Normal → Probe (1 round) → Drain (1 round) → Normal
 
 **State Transitions**:
 
-1. **Startup → Normal**: 3 consecutive packet-timed rounds without ≥25% bandwidth growth
+1. **Startup → Normal**: 3 consecutive packet-timed rounds without a probe's worth (≥25%) of bandwidth growth
 2. **Normal → Probe**: Every 8 × RTT_min. A probe is one round at 1.25x pacing of normal data (no extra packets), immediately followed by one drain round at 0.75x, then back to 1.0x
 
 **Queue feedback**: a standing queue means qotp is pacing faster than the link
