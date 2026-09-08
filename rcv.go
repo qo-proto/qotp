@@ -63,30 +63,22 @@ type reassemblyBuffer struct {
 	closeAtOffset *uint64
 
 	// Unreliable streams skip head-of-line gaps after a timeout
-	unreliable    bool
-	gapStartNano  uint64      // when the current gap was first seen, 0 = none
-	skippedRanges [][2]uint64 // recent [from, to) skips, to count late arrivals
-	latePackets   uint64
-	lateBytes     uint64
+	unreliable   bool
+	gapStartNano uint64 // when the current gap was first seen, 0 = none
+	latePackets  uint64 // arrived after their range was skipped
+	lateBytes    uint64
 
 	droppedPackets uint64 // dropped for lack of buffer space
 	droppedBytes   uint64
 }
 
-const maxSkippedRanges = 16
-
-// countIfLate counts data arriving for a range already skipped as lost
-func (s *reassemblyBuffer) countIfLate(offset, dataLen uint64) {
-	if !s.unreliable {
-		return
-	}
-	end := offset + dataLen
-	for _, r := range s.skippedRanges {
-		if offset < r[1] && end > r[0] {
-			s.latePackets++
-			s.lateBytes += dataLen
-			return
-		}
+// countIfLate counts data below nextInOrder on an unreliable stream. The
+// sender never retransmits such data, so it cannot be a duplicate of what
+// was delivered: it is a reordered packet for a range already skipped.
+func (s *reassemblyBuffer) countIfLate(dataLen uint64) {
+	if s.unreliable {
+		s.latePackets++
+		s.lateBytes += dataLen
 	}
 }
 
@@ -125,14 +117,14 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	rb.ackList = append(rb.ackList, &ack{streamId: streamID, offset: offset, len: uint16(dataLen)})
 
 	if offset+uint64(dataLen) <= stream.nextInOrder {
-		stream.countIfLate(offset, uint64(dataLen))
+		stream.countIfLate(uint64(dataLen))
 		return rcvInsertDuplicate
 	}
 
 	// Trim what was already delivered or skipped
 	if offset < stream.nextInOrder {
 		trim := stream.nextInOrder - offset
-		stream.countIfLate(offset, trim)
+		stream.countIfLate(trim)
 		offset += trim
 		userData = userData[trim:]
 		dataLen = len(userData)
@@ -228,10 +220,6 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64
 		return
 	}
 
-	if len(stream.skippedRanges) == maxSkippedRanges {
-		stream.skippedRanges = stream.skippedRanges[1:]
-	}
-	stream.skippedRanges = append(stream.skippedRanges, [2]uint64{stream.nextInOrder, target})
 	stream.nextInOrder = target
 	stream.gapStartNano = 0
 }

@@ -732,18 +732,29 @@ func TestReceiveBuffer_LateArrival_Counted(t *testing.T) {
 	assert.Equal(t, uint64(10), bytes)
 }
 
-func TestReceiveBuffer_LateArrival_DuplicateNotCounted(t *testing.T) {
+// An unreliable sender never retransmits, so anything below nextInOrder is
+// late by definition; no skip history is needed to tell it from a duplicate.
+func TestReceiveBuffer_LateArrival_AnyBelowLineCounts(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.markUnreliable(1)
 
-	rb.insert(1, 0, 1_000_000_000, []byte("data"))
+	rb.insert(1, 4, 1_000_000_000, []byte("data"))
+	rb.checkGap(1, 1_000_000_000, testDeadline)
+	rb.checkGap(1, 1_000_000_000+testDeadline+1, testDeadline)
 	rb.removeOldestInOrder(1)
 
-	// True duplicate of delivered (not skipped) data
-	rb.insert(1, 0, 2_000_000_000, []byte("data"))
+	rb.insert(1, 0, 2_000_000_000, []byte("lost"))
 
-	packets, _ := rb.lateStats(1)
-	assert.Equal(t, uint64(0), packets, "delivered data re-arriving is a duplicate, not late")
+	packets, bytes := rb.lateStats(1)
+	assert.Equal(t, uint64(1), packets)
+	assert.Equal(t, uint64(4), bytes)
+
+	// A reliable stream keeps no such count: below the line is a retransmit.
+	rb.insert(2, 0, 0, []byte("ab"))
+	rb.removeOldestInOrder(2)
+	rb.insert(2, 0, 0, []byte("ab"))
+	packets, _ = rb.lateStats(2)
+	assert.Equal(t, uint64(0), packets)
 }
 
 // =============================================================================
