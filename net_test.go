@@ -2,10 +2,13 @@ package qotp
 
 import (
 	"errors"
+	"github.com/stretchr/testify/require"
+	"net"
 	"net/netip"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -817,4 +820,33 @@ func TestNet_QueueCounts(t *testing.T) {
 
 	assert.Equal(t, 0, connPair.nrOutgoingPacketsSender())
 	assert.Equal(t, 2, connPair.nrIncomingPacketsRecipient())
+}
+
+// Elapsed must run from the caller's stamp, not from a stopwatch started
+// inside the call: whatever sits in between is real waiting, and dropping it
+// dates the arrival too early and shortens every RTT sample computed from it.
+func TestUDPNetworkConn_ElapsedIncludesTimeBeforeTheCall(t *testing.T) {
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer udp.Close()
+	nc := NewUDPNetworkConn(udp)
+
+	const gap = 20 * time.Millisecond
+	const timeout = 50 * time.Millisecond
+
+	nowNano := uint64(time.Now().UnixNano())
+	time.Sleep(gap) // stands in for the work between the stamp and the call
+
+	buf := make([]byte, 100)
+	// Nothing is sent, so this returns when the deadline at nowNano+timeout fires.
+	_, _, _, elapsed, _ := nc.ReadFromUDPAddrPort(buf, uint64(timeout), nowNano)
+
+	assert.GreaterOrEqual(t, elapsed, uint64(40*time.Millisecond),
+		"elapsed must be measured from the caller's stamp, not from inside the call")
+}
+
+func TestSinceNano_ClampsBackwardsClock(t *testing.T) {
+	future := uint64(time.Now().Add(time.Hour).UnixNano())
+	assert.Equal(t, uint64(0), sinceNano(future))
+	assert.Greater(t, sinceNano(uint64(time.Now().Add(-time.Millisecond).UnixNano())), uint64(0))
 }

@@ -21,9 +21,8 @@ import (
 // Returns the stream that received data, or nil on timeout/no-data.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	n, rAddr, lAddr, elapsedNano, err := l.localConn.ReadFromUDPAddrPort(l.readBuf, timeoutNano, nowNano)
-	// The read blocked for elapsedNano: advance the timestamp so RTT and
-	// delivery-rate samples see the arrival time, not the pre-wait stamp
-	// (which would under-measure RTT by the blocked duration)
+	// elapsedNano runs from nowNano, so this is the arrival time exactly. A
+	// pre-wait stamp would under-measure every RTT sample by the wait.
 	nowNano += elapsedNano
 
 	if err != nil {
