@@ -44,8 +44,8 @@ func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, deliveredAt
 func TestMeasurements_New(t *testing.T) {
 	m := newMeasurements()
 
-	assert.True(t, m.inStartup())
-	assert.Equal(t, startupGain, m.pacingGainPct)
+	assert.Equal(t, ccStartup, m.state)
+	assert.Equal(t, startupGain, gainFor(m.state))
 }
 
 // =============================================================================
@@ -125,8 +125,8 @@ func TestMeasurements_FirstMeasurement_StartupState(t *testing.T) {
 
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 
-	assert.True(t, conn.inStartup(), "should remain in startup state")
-	assert.Equal(t, startupGain, conn.pacingGainPct, "should maintain startup gain")
+	assert.Equal(t, ccStartup, conn.state, "should remain in startup state")
+	assert.Equal(t, startupGain, gainFor(conn.state), "should maintain startup gain")
 }
 
 // =============================================================================
@@ -308,7 +308,7 @@ func TestMeasurements_StartupToNormal_Transition(t *testing.T) {
 
 	// Round 0: establish baseline bandwidth
 	conn.testUpdateMeasurements(50_000_000, 1000, 0, 1_000_000_000)
-	assert.True(t, conn.inStartup())
+	assert.Equal(t, ccStartup, conn.state)
 
 	// Simulate 3 rounds with no bandwidth growth (< 25% increase).
 	// Each round: send an ACK whose deliveredAtSend >= roundDeliveredTarget
@@ -318,8 +318,8 @@ func TestMeasurements_StartupToNormal_Transition(t *testing.T) {
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(2_000_000_000+i*500_000_000))
 	}
 
-	assert.False(t, conn.inStartup(), "should transition to normal after 3 non-increasing rounds")
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "pacing gain should be 1.0x")
+	assert.NotEqual(t, ccStartup, conn.state, "should transition to normal after 3 non-increasing rounds")
+	assert.Equal(t, uint64(100), gainFor(conn.state), "pacing gain should be 1.0x")
 }
 
 func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
@@ -334,7 +334,7 @@ func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(2_000_000_000+i*500_000_000))
 	}
 
-	assert.True(t, conn.inStartup(), "should remain in startup before 3 non-increasing rounds")
+	assert.Equal(t, ccStartup, conn.state, "should remain in startup before 3 non-increasing rounds")
 }
 
 // =============================================================================
@@ -343,8 +343,7 @@ func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
 
 func TestMeasurements_NormalState_NormalRTT(t *testing.T) {
 	conn := newTestConnection()
-	conn.setState(ccSteady)
-	conn.pacingGainPct = 100
+	conn.state = ccSteady
 	conn.bwMax = 10000
 	conn.lastProbeTimeNano = 1_200_000_000
 
@@ -353,7 +352,7 @@ func TestMeasurements_NormalState_NormalRTT(t *testing.T) {
 	conn.srtt = 100_000_000
 	conn.testUpdateMeasurements(200_000_000, 1000, 0, 1_300_000_000)
 
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "should be 100% when RTT is normal")
+	assert.Equal(t, uint64(100), gainFor(conn.state), "should be 100% when RTT is normal")
 }
 
 // =============================================================================
@@ -362,8 +361,7 @@ func TestMeasurements_NormalState_NormalRTT(t *testing.T) {
 
 func TestMeasurements_Probing_BeforeProbeTime(t *testing.T) {
 	conn := newTestConnection()
-	conn.setState(ccSteady)
-	conn.pacingGainPct = 100
+	conn.state = ccSteady
 	conn.bwMax = 10000
 	conn.srtt = 100_000_000
 	conn.lastProbeTimeNano = 1_000_000_000
@@ -372,12 +370,12 @@ func TestMeasurements_Probing_BeforeProbeTime(t *testing.T) {
 	// elapsed = 1.5s - 1.0s = 0.5s < 1.2s → no probe
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 1_500_000_000)
 
-	assert.Equal(t, uint64(100), conn.pacingGainPct, "should not probe yet")
+	assert.Equal(t, uint64(100), gainFor(conn.state), "should not probe yet")
 }
 
 func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 	conn := newTestConnection()
-	conn.setState(ccSteady)
+	conn.state = ccSteady
 	conn.bwMax = 10000
 	conn.srtt = 100_000_000
 	conn.lastProbeTimeNano = 1_000_000_000
@@ -386,31 +384,31 @@ func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 	// elapsed = 2.3s - 1.0s = 1.3s > 1.2s → triggers probe
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
 
-	assert.Equal(t, probeGain, conn.pacingGainPct, "should probe with 1.25x gain")
+	assert.Equal(t, probeGain, gainFor(conn.state), "should probe with 1.25x gain")
 	assert.Equal(t, uint64(2_300_000_000), conn.lastProbeTimeNano, "should update probe time")
 	assert.Equal(t, uint64(2), conn.probeRoundsRemaining, "should set probe cycle rounds")
 }
 
 func TestMeasurements_Probing_CycleProbeDrainNormal(t *testing.T) {
 	conn := newTestConnection()
-	conn.setState(ccSteady)
+	conn.state = ccSteady
 	conn.bwMax = 10000
 	conn.srtt = 100_000_000
 	conn.lastProbeTimeNano = 1_000_000_000
 
 	// Trigger the probe (elapsed 1.3s > 150ms * 8 = 1.2s)
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
-	assert.Equal(t, probeGain, conn.pacingGainPct, "probe round at 1.25x")
+	assert.Equal(t, probeGain, gainFor(conn.state), "probe round at 1.25x")
 
 	// Next completed round switches to drain
 	delivered := conn.totalDelivered
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_500_000_000)
-	assert.Equal(t, drainGain, conn.pacingGainPct, "drain round at 0.75x")
+	assert.Equal(t, drainGain, gainFor(conn.state), "drain round at 0.75x")
 
 	// Following completed round returns to normal
 	delivered = conn.totalDelivered
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_700_000_000)
-	assert.Equal(t, normalGain, conn.pacingGainPct, "back to 1.0x after drain")
+	assert.Equal(t, normalGain, gainFor(conn.state), "back to 1.0x after drain")
 }
 
 // =============================================================================
@@ -496,7 +494,7 @@ func TestMeasurements_Pacing_InitialWindowIsByteProportional(t *testing.T) {
 func TestMeasurements_Pacing_WithBandwidth(t *testing.T) {
 	conn := newTestConnection()
 	conn.bwMax = 10000
-	conn.pacingGainPct = 100
+	conn.state = ccSteady
 
 	interval := conn.calcPacing(1000)
 
@@ -506,17 +504,17 @@ func TestMeasurements_Pacing_WithBandwidth(t *testing.T) {
 func TestMeasurements_Pacing_WithGain(t *testing.T) {
 	conn := newTestConnection()
 	conn.bwMax = 10000
-	conn.pacingGainPct = 200
+	conn.state = ccProbing
 
 	interval := conn.calcPacing(1000)
 
-	assert.Equal(t, uint64(50_000_000), interval, "higher gain should reduce interval")
+	assert.Equal(t, uint64(80_000_000), interval, "higher gain should reduce interval")
 }
 
 func TestMeasurements_Pacing_ZeroPacketSize(t *testing.T) {
 	conn := newTestConnection()
 	conn.bwMax = 10000
-	conn.pacingGainPct = 100
+	conn.state = ccSteady
 
 	interval := conn.calcPacing(0)
 
@@ -585,7 +583,7 @@ func TestMeasurements_Integration_StartupToNormal(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		conn.testUpdateMeasurements(50_000_000, uint16(1000*(i+1)), 0, uint64(1_000_000_000+i*500_000_000))
 	}
-	assert.True(t, conn.inStartup())
+	assert.Equal(t, ccStartup, conn.state)
 
 	// Plateau - rounds with no bandwidth growth to trigger startup exit.
 	// First plateau round still carries high roundBwBest from startup, so
@@ -594,7 +592,7 @@ func TestMeasurements_Integration_StartupToNormal(t *testing.T) {
 		delivered := conn.totalDelivered
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(4_000_000_000+i*500_000_000))
 	}
-	assert.False(t, conn.inStartup())
+	assert.NotEqual(t, ccStartup, conn.state)
 
 	// Verify pacing calculation works
 	interval := conn.calcPacing(1000)
@@ -663,9 +661,10 @@ func TestMeasurements_QueueLimit(t *testing.T) {
 
 	// No RTT sample yet: nothing to compare against, so never drain.
 	m := newMeasurements()
+	m.state = ccSteady
 	assert.Equal(t, uint64(math.MaxUint64), m.queueLimit())
 	m.srtt = 1 << 62
-	m.updateNormal(secondNano)
+	m.updateState(secondNano)
 	assert.NotEqual(t, ccDraining, m.state, "cannot judge a queue without a minimum")
 }
 
@@ -673,18 +672,18 @@ func TestMeasurements_QueueLimit(t *testing.T) {
 // target on an 11ms path used to read as congestion and drain at 0.75x.
 func TestMeasurements_HealthyAqmDoesNotDrain(t *testing.T) {
 	m := newMeasurements()
-	m.setState(ccSteady)
+	m.state = ccSteady
 	m.rttMinNano = 11400 * 1000 // measured on the real path
 	m.srtt = m.rttMinNano + 5*msNano
 
-	m.updateNormal(secondNano)
+	m.updateState(secondNano)
 	assert.NotEqual(t, ccDraining, m.state, "an AQM meeting its target is not congestion")
 
 	// A real standing queue still drains.
 	m.srtt = m.rttMinNano + 20*msNano
-	m.updateNormal(2 * secondNano)
+	m.updateState(2 * secondNano)
 	assert.Equal(t, ccDraining, m.state)
-	assert.Equal(t, drainGain, m.pacingGainPct)
+	assert.Equal(t, drainGain, gainFor(m.state))
 }
 
 // =============================================================================
@@ -702,7 +701,7 @@ func runThrottleWindow(m *measurements, lost, acked, nowNano uint64) {
 
 func TestMeasurements_ThrottleRespondsToCongestion(t *testing.T) {
 	m := newMeasurements()
-	m.setState(ccSteady)
+	m.state = ccSteady
 
 	runThrottleWindow(&m, 200, 400, secondNano)
 	assert.Equal(t, throttleDrainGain, m.throttlePct, "a congested window backs off")
@@ -714,7 +713,7 @@ func TestMeasurements_ThrottleRespondsToCongestion(t *testing.T) {
 
 func TestMeasurements_ThrottleIgnoresWeakEvidence(t *testing.T) {
 	m := newMeasurements()
-	m.setState(ccSteady)
+	m.state = ccSteady
 
 	// A window too small for the threshold to be a meaningful count stays
 	// open: 7 losses in 100 packets is 7%, but not evidence of anything.
@@ -735,7 +734,7 @@ func TestMeasurements_ThrottleIgnoresWeakEvidence(t *testing.T) {
 
 func TestMeasurements_ThrottleFloor(t *testing.T) {
 	m := newMeasurements()
-	m.setState(ccSteady)
+	m.state = ccSteady
 	for i := range 20 {
 		runThrottleWindow(&m, 200, 400, uint64(i+1)*secondNano)
 	}
@@ -745,10 +744,10 @@ func TestMeasurements_ThrottleFloor(t *testing.T) {
 // Startup's overshoot is how the ceiling gets found; it is not competition.
 func TestMeasurements_StartupLossEndsStartupWithoutThrottling(t *testing.T) {
 	m := newMeasurements()
-	assert.True(t, m.inStartup())
+	assert.Equal(t, ccStartup, m.state)
 
 	runThrottleWindow(&m, 200, 400, secondNano) // 33% loss, as startup produces
-	assert.False(t, m.inStartup(), "a full pipe announcing itself ends startup")
+	assert.NotEqual(t, ccStartup, m.state, "a full pipe announcing itself ends startup")
 	assert.Equal(t, uint64(100), m.throttlePct, "our own probe is not congestion")
 
 	// Out of startup the response is normal again. The packets must postdate
@@ -762,7 +761,7 @@ func TestMeasurements_StartupLossEndsStartupWithoutThrottling(t *testing.T) {
 // instead, and 2.5% loss is caught once enough packets have been seen.
 func TestMeasurements_ThrottleSlowPathExtendsWindow(t *testing.T) {
 	m := newMeasurements()
-	m.setState(ccSteady)
+	m.state = ccSteady
 
 	for i := range 9 { // 40 packets per cycleRounds, 1 lost: 2.5%
 		runThrottleWindow(&m, 1, 39, uint64(i+1)*secondNano)
@@ -799,7 +798,7 @@ func TestMeasurements_IdlePathIsNotThrottledAfterStartup(t *testing.T) {
 	m := newMeasurements()
 
 	runThrottleWindow(&m, 752, 1460, secondNano) // the first window, as measured
-	assert.False(t, m.inStartup())
+	assert.NotEqual(t, ccStartup, m.state)
 
 	for i := range 7 { // every remaining window of that transfer: no loss
 		runThrottleWindow(&m, 0, 1000, uint64(i+2)*secondNano)

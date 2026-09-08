@@ -1,18 +1,11 @@
 package qotp
 
 import (
-	"bytes"
-	"log/slog"
 	"sync"
 )
 
 // =============================================================================
-// Receive buffer - Handles incoming data with reordering and deduplication
-//
-// Per-stream RcvBuffer stores out-of-order segments in a sorted map.
-// RemoveOldestInOrder returns contiguous data starting from next expected offset.
-// Overlapping bytes from an honest peer are identical; a mismatch is logged and
-// resolved to one copy rather than treated as fatal.
+// Receive buffer - reorders incoming segments and delivers them in order
 // =============================================================================
 
 const rcvBufferCapacity = 16 * 1024 * 1024 // 16MB
@@ -31,16 +24,13 @@ const (
 
 type receiver struct {
 	streams         map[uint32]*reassemblyBuffer
-	finishedStreams map[uint32]bool // Streams that have been fully closed and cleaned up
+	finishedStreams map[uint32]bool
 	capacity        int
 	len             int
 	ackList         []*ack
 	advertised      uint64 // free space the peer was last told about
-	// Cumulative payload admitted to the reassembly buffer, counted on
-	// arrival rather than on in-order delivery, so unlike the delivered offset
-	// it does not freeze behind a head-of-line hole. Connection-wide and never
-	// decremented, so it outlives the streams it counted: the receive-side
-	// twin of conn.deliveredBytes.
+	// Payload admitted, counted on arrival so it does not freeze behind a
+	// head-of-line hole like the delivered offset does
 	received uint64
 	mu       sync.Mutex
 }
@@ -67,16 +57,15 @@ func (rb *receiver) getOrCreateStream(streamID uint32) *reassemblyBuffer {
 // =============================================================================
 
 type reassemblyBuffer struct {
-	segments      *linkedMap[uint64, []byte] // offset -> segment data
-	nextInOrder   uint64                     // Next expected offset for in-order delivery
-	closeAtOffset *uint64                    // Stream closes at this offset (FIN received)
+	segments      *linkedMap[uint64, []byte] // offset -> data, sorted
+	nextInOrder   uint64
+	closeAtOffset *uint64
 
-	// Unreliable (best-effort) stream state: lost data is never retransmitted,
-	// so head-of-line gaps are skipped after a gap timeout
+	// Unreliable streams skip head-of-line gaps after a timeout
 	unreliable    bool
-	gapStartNano  uint64      // when the current head-of-line gap was first observed (0 = none)
-	skippedRanges [][2]uint64 // recently skipped [from, to) ranges, for late classification
-	latePackets   uint64      // packets that arrived after their range was skipped
+	gapStartNano  uint64      // when the current gap was first seen, 0 = none
+	skippedRanges [][2]uint64 // recent [from, to) skips, to count late arrivals
+	latePackets   uint64
 	lateBytes     uint64
 }
 
@@ -89,8 +78,7 @@ func (s *reassemblyBuffer) recordSkip(from, to uint64) {
 	s.skippedRanges = append(s.skippedRanges, [2]uint64{from, to})
 }
 
-// countIfLate counts data arriving for a range that was already skipped: it was
-// declared lost and delivery advanced past it, so it is dropped.
+// countIfLate counts data arriving for a range already skipped as lost
 func (s *reassemblyBuffer) countIfLate(offset, dataLen uint64) {
 	if !s.unreliable {
 		return
@@ -110,14 +98,12 @@ func newRcvBuffer() *reassemblyBuffer {
 }
 
 // =============================================================================
-// Insert - Add received segment to buffer
-//
-// Handles: duplicates, out-of-order, overlapping segments, capacity limits.
-// Always ACKs received data (sender may be retransmitting due to lost ACK).
-// Overlapping bytes from an honest peer are always identical; mismatches are
-// logged and resolved to one copy rather than treated as fatal.
+// Insert
 // =============================================================================
 
+// insert stores a segment. Overlaps with neighbouring segments are left in
+// place and resolved on delivery: overlapping bytes from an honest peer are
+// identical, and the peer is authenticated.
 func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userData []byte) rcvInsertStatus {
 	dataLen := len(userData)
 
@@ -126,42 +112,28 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 
 	stream := rb.getOrCreateStream(streamID)
 
-	// Whatever the overlap resolution below stores, rb.len grows by exactly
-	// that much, so the delta is the newly received byte count -- duplicates
-	// and already-delivered prefixes excluded for free.
-	lenBefore := rb.len
-	defer func() {
-		if stored := rb.len - lenBefore; stored > 0 {
-			rb.received += uint64(stored)
-		}
-	}()
-
-	// Data after close offset - ACK but drop
+	// Past the close offset: ACK so the peer stops, but drop
 	if stream.closeAtOffset != nil && offset >= *stream.closeAtOffset {
 		rb.ackList = append(rb.ackList, &ack{streamId: streamID, offset: offset, len: uint16(dataLen)})
 		return rcvInsertDuplicate
 	}
 
-	// In-order data (fills the head-of-line gap) is accepted even when full:
-	// it is immediately drainable, so accepting it frees space rather than
-	// growing the retained buffer. Rejecting it would deadlock - the buffer
-	// stays full and the one packet that would drain it can never land.
+	// In-order data is accepted even when full: it is drainable at once, and
+	// rejecting it would deadlock on a full buffer
 	advancesDelivery := offset <= stream.nextInOrder && offset+uint64(dataLen) > stream.nextInOrder
 	if !advancesDelivery && rb.len+dataLen > rb.capacity {
 		return rcvInsertBufferFull
 	}
 
-	// Always ACK (may be retransmit due to lost ACK)
+	// Always ACK: a retransmit means the first ACK was lost
 	rb.ackList = append(rb.ackList, &ack{streamId: streamID, offset: offset, len: uint16(dataLen)})
 
-	// Already delivered to application (or skipped as lost)
 	if offset+uint64(dataLen) <= stream.nextInOrder {
 		stream.countIfLate(offset, uint64(dataLen))
 		return rcvInsertDuplicate
 	}
 
-	// Trim any prefix already delivered or skipped: a segment stored below
-	// nextInOrder would block in-order delivery forever
+	// Trim what was already delivered or skipped
 	if offset < stream.nextInOrder {
 		trim := stream.nextInOrder - offset
 		stream.countIfLate(offset, trim)
@@ -170,90 +142,27 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 		dataLen = len(userData)
 	}
 
-	// Exact offset match - keep larger segment
+	// Same offset: keep the longer segment
+	newBytes := dataLen
 	if existing, exists := stream.segments.get(offset); exists {
 		if dataLen <= len(existing) {
 			return rcvInsertDuplicate
 		}
-		stream.segments.remove(offset)
 		rb.len -= len(existing)
-		stream.segments.putOrdered(offset, userData)
-		rb.len += dataLen
-		return rcvInsertOk
+		newBytes -= len(existing)
 	}
 
-	// Insert first so Prev/Next are O(1)
 	stream.segments.putOrdered(offset, userData)
 	rb.len += dataLen
-
-	finalOffset, finalData := offset, userData
-
-	// Handle previous segment overlap
-	if prevOff, prev, exists := stream.segments.prev(offset); exists {
-		prevEnd := prevOff + uint64(len(prev))
-		if prevEnd > offset {
-			overlapLen := prevEnd - offset
-			if overlapLen >= uint64(dataLen) {
-				// Completely covered by previous - remove ourselves
-				stream.segments.remove(offset)
-				rb.len -= dataLen
-				return rcvInsertDuplicate
-			}
-			// Trim front: remove, adjust, re-insert
-			warnOverlapMismatch(prev[offset-prevOff:], userData[:overlapLen])
-			stream.segments.remove(offset)
-			rb.len -= dataLen
-			finalOffset = prevEnd
-			finalData = userData[overlapLen:]
-			stream.segments.putOrdered(finalOffset, finalData)
-			rb.len += len(finalData)
-		}
-	}
-
-	// Handle next segment overlap
-	if nextOff, next, exists := stream.segments.next(finalOffset); exists {
-		ourEnd := finalOffset + uint64(len(finalData))
-		if ourEnd > nextOff {
-			stream.segments.remove(finalOffset)
-			rb.len -= len(finalData)
-
-			nextEnd := nextOff + uint64(len(next))
-			overlapStart := nextOff - finalOffset
-
-			if ourEnd >= nextEnd {
-				// We completely cover next - remove it
-				stream.segments.remove(nextOff)
-				rb.len -= len(next)
-				warnOverlapMismatch(next, finalData[overlapStart:overlapStart+uint64(len(next))])
-			} else {
-				// Partial overlap - shorten our data
-				warnOverlapMismatch(next[:ourEnd-nextOff], finalData[overlapStart:])
-				finalData = finalData[:overlapStart]
-			}
-
-			stream.segments.putOrdered(finalOffset, finalData)
-			rb.len += len(finalData)
-		}
-	}
-
+	rb.received += uint64(newBytes)
 	return rcvInsertOk
 }
 
-// warnOverlapMismatch logs when overlapping segments carry different bytes.
-// AEAD authenticates the peer, so a mismatch means a broken (or malicious)
-// peer - not worth crashing over. The overlap resolves to one of the copies.
-func warnOverlapMismatch(existing, incoming []byte) {
-	if !bytes.Equal(existing, incoming) {
-		slog.Warn("segment overlap mismatch - peer sent conflicting data")
-	}
-}
-
 // =============================================================================
-// Read - Deliver in-order data to application
+// Read
 // =============================================================================
 
-// removeOldestInOrder returns all contiguous in-order data for the stream.
-// Returns nil if no in-order data available.
+// removeOldestInOrder returns all contiguous in-order data, nil if none
 func (rb *receiver) removeOldestInOrder(streamID uint32) []byte {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -266,13 +175,16 @@ func (rb *receiver) removeOldestInOrder(streamID uint32) []byte {
 	var result []byte
 	for {
 		off, val, ok := stream.segments.first()
-		if !ok || off != stream.nextInOrder {
+		if !ok || off > stream.nextInOrder {
 			break
 		}
 		stream.segments.remove(off)
 		rb.len -= len(val)
-		result = append(result, val...)
-		stream.nextInOrder = off + uint64(len(val))
+		// Skip the part an earlier segment already delivered
+		if end := off + uint64(len(val)); end > stream.nextInOrder {
+			result = append(result, val[stream.nextInOrder-off:]...)
+			stream.nextInOrder = end
+		}
 	}
 	return result
 }
@@ -281,19 +193,16 @@ func (rb *receiver) removeOldestInOrder(streamID uint32) []byte {
 // Unreliable streams - gap skipping
 // =============================================================================
 
-// markUnreliable flags a stream as best-effort. Called when a data packet with
-// needsReTx=0 arrives; sticky for the stream's lifetime.
+// markUnreliable is sticky for the stream's lifetime
 func (rb *receiver) markUnreliable(streamID uint32) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.getOrCreateStream(streamID).unreliable = true
 }
 
-// checkGap skips the head-of-line gap on an unreliable stream once it has been
-// open longer than timeoutNano. Lost best-effort data is never retransmitted,
-// so waiting beyond a reorder window blocks delivery for nothing. The gap
-// target is the next buffered segment, or the close offset when the tail of
-// the stream was lost.
+// checkGap skips the head-of-line gap of an unreliable stream once it has
+// been open longer than timeoutNano. The gap ends at the next buffered
+// segment, or at the close offset when the tail of the stream was lost.
 func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -311,7 +220,7 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64
 	case !ok && stream.closeAtOffset != nil && *stream.closeAtOffset > stream.nextInOrder:
 		target = *stream.closeAtOffset
 	default:
-		stream.gapStartNano = 0 // no gap (or it filled naturally)
+		stream.gapStartNano = 0
 		return
 	}
 
@@ -328,15 +237,12 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64
 	stream.gapStartNano = 0
 }
 
-// bytesReceived returns the cumulative payload admitted to the reassembly
-// buffer across the connection, counted on arrival.
 func (rb *receiver) bytesReceived() uint64 {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.received
 }
 
-// lateStats returns counters for data that arrived after its range was skipped.
 func (rb *receiver) lateStats(streamID uint32) (packets uint64, bytes uint64) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -431,15 +337,13 @@ func (rb *receiver) size() int {
 // Receive window
 // =============================================================================
 
-// free reports the space left. Caller holds the lock. max(0): size can briefly
-// exceed capacity when an in-order segment is accepted over the limit to break
-// a reassembly deadlock.
+// free is the space left; caller holds the lock. In-order data accepted over
+// the limit can push len past capacity briefly.
 func (rb *receiver) free() uint64 {
 	return uint64(max(rb.capacity-rb.len, 0))
 }
 
-// freeAdvertise returns the window to put on an outgoing packet and records it
-// as announced.
+// freeAdvertise returns the window for an outgoing packet and records it
 func (rb *receiver) freeAdvertise() uint64 {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
@@ -447,12 +351,9 @@ func (rb *receiver) freeAdvertise() uint64 {
 	return rb.advertised
 }
 
-// windowReopened reports that the buffer has drained materially since the peer
-// was last told, so a peer blocked on the old value should hear about it now.
-// The margin is the classic silly-window rule: only a usefully larger window
-// is worth a packet, or a slowly draining buffer would generate one per read.
-// Floored at the protocol's own minimum so the margin can never degenerate to
-// zero and turn every drained byte into a packet.
+// windowReopened reports that the buffer drained usefully since the peer was
+// last told. The margin is the silly-window rule: a slowly draining buffer
+// must not generate a packet per read.
 func (rb *receiver) windowReopened(mtu int) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()

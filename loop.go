@@ -10,20 +10,14 @@ import (
 )
 
 // =============================================================================
-// Event loop - Read/Write coordination
-//
-// Listen() receives and processes one packet
-// Flush() sends pending data using round-robin across connections/streams
-// Loop() combines both in a blocking event loop
+// Event loop: Listen receives one packet, Flush sends one, Loop alternates
 // =============================================================================
 
-// Listen reads one packet, decrypts it, and processes the payload.
-// Returns the stream that received data, or nil on timeout/no-data.
+// Listen reads and processes one packet. Returns the stream that received
+// data, or nil on timeout.
 func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	n, rAddr, lAddr, elapsedNano, err := l.localConn.ReadFromUDPAddrPort(l.readBuf, timeoutNano, nowNano)
-	// elapsedNano runs from nowNano, so this is the arrival time exactly. A
-	// pre-wait stamp would under-measure every RTT sample by the wait.
-	nowNano += elapsedNano
+	nowNano += elapsedNano // the arrival time
 
 	if err != nil {
 		var netErr net.Error
@@ -39,8 +33,6 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 
 	encData := l.readBuf[:n]
 
-	// Coarse filter for the header and connId reads below; each message type
-	// re-checks its own minimum when decrypting.
 	if len(encData) < minPacketSize {
 		return nil, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
@@ -50,7 +42,6 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	}
 	msgType := cryptoMsgType(header >> 5)
 
-	// Decrypt and get/create connection
 	c, payload, sn, err := decodePacket(l, encData, rAddr, msgType)
 	if err != nil {
 		return nil, err
@@ -59,16 +50,12 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	if nowNano > c.lastReadTimeNano {
 		c.lastReadTimeNano = nowNano
 	}
-	// Answer from the address this peer used, not whichever the kernel would
-	// pick. Tracked per packet so it follows a peer that changes path.
 	if lAddr.IsValid() {
 		c.localAddr = lAddr
 	}
 
-	// Decode transport layer payload
 	var p *payloadHeader
-	if len(payload) == 0 && msgType == initSnd {
-		// InitSnd has no payload - create empty header
+	if len(payload) == 0 && msgType == initSnd { // InitSnd has no payload
 		p = &payloadHeader{}
 		payload = []byte{}
 	} else {
@@ -84,9 +71,8 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 		return nil, err
 	}
 
-	// Handshake completes when:
-	// - Initiator receives InitRcv/InitCryptoRcv
-	// - Responder receives first Data message
+	// The initiator is ready on the init reply, the responder on the first
+	// Data message
 	if c.phase < phaseReady {
 		if c.isInitiator() {
 			if msgType == initRcv || msgType == initCryptoRcv {
@@ -100,8 +86,8 @@ func (l *Listener) Listen(timeoutNano uint64, nowNano uint64) (*Stream, error) {
 	return s, nil
 }
 
-// Flush sends pending data for all connections using round-robin.
-// Returns minimum pacing interval until next send opportunity.
+// Flush sends one packet, round-robin over connections and streams, and
+// returns how long until the next send is due
 func (l *Listener) Flush(nowNano uint64) uint64 {
 	minPacing := minDeadline
 	if l.connMap.size() == 0 {
@@ -111,7 +97,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 	var closeConnIds []uint64
 	var closeStreams map[*conn][]uint32
 
-	//needs to be defer, otherwise we lock ourselfs out.
+	// Deferred: cleanup takes locks the iteration holds
 	defer func() {
 		for _, connId := range closeConnIds {
 			l.cleanupConn(connId)
@@ -125,7 +111,6 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 
 	startStreamID := l.currentStreamID
 
-	// Stale cursors after a close are handled by the iterator's fallback.
 	for _, c := range l.connMap.iterator(l.currentConnID) {
 		for _, stream := range c.streams.iterator(startStreamID) {
 			dataSent, pacingNano, err := c.flushStream(stream, nowNano)
@@ -169,8 +154,8 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 	return minPacing
 }
 
-// Loop runs the event loop until context is cancelled or error occurs.
-// Callback is invoked after each Listen(), even if stream is nil (allows periodic work).
+// Loop runs until the context is cancelled or an error occurs. The callback
+// runs after every Listen, with a nil stream on timeout, for periodic work.
 func (l *Listener) Loop(ctx context.Context, callback func(ctx context.Context, s *Stream) error) error {
 	for {
 		select {

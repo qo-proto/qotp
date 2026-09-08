@@ -6,29 +6,16 @@ import (
 )
 
 // =============================================================================
-// Transport layer protocol encoding/decoding
+// Transport layer encoding
 //
-// Header byte: one independent flag per field.
-//   Bit 0: hasAck        ACK block present
-//   Bit 1: hasStream     streamId + streamOffset (+ userData) present
-//   Bit 2: extend        48-bit offsets instead of 24-bit
-//   Bit 3: isClose
-//   Bit 4: keyUpdate        32-byte pubkey present
-//   Bit 5: keyUpdateAck     32-byte pubkey present
-//   Bits 6-7: reserved
+// [flags][maxPayload][rcvWnd][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
 //
-// Wire layout: [flags][maxPayload][rcvWnd][ack?][keyPub?][keyPubAck?][streamId+offset?][data]
-//
-// Stream reliability rides the high bit of the wire streamId rather than a
-// flag, so every packet of a best-effort stream carries it — a once-announced
-// flag could be lost, and best-effort data is never retransmitted.
-//
-// maxPayload and rcvWnd are unconditional so a path MTU change or a receive
-// buffer that drained reaches the peer on the next packet, with no "already
-// announced" state to keep. rcvWnd in particular describes the whole
-// connection's buffer, so it does not belong inside a per-stream ACK block:
-// there it would travel only when that one stream was being acknowledged, and
-// a sender blocked on a stale window has nothing to acknowledge.
+// maxPayload and rcvWnd are on every packet so an MTU change or a drained
+// buffer reaches the peer without "already announced" state; a sender
+// blocked on a stale window has nothing to acknowledge, so rcvWnd cannot
+// live in the ACK block. Stream reliability rides the high bit of the wire
+// streamId so every packet of a best-effort stream carries it: a
+// once-announced flag could be lost and would never be retransmitted.
 // =============================================================================
 
 const (
@@ -46,20 +33,13 @@ const (
 	maxStreamID         uint32 = streamUnreliableBit - 1
 )
 
-// =============================================================================
-// Types
-// =============================================================================
-
 type payloadHeader struct {
-	maxPayload uint16 // sender's max UDP payload; always present
-	rcvWnd     uint64 // free space in the connection's receive buffer; always present
-	isClose    bool
-	// A key update is present exactly when its public key is. The wire flag
-	// means "32 bytes follow", so the key's length is the only truth there is
-	// -- a separate bool could disagree with it.
-	keyUpdatePub    []byte // 32 bytes to announce a new ephemeral key
-	keyUpdatePubAck []byte // 32 bytes to answer the peer's
-	unreliable      bool   // best-effort stream: sender never retransmits its data
+	maxPayload      uint16 // sender's max UDP payload
+	rcvWnd          uint64 // free space in the sender's receive buffer
+	isClose         bool
+	keyUpdatePub    []byte // present exactly when 32 bytes long
+	keyUpdatePubAck []byte
+	unreliable      bool
 	ack             *ack
 	streamId        uint32
 	streamOffset    uint64
@@ -71,26 +51,8 @@ type ack struct {
 	len      uint16
 }
 
-// =============================================================================
-// Receive window encoding
-//
-// Logarithmic encoding: 8 substeps per power of 2
-// Maps 0-255 to 0B-~896GB range
-//
-//	encoded | capacity
-//	--------|----------
-//	0       | 0B
-//	1       | 128B
-//	2       | 256B
-//	10      | 512B
-//	18      | 1KB
-//	50      | 16KB
-//	100     | 1MB
-//	150     | 96MB
-//	200     | 7GB
-//	255     | ~896GB
-//
-// =============================================================================
+// The receive window is encoded logarithmically in one byte, 8 steps per
+// power of two: 1 = 128B, 18 = 1KB, 100 = 1MB, 255 = about 896GB.
 
 func encodeRcvWindow(actualBytes uint64) uint8 {
 	if actualBytes == 0 {
@@ -128,17 +90,11 @@ func decodeRcvWindow(encoded uint8) uint64 {
 	return base + uint64(subStep)*increment
 }
 
-// =============================================================================
-// Encode
-// =============================================================================
-
 func encodeProto(p *payloadHeader, userData []byte) []byte {
 	isExtend := p.streamOffset > 0xFFFFFF || (p.ack != nil && p.ack.offset > 0xFFFFFF)
 
-	// Stream header (streamId+offset) included when:
-	// - any control flag set, OR
-	// - has user data (empty userData = ping), OR
-	// - no ACK (for minimum packet size)
+	// The stream header is present with any control flag, with user data
+	// (empty for a ping), or when there is no ACK either
 	hasKeyUpdate := len(p.keyUpdatePub) == pubKeySize
 	hasKeyUpdateAck := len(p.keyUpdatePubAck) == pubKeySize
 	hasStreamHeader := p.isClose || hasKeyUpdate || hasKeyUpdateAck ||
@@ -200,10 +156,6 @@ func encodeProto(p *payloadHeader, userData []byte) []byte {
 	copy(encoded[offset:], userData)
 	return encoded
 }
-
-// =============================================================================
-// Decode
-// =============================================================================
 
 func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	if len(data) < 4 {
@@ -270,10 +222,6 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 
 	return p, userData, nil
 }
-
-// =============================================================================
-// Overhead calculation
-// =============================================================================
 
 func calcProtoOverhead(flags uint8) int {
 	overhead := 1 + 2 + 1 // flags + maxPayload + rcvWnd

@@ -226,139 +226,46 @@ func TestReceiveBuffer_Insert_ExactCapacity(t *testing.T) {
 }
 
 // =============================================================================
-// OVERLAP TESTS - PREVIOUS SEGMENT
+// OVERLAP TESTS
 // =============================================================================
 
-func TestReceiveBuffer_Insert_PreviousOverlap_Mismatch_KeepsExisting(t *testing.T) {
+// Overlapping segments are stored as they arrive and reconciled on delivery.
+func TestReceiveBuffer_Overlap_PreviousSegment(t *testing.T) {
 	rb := newReceiveBuffer(1000)
-	rb.insert(1, 100, 0, []byte("ABCDE"))
+	rb.insert(1, 0, 0, []byte("ABCDE"))
+	assert.Equal(t, rcvInsertOk, rb.insert(1, 3, 0, []byte("DEFGH")))
 
-	// Conflicting overlap must not panic; existing bytes win, tail is kept
-	status := rb.insert(1, 102, 0, []byte("XXFG"))
-
-	assert.Equal(t, rcvInsertOk, status)
-	stream := rb.streams[1]
-	existing, ok := stream.segments.get(100)
-	assert.True(t, ok)
-	assert.Equal(t, []byte("ABCDE"), existing)
-	tail, ok := stream.segments.get(105)
-	assert.True(t, ok)
-	assert.Equal(t, []byte("G"), tail)
+	assert.Equal(t, []byte("ABCDEFGH"), rb.removeOldestInOrder(1))
+	assert.Equal(t, 0, rb.size())
 }
 
-func TestReceiveBuffer_Insert_PreviousOverlap_Complete(t *testing.T) {
+func TestReceiveBuffer_Overlap_NextSegment(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 5, 0, []byte("FGHI"))
+	assert.Equal(t, rcvInsertOk, rb.insert(1, 0, 0, []byte("ABCDEFG")))
+
+	assert.Equal(t, []byte("ABCDEFGHI"), rb.removeOldestInOrder(1))
+	assert.Equal(t, 0, rb.size())
+}
+
+func TestReceiveBuffer_Overlap_CoversBothNeighbours(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("12345"))
+	rb.insert(1, 15, 0, []byte("WXYZ"))
+	assert.Equal(t, rcvInsertOk, rb.insert(1, 2, 0, []byte("345ABCDEFGHIJWXYZUV")))
+
+	assert.Equal(t, []byte("12345ABCDEFGHIJWXYZUV"), rb.removeOldestInOrder(1))
+	assert.Equal(t, 0, rb.size())
+}
+
+func TestReceiveBuffer_Overlap_CompletelyCovered(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.insert(1, 100, 0, []byte("ABCDEFGH"))
+	rb.insert(1, 102, 0, []byte("CD"))
 
-	status := rb.insert(1, 102, 0, []byte("CD"))
-
-	assert.Equal(t, rcvInsertDuplicate, status)
-
-	stream := rb.streams[1]
-	rcvValue, exists := stream.segments.get(100)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGH"), rcvValue)
-}
-
-func TestReceiveBuffer_Insert_PreviousOverlap_PartialMatch(t *testing.T) {
-	rb := newReceiveBuffer(1000)
-	rb.insert(1, 100, 0, []byte("ABCDE"))
-
-	// Overlapping with matching data
-	status := rb.insert(1, 103, 0, []byte("DEFGH"))
-
-	assert.Equal(t, rcvInsertOk, status)
-}
-
-// =============================================================================
-// OVERLAP TESTS - NEXT SEGMENT
-// =============================================================================
-
-func TestReceiveBuffer_Insert_NextOverlap_Mismatch_KeepsExisting(t *testing.T) {
-	rb := newReceiveBuffer(1000)
-	rb.insert(1, 105, 0, []byte("EFGH"))
-
-	// Conflicting overlap must not panic; incoming is trimmed, existing wins
-	status := rb.insert(1, 100, 0, []byte("ABCDEF"))
-
-	assert.Equal(t, rcvInsertOk, status)
-	stream := rb.streams[1]
-	head, ok := stream.segments.get(100)
-	assert.True(t, ok)
-	assert.Equal(t, []byte("ABCDE"), head)
-	next, ok := stream.segments.get(105)
-	assert.True(t, ok)
-	assert.Equal(t, []byte("EFGH"), next)
-}
-
-func TestReceiveBuffer_Insert_NextOverlap_Partial(t *testing.T) {
-	rb := newReceiveBuffer(1000)
-	rb.insert(1, 105, 0, []byte("EFGH"))
-
-	status := rb.insert(1, 100, 0, []byte("ABCDEE"))
-
-	assert.Equal(t, rcvInsertOk, status)
-
-	stream := rb.streams[1]
-
-	// Should have shortened incoming segment
-	rcvValue, exists := stream.segments.get(100)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDE"), rcvValue)
-
-	rcvValue, exists = stream.segments.get(105)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("EFGH"), rcvValue)
-}
-
-func TestReceiveBuffer_Insert_NextOverlap_Complete(t *testing.T) {
-	rb := newReceiveBuffer(1000)
-	rb.insert(1, 105, 0, []byte("EF"))
-
-	status := rb.insert(1, 100, 0, []byte("ABCDEEFGH"))
-
-	assert.Equal(t, rcvInsertOk, status)
-
-	stream := rb.streams[1]
-
-	rcvValue, exists := stream.segments.get(100)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEEFGH"), rcvValue)
-
-	// Next segment should be removed (completely overlapped)
-	_, exists = stream.segments.get(105)
-	assert.False(t, exists)
-}
-
-// =============================================================================
-// OVERLAP TESTS - BOTH SIDES
-// =============================================================================
-
-func TestReceiveBuffer_Insert_BothOverlaps(t *testing.T) {
-	rb := newReceiveBuffer(1000)
-	rb.insert(1, 90, 0, []byte("12345"))
-	rb.insert(1, 105, 0, []byte("WXYZ"))
-
-	// Segment that overlaps both
-	status := rb.insert(1, 92, 0, []byte("345ABCDEFGHIJWXYZUV"))
-
-	assert.Equal(t, rcvInsertOk, status)
-
-	stream := rb.streams[1]
-
-	// Previous segment unchanged
-	rcvValue, exists := stream.segments.get(90)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("12345"), rcvValue)
-
-	// Adjusted incoming segment
-	rcvValue, exists = stream.segments.get(95)
-	assert.True(t, exists)
-	assert.Equal(t, []byte("ABCDEFGHIJWXYZUV"), rcvValue)
-
-	// Next segment removed (completely overlapped)
-	_, exists = stream.segments.get(105)
-	assert.False(t, exists)
+	// Both are stored; delivery yields each byte once
+	rb.streams[1].nextInOrder = 100
+	assert.Equal(t, []byte("ABCDEFGH"), rb.removeOldestInOrder(1))
 }
 
 // =============================================================================
@@ -409,13 +316,13 @@ func TestReceiveBuffer_Size_AfterInsert(t *testing.T) {
 	assert.Equal(t, 5, rb.size())
 }
 
-func TestReceiveBuffer_Size_OverlappingAddsOnlyNew(t *testing.T) {
+func TestReceiveBuffer_Size_OverlappingCountsStored(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.insert(1, 0, 0, []byte("ABCDE"))
 
 	rb.insert(1, 2, 0, []byte("CDEFG"))
 
-	assert.Equal(t, 7, rb.size()) // 5 + 2
+	assert.Equal(t, 10, rb.size()) // overlaps are resolved on delivery
 }
 
 func TestReceiveBuffer_Size_AfterRead(t *testing.T) {
@@ -939,13 +846,12 @@ func TestReceiveBuffer_BytesReceived_IgnoresDuplicates(t *testing.T) {
 	assert.Equal(t, uint64(4), rb.bytesReceived())
 }
 
-func TestReceiveBuffer_BytesReceived_CountsOnlyNewBytesOfOverlap(t *testing.T) {
+func TestReceiveBuffer_BytesReceived_CountsStoredBytes(t *testing.T) {
 	rb := newReceiveBuffer(1000)
 	rb.insert(1, 0, 0, []byte("ABCD"))
-	// Overlaps the first two bytes, contributes "EF".
 	rb.insert(1, 2, 0, []byte("CDEF"))
 
-	assert.Equal(t, uint64(6), rb.bytesReceived())
+	assert.Equal(t, uint64(8), rb.bytesReceived())
 	assert.Equal(t, []byte("ABCDEF"), rb.removeOldestInOrder(1))
 }
 

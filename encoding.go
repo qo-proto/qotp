@@ -1,83 +1,37 @@
 package qotp
 
-// =============================================================================
-// Little-endian integer encoding
-//
-// All integers are encoded in little-endian format for wire protocol.
-// Returns number of bytes written for Put functions.
-// =============================================================================
+import "encoding/binary"
 
-func putUint16(b []byte, v uint16) int {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	return 2
-}
+// Wire integers are little-endian. Put functions return the bytes written.
+
+func putUint16(b []byte, v uint16) int { binary.LittleEndian.PutUint16(b, v); return 2 }
+func putUint32(b []byte, v uint32) int { binary.LittleEndian.PutUint32(b, v); return 4 }
+func putUint64(b []byte, v uint64) int { binary.LittleEndian.PutUint64(b, v); return 8 }
 
 func putUint24(b []byte, v uint64) int {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
+	b[0], b[1], b[2] = byte(v), byte(v>>8), byte(v>>16)
 	return 3
 }
 
-func putUint32(b []byte, v uint32) int {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-	return 4
-}
-
 func putUint48(b []byte, v uint64) int {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-	b[4] = byte(v >> 32)
-	b[5] = byte(v >> 40)
+	putUint32(b, uint32(v))
+	putUint16(b[4:], uint16(v>>32))
 	return 6
 }
 
-func putUint64(b []byte, v uint64) int {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
-	b[4] = byte(v >> 32)
-	b[5] = byte(v >> 40)
-	b[6] = byte(v >> 48)
-	b[7] = byte(v >> 56)
-	return 8
-}
-
-func getUint16(b []byte) uint16 {
-	return uint16(b[0]) | uint16(b[1])<<8
-}
+func getUint16(b []byte) uint16 { return binary.LittleEndian.Uint16(b) }
+func getUint32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
+func getUint64(b []byte) uint64 { return binary.LittleEndian.Uint64(b) }
 
 func getUint24(b []byte) uint64 {
 	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16
 }
 
-func getUint32(b []byte) uint32 {
-	return uint32(b[0]) | uint32(b[1])<<8 | uint32(b[2])<<16 | uint32(b[3])<<24
-}
-
 func getUint48(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 |
-		uint64(b[3])<<24 | uint64(b[4])<<32 | uint64(b[5])<<40
+	return uint64(getUint32(b)) | uint64(getUint16(b[4:]))<<32
 }
 
-func getUint64(b []byte) uint64 {
-	return uint64(b[0]) | uint64(b[1])<<8 | uint64(b[2])<<16 | uint64(b[3])<<24 |
-		uint64(b[4])<<32 | uint64(b[5])<<40 | uint64(b[6])<<48 | uint64(b[7])<<56
-}
-
-// =============================================================================
-// Variable-length offset encoding (24-bit or 48-bit)
-//
-// Used for stream offsets in transport layer. Saves 3 bytes per offset
-// when values fit in 24 bits (< 16MB).
-// =============================================================================
+// Stream offsets are 24-bit unless the extend flag selects 48-bit
 
 func putOffsetVarint(b []byte, v uint64, isExtend bool) int {
 	if isExtend {

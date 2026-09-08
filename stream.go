@@ -5,38 +5,27 @@ import (
 	"sync/atomic"
 )
 
-// defaultGapTimeoutNano is the gap timeout a stream starts with, see
-// SetGapTimeoutNano.
-const defaultGapTimeoutNano = uint64(100 * msNano)
+const defaultGapTimeoutNano = uint64(100 * msNano) // see SetGapTimeoutNano
 
-// =============================================================================
-// Stream - Bidirectional byte stream within a connection
-//
-// Each connection can have multiple independent streams (multiplexing).
-// Streams have separate send and receive directions that close independently.
-// Read returns in-order data; Write queues data for transmission.
-// =============================================================================
-
+// Stream is a bidirectional byte stream within a connection. The two
+// directions close independently.
 type Stream struct {
 	streamID       uint32
 	conn           *conn
-	reliable       bool   // Retransmit lost data (default true)
-	gapTimeoutNano uint64 // Unreliable streams: how long a head-of-line gap waits before it is skipped
+	reliable       bool
+	gapTimeoutNano uint64
 
-	// Close flags are written by the event loop and by user-goroutine Read,
-	// and read lock-free by both sides — hence atomic. All other stream
-	// state is either loop-owned or guarded by the send/receive buffer locks.
-	rcvClosed atomic.Bool // Receive direction closed (received FIN)
-	sndClosed atomic.Bool // Send direction closed (sent FIN and ACKed)
+	// Written by the event loop and by Read on the user's goroutine
+	rcvClosed atomic.Bool // FIN received and delivered
+	sndClosed atomic.Bool // FIN sent and ACKed
 }
 
 // =============================================================================
 // Read/Write
 // =============================================================================
 
-// Read returns available in-order data from the stream.
-// Returns io.EOF after receiving FIN and delivering all data.
-// Returns nil data (not error) if no data available yet.
+// Read returns available in-order data, nil if none yet, and io.EOF once
+// the peer's FIN and everything before it have been delivered.
 func (s *Stream) Read() ([]byte, error) {
 	if s.rcvClosed.Load() {
 		return nil, io.EOF
@@ -51,16 +40,15 @@ func (s *Stream) Read() ([]byte, error) {
 	return data, nil
 }
 
-// Write queues data for transmission. May return less than len(userData)
-// if send buffer is full. Returns io.EOF if stream is closing.
+// Write queues data. It returns less than len(userData) when the send
+// buffer is full, and io.EOF once the stream is closing.
 func (s *Stream) Write(userData []byte) (int, error) {
 	if s.sndClosed.Load() || s.IsCloseRequested() {
 		return 0, io.EOF
 	}
 
 	n := s.conn.snd.queueData(s.streamID, userData)
-	if n > 0 {
-		// Wake the loop so Flush can send it, for a partial fill too
+	if n > 0 { // wake the loop so Flush can send it
 		if err := s.conn.listener.localConn.TimeoutReadNow(); err != nil {
 			return 0, err
 		}
@@ -72,33 +60,28 @@ func (s *Stream) Write(userData []byte) (int, error) {
 // Stream lifecycle
 // =============================================================================
 
-// Close initiates graceful close of the send direction.
-// Receive direction remains open until peer's FIN arrives.
+// Close closes the send direction; receiving continues until the peer's FIN
 func (s *Stream) Close() {
 	s.conn.snd.close(s.streamID)
 }
 
-// IsClosed returns true when both directions are fully closed.
 func (s *Stream) IsClosed() bool {
 	return s.rcvClosed.Load() && s.sndClosed.Load()
 }
 
-// IsCloseRequested returns true if Close() has been called (FIN queued).
+// IsCloseRequested reports whether Close has been called
 func (s *Stream) IsCloseRequested() bool {
 	return s.conn.snd.getOffsetClosedAt(s.streamID) != nil
 }
 
-// IsOpen returns true if stream is not closing and not closed.
 func (s *Stream) IsOpen() bool {
 	return !s.IsCloseRequested() && !s.IsClosed()
 }
 
-// RcvClosed returns true if receive direction is closed.
 func (s *Stream) RcvClosed() bool {
 	return s.rcvClosed.Load()
 }
 
-// SndClosed returns true if send direction is fully closed (FIN ACKed).
 func (s *Stream) SndClosed() bool {
 	return s.sndClosed.Load()
 }
@@ -107,63 +90,46 @@ func (s *Stream) SndClosed() bool {
 // Configuration
 // =============================================================================
 
-// SetReliable controls whether lost data packets are retransmitted.
-// Default is true. Set to false for real-time streams where retransmitting
-// stale data is worse than dropping it. Call before the first Write: the
-// receiver's marking is sticky, so a stream can be turned best-effort but not
-// back again. The setting travels in the high bit of the wire stream id, so
-// every packet of the stream carries it.
-//
-// On an unreliable stream the delivered byte stream may have lost ranges
-// silently removed (after the gap timeout), so the application must do
-// its own message framing. Close (FIN) and key updates are always
-// retransmitted, and ACKs are best-effort in both modes.
+// SetReliable controls whether lost data is retransmitted (default true).
+// Call it before the first Write: the receiver's marking is sticky, so a
+// stream can be made best-effort but not reliable again. On an unreliable
+// stream lost ranges are removed from the byte stream after the gap timeout,
+// so the application must do its own framing. FIN and key updates are
+// always retransmitted.
 func (s *Stream) SetReliable(reliable bool) {
 	s.reliable = reliable
 }
 
 // SetGapTimeoutNano sets how long an unreliable stream waits for a missing
-// packet before giving it up as lost and delivering the data behind it
-// (default 100ms). In-order data is never delayed; the timer only runs while
-// a head-of-line gap is open. Lower values cut the stall after a loss, higher
-// values tolerate more reordering. RTTNano/RTTVarNano can guide tuning, e.g.
-// srtt/2 or 4*rttvar. Has no effect on reliable streams.
+// packet before skipping it and delivering the data behind it (default
+// 100ms). In-order data is never delayed. RTTNano and RTTVarNano can guide
+// tuning, e.g. 4*rttvar.
 func (s *Stream) SetGapTimeoutNano(timeoutNano uint64) {
 	s.gapTimeoutNano = timeoutNano
 }
 
-// GapTimeoutNano returns the current gap timeout, see SetGapTimeoutNano.
 func (s *Stream) GapTimeoutNano() uint64 {
 	return s.gapTimeoutNano
 }
 
-// RTTNano returns the connection's smoothed RTT estimate in nanoseconds
-// (0 until the first RTT sample).
-//
-// Call this from the Loop callback: the RTT estimate is written by the event
-// loop without a lock (the send path is single-goroutine), so reading it from
-// another goroutine is a data race. No lock is taken here because a lock on
-// the reader alone would not make it safe.
+// RTTNano is the smoothed RTT, 0 until the first sample. Call it from the
+// Loop callback: the event loop writes it without a lock.
 func (s *Stream) RTTNano() uint64 {
 	return s.conn.srtt
 }
 
-// RTTVarNano returns the connection's RTT variation (jitter) estimate in
-// nanoseconds (RFC 6298 rttvar). Call from the Loop callback - see RTTNano.
+// RTTVarNano is the RTT variation (RFC 6298). Call it from the Loop callback.
 func (s *Stream) RTTVarNano() uint64 {
 	return s.conn.rttvar
 }
 
-// LatePackets returns the number of packets on this stream that arrived
-// after their range had already been skipped as lost. Safe from any
-// goroutine (the counter is guarded by the receive buffer's lock).
+// LatePackets counts packets that arrived after their range was skipped as
+// lost. Safe from any goroutine.
 func (s *Stream) LatePackets() uint64 {
 	packets, _ := s.conn.rcv.lateStats(s.streamID)
 	return packets
 }
 
-// LateBytes returns the number of bytes on this stream that arrived after
-// their range had already been skipped as lost.
 func (s *Stream) LateBytes() uint64 {
 	_, bytes := s.conn.rcv.lateStats(s.streamID)
 	return bytes
@@ -177,29 +143,22 @@ func (s *Stream) StreamID() uint32 {
 	return s.streamID
 }
 
-// BytesAcked returns the number of contiguous bytes the peer has
-// acknowledged on this stream's send direction. Safe from any goroutine
-// (guarded by the send buffer's lock); useful for progress and rate
-// sampling.
+// BytesAcked is the contiguous acknowledged offset of this stream. Safe
+// from any goroutine.
 func (s *Stream) BytesAcked() uint64 {
 	return s.conn.snd.getOffsetAcked(s.streamID)
 }
 
-// BytesDelivered returns the connection's cumulative acked payload bytes in
-// any order — unlike BytesAcked it does not freeze at head-of-line holes
-// during loss recovery, making it the better signal for rate sampling.
-// Connection-wide (all streams). Safe from any goroutine (atomic).
+// BytesDelivered is the connection's acked payload in any order, so unlike
+// BytesAcked it does not freeze at head-of-line holes: the better signal for
+// rate sampling. Safe from any goroutine.
 func (s *Stream) BytesDelivered() uint64 {
 	return s.conn.deliveredBytes.Load()
 }
 
-// BytesReceived returns the connection's cumulative payload accepted into the
-// receive buffer, counted on arrival rather than on in-order delivery — the
-// receive-side counterpart of BytesDelivered. Read() only hands out contiguous
-// data, so its running total freezes for as long as a head-of-line hole is
-// unrepaired even while the link stays busy; this one keeps counting, which is
-// what rate sampling wants. Connection-wide (all streams). Safe from any
-// goroutine (guarded by the receive buffer's lock).
+// BytesReceived is the connection's payload accepted into the receive
+// buffer, counted on arrival: the receive-side counterpart of
+// BytesDelivered. Safe from any goroutine.
 func (s *Stream) BytesReceived() uint64 {
 	return s.conn.rcv.bytesReceived()
 }
@@ -208,12 +167,12 @@ func (s *Stream) ConnID() uint64 {
 	return s.conn.connId
 }
 
-// Ping queues a ping packet for RTT measurement.
+// Ping queues a best-effort ping, e.g. for an RTT sample
 func (s *Stream) Ping() {
 	s.conn.snd.queuePing(s.streamID)
 }
 
-// NotifyDataAvailable interrupts any blocking read to allow immediate processing.
+// NotifyDataAvailable wakes the event loop
 func (s *Stream) NotifyDataAvailable() error {
 	return s.conn.listener.localConn.TimeoutReadNow()
 }

@@ -670,7 +670,7 @@ where retransmitting stale data is worse than dropping it.
 - Handles: out-of-order delivery, overlapping segments
 - Per-stream segments stored in LinkedMap (sorted by offset)
 - Deduplication: checks against `nextInOrder`
-- Overlap handling: overlapping bytes from an honest peer are identical; mismatches are logged and resolved to one copy
+- Overlap handling: overlapping segments are stored as they arrive and reconciled on delivery; overlapping bytes from an honest peer are identical, and the peer is authenticated
 - In-order data (fills the head-of-line gap) is accepted even when full — it is immediately drainable, so accepting it frees space; rejecting it would deadlock. Usage may briefly exceed capacity by one segment as a result.
 - Tracks finished streams to reject data for cleaned-up streams
 

@@ -15,17 +15,15 @@ import (
 )
 
 // =============================================================================
-// Listener - Manages UDP socket and connections
+// Listener - the UDP socket and its connections
 // =============================================================================
 
-// socketBufferSize is the requested UDP send/receive buffer (same value
-// quic-go uses); the OS may cap it lower (Linux: net.core.rmem_max).
+// socketBufferSize is what quic-go requests; the OS may cap it (Linux:
+// net.core.rmem_max)
 const socketBufferSize = 7 * 1024 * 1024
 
-// maxUDPPayload is the largest datagram UDP can carry. The read buffer is this
-// size rather than maxPayload so that a later RefreshMaxPayload, which the peer
-// learns of on the next packet, cannot leave the buffer too small for what it
-// then sends: a truncated datagram fails its MAC and is simply lost.
+// The read buffer holds any datagram, so a peer whose maxPayload grew after
+// RefreshMaxPayload cannot send one that truncates and fails its MAC
 const maxUDPPayload = 65535
 
 type Listener struct {
@@ -35,11 +33,11 @@ type Listener struct {
 	keyLogWriter io.Writer
 	maxPayload   int
 
-	// Round-robin state for Flush()
+	// Round-robin cursors for Flush
 	currentConnID   *uint64
 	currentStreamID *uint32
 
-	readBuf []byte // reusable buffer for Listen()
+	readBuf []byte
 }
 
 // =============================================================================
@@ -83,8 +81,6 @@ func WithListenAddr(addr string) ListenFunc {
 	}
 }
 
-// Seed options - derive identity key from various inputs
-
 func WithSeed(seed [32]byte) ListenFunc {
 	return func(o *ListenOption) error {
 		k, err := ecdh.X25519().NewPrivateKey(seed[:])
@@ -127,7 +123,6 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		}
 	}
 
-	// Generate random identity key if not provided
 	if o.prvKeyId == nil {
 		k, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
@@ -136,7 +131,6 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		o.prvKeyId = k
 	}
 
-	// Create UDP socket if not provided
 	if o.localConn == nil {
 		conn, err := net.ListenUDP("udp", o.listenAddr)
 		if err != nil {
@@ -145,12 +139,8 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		if err := setDontFragment(conn); err != nil {
 			return nil, err
 		}
-		// Large socket buffers: the default (~200KB on Linux) is only a
-		// few ms of headroom at high rates — any event-loop pause longer
-		// than that overflows the socket, dropping packets invisibly
-		// before they reach us. The OS caps the request (Linux:
-		// net.core.rmem_max/wmem_max); raise those limits for full
-		// effect, as QUIC stacks recommend.
+		// The default socket buffer (about 200KB on Linux) is a few ms of
+		// headroom at high rates; a longer event-loop pause drops packets
 		if err := conn.SetReadBuffer(socketBufferSize); err != nil {
 			slog.Info("could not request UDP read buffer", "size", socketBufferSize, "err", err)
 		}
@@ -167,7 +157,6 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		interfaceMTU = 1500
 	}
 
-	// Compute max payload from interface MTU
 	maxPayload := o.maxPayload
 	if maxPayload == 0 {
 		maxPayload = interfaceMTU - ipOverhead
@@ -200,10 +189,9 @@ func (l *Listener) Close() error {
 	return l.localConn.Close()
 }
 
-// RefreshMaxPayload re-reads the network interface MTU and recomputes
-// maxPayload; the new value reaches every peer on its next packet. Call it when
-// the interface changes (e.g. WiFi to Ethernet), and like RTTNano call it from
-// the Loop callback: the event loop reads maxPayload without a lock.
+// RefreshMaxPayload re-reads the interface MTU, e.g. after switching from
+// WiFi to Ethernet; peers learn the new value on their next packet. Call it
+// from the Loop callback: the event loop reads maxPayload without a lock.
 func (l *Listener) RefreshMaxPayload() {
 	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
 		l.maxPayload = max(getInterfaceMTU(udpConn.conn)-ipOverhead, conservativeMTU)
@@ -263,8 +251,8 @@ func (l *Listener) newConn(
 	if _, loaded := l.connMap.getOrPut(connId, conn); loaded {
 		return nil, errors.New("conn already exists")
 	}
-	// A 0-RTT dialer knows the InitCryptoSnd secret before anything is sent;
-	// every other secret is logged where the handshake establishes it.
+	// The 0-RTT secret is known before anything is sent; the others are
+	// logged where the handshake establishes them
 	if withCrypto && isSender && pubKeyIdRcv != nil && l.keyLogWriter != nil {
 		if ssId, err := prvKeyEpSnd.ECDH(pubKeyIdRcv); err == nil {
 			l.logSecret("QOTP_SHARED_SECRET_ID", connId, ssId)
@@ -273,13 +261,11 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-// cleanupConn removes connection state. A stale round-robin cursor pointing
-// at the removed conn is fine: linkedMap.iterator falls back to the beginning.
 func (l *Listener) cleanupConn(connId uint64) {
 	l.connMap.remove(connId)
 }
 
-// logSecret writes one line of the key log read by DecryptWithSecrets.
+// logSecret writes a line of the key log DecryptWithSecrets reads
 func (l *Listener) logSecret(label string, connId uint64, secret []byte) {
 	if l.keyLogWriter != nil {
 		fmt.Fprintf(l.keyLogWriter, "%s %x %x\n", label, connId, secret)

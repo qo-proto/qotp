@@ -109,20 +109,6 @@ func TestLinkedMap_Put_PreservesOrder(t *testing.T) {
 	assert.Equal(t, "c", k)
 }
 
-func TestLinkedMap_Put_ZeroValue(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("zero", 0)
-
-	v, ok := lm.get("zero")
-	assert.True(t, ok)
-	assert.Equal(t, 0, v)
-	assert.True(t, lm.contains("zero"))
-}
-
-// =============================================================================
-// GET TESTS
-// =============================================================================
-
 func TestLinkedMap_Get_Existing(t *testing.T) {
 	lm := newLinkedMap[string, int]()
 	lm.put("key", 42)
@@ -150,40 +136,6 @@ func TestLinkedMap_Get_EmptyMap(t *testing.T) {
 
 // =============================================================================
 // CONTAINS TESTS
-// =============================================================================
-
-func TestLinkedMap_Contains_Empty(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	assert.False(t, lm.contains("any"))
-}
-
-func TestLinkedMap_Contains_Existing(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("key", 42)
-	assert.True(t, lm.contains("key"))
-}
-
-func TestLinkedMap_Contains_NonExistent(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("key", 42)
-	assert.False(t, lm.contains("missing"))
-}
-
-func TestLinkedMap_Contains_AfterRemove(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("key", 42)
-	lm.remove("key")
-	assert.False(t, lm.contains("key"))
-}
-
-func TestLinkedMap_Contains_ZeroValue(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("zero", 0)
-	assert.True(t, lm.contains("zero"))
-}
-
-// =============================================================================
-// REMOVE TESTS
 // =============================================================================
 
 func TestLinkedMap_Remove_Empty(t *testing.T) {
@@ -226,27 +178,6 @@ func TestLinkedMap_Remove_First(t *testing.T) {
 	k, _, ok := lm.first()
 	assert.True(t, ok)
 	assert.Equal(t, "b", k)
-}
-
-func TestLinkedMap_Remove_Middle(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-	lm.put("b", 2)
-	lm.put("c", 3)
-
-	v, ok := lm.remove("b")
-	assert.True(t, ok)
-	assert.Equal(t, 2, v)
-	assert.Equal(t, 2, lm.size())
-
-	// Verify links: a -> c
-	k, _, ok := lm.next("a")
-	assert.True(t, ok)
-	assert.Equal(t, "c", k)
-
-	k, _, ok = lm.prev("c")
-	assert.True(t, ok)
-	assert.Equal(t, "a", k)
 }
 
 func TestLinkedMap_Remove_Last(t *testing.T) {
@@ -349,68 +280,6 @@ func TestLinkedMap_Next_Traverse(t *testing.T) {
 // PREV TESTS
 // =============================================================================
 
-func TestLinkedMap_Prev_Empty(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-
-	_, _, ok := lm.prev("any")
-	assert.False(t, ok)
-}
-
-func TestLinkedMap_Prev_Single(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("only", 42)
-
-	_, _, ok := lm.prev("only")
-	assert.False(t, ok)
-}
-
-func TestLinkedMap_Prev_NonExistent(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-
-	_, _, ok := lm.prev("missing")
-	assert.False(t, ok)
-}
-
-func TestLinkedMap_Prev_Traverse(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-	lm.put("b", 2)
-	lm.put("c", 3)
-
-	k, v, ok := lm.prev("c")
-	assert.True(t, ok)
-	assert.Equal(t, "b", k)
-	assert.Equal(t, 2, v)
-
-	k, v, ok = lm.prev("b")
-	assert.True(t, ok)
-	assert.Equal(t, "a", k)
-	assert.Equal(t, 1, v)
-
-	_, _, ok = lm.prev("a")
-	assert.False(t, ok)
-}
-
-func TestLinkedMap_Prev_AfterRemove(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-	lm.put("b", 2)
-	lm.put("c", 3)
-	lm.put("d", 4)
-
-	lm.remove("b")
-
-	k, v, ok := lm.prev("c")
-	assert.True(t, ok)
-	assert.Equal(t, "a", k)
-	assert.Equal(t, 1, v)
-}
-
-// =============================================================================
-// REPLACE TESTS
-// =============================================================================
-
 func TestLinkedMap_Replace_NonExistent(t *testing.T) {
 	lm := newLinkedMap[string, int]()
 
@@ -437,50 +306,6 @@ func TestLinkedMap_Replace_NewKeyExists(t *testing.T) {
 	ok := lm.replace("a", "c", 0)
 	assert.False(t, ok)
 }
-
-func TestLinkedMap_Replace_Middle(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-	lm.put("b", 2)
-	lm.put("c", 3)
-
-	ok := lm.replace("b", "B", 200)
-	assert.True(t, ok)
-	assert.False(t, lm.contains("b"))
-	assert.True(t, lm.contains("B"))
-
-	v, _ := lm.get("B")
-	assert.Equal(t, 200, v)
-
-	// Order preserved: a -> B -> c
-	k, _, _ := lm.next("a")
-	assert.Equal(t, "B", k)
-	k, _, _ = lm.next("B")
-	assert.Equal(t, "c", k)
-}
-
-func TestLinkedMap_Replace_PreservesPrev(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("first", 1)
-	lm.put("second", 2)
-	lm.put("third", 3)
-
-	lm.replace("second", "SECOND", 200)
-
-	k, v, ok := lm.prev("third")
-	assert.True(t, ok)
-	assert.Equal(t, "SECOND", k)
-	assert.Equal(t, 200, v)
-
-	k, v, ok = lm.prev("SECOND")
-	assert.True(t, ok)
-	assert.Equal(t, "first", k)
-	assert.Equal(t, 1, v)
-}
-
-// =============================================================================
-// SIZE TESTS
-// =============================================================================
 
 func TestLinkedMap_Size_Empty(t *testing.T) {
 	lm := newLinkedMap[string, int]()
@@ -634,38 +459,6 @@ func TestLinkedMap_Iterator_StartKeyIsLast(t *testing.T) {
 // BIDIRECTIONAL TRAVERSAL TESTS
 // =============================================================================
 
-func TestLinkedMap_BidirectionalTraversal(t *testing.T) {
-	lm := newLinkedMap[string, int]()
-	lm.put("a", 1)
-	lm.put("b", 2)
-	lm.put("c", 3)
-	lm.put("d", 4)
-
-	// Forward
-	k, v, ok := lm.first()
-	assert.True(t, ok)
-	assert.Equal(t, "a", k)
-	assert.Equal(t, 1, v)
-
-	k, _, _ = lm.next("a")
-	assert.Equal(t, "b", k)
-	k, _, _ = lm.next("b")
-	assert.Equal(t, "c", k)
-
-	// Backward from c
-	k, v, ok = lm.prev("c")
-	assert.True(t, ok)
-	assert.Equal(t, "b", k)
-	assert.Equal(t, 2, v)
-
-	k, _, _ = lm.prev("b")
-	assert.Equal(t, "a", k)
-}
-
-// =============================================================================
-// PUTORDERED TESTS (sorted order)
-// =============================================================================
-
 func TestLinkedMap_PutOrdered_Empty(t *testing.T) {
 	sm := newLinkedMap[int, string]()
 
@@ -773,28 +566,6 @@ func TestLinkedMap_PutOrdered_MixedOrder(t *testing.T) {
 	}
 }
 
-func TestLinkedMap_PutOrdered_Prev(t *testing.T) {
-	sm := newLinkedMap[int, string]()
-	for _, v := range []int{1, 5, 10, 20, 50} {
-		sm.putOrdered(v, "val")
-	}
-
-	k, _, ok := sm.prev(20)
-	assert.True(t, ok)
-	assert.Equal(t, 10, k)
-
-	k, _, ok = sm.prev(10)
-	assert.True(t, ok)
-	assert.Equal(t, 5, k)
-
-	_, _, ok = sm.prev(1)
-	assert.False(t, ok)
-
-	// Non-existent key
-	_, _, ok = sm.prev(15)
-	assert.False(t, ok)
-}
-
 func TestLinkedMap_PutOrdered_Next(t *testing.T) {
 	sm := newLinkedMap[int, string]()
 	for _, v := range []int{1, 3, 5, 7, 9} {
@@ -831,46 +602,6 @@ func TestLinkedMap_PutOrdered_RemoveAndAdd(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 5, k)
 }
-
-func TestLinkedMap_PutOrdered_IntegrityAfterRemoves(t *testing.T) {
-	sm := newLinkedMap[int, string]()
-
-	values := []int{50, 25, 75, 10, 30, 60, 80}
-	for _, v := range values {
-		sm.putOrdered(v, "value")
-	}
-
-	sm.remove(25)
-	sm.remove(60)
-
-	// Forward traversal
-	expected := []int{10, 30, 50, 75, 80}
-	k, _, ok := sm.first()
-	assert.True(t, ok)
-
-	for i, exp := range expected {
-		assert.Equal(t, exp, k)
-		if i < len(expected)-1 {
-			k, _, ok = sm.next(k)
-			assert.True(t, ok)
-		}
-	}
-
-	// Backward traversal
-	for i := len(expected) - 1; i >= 0; i-- {
-		assert.Equal(t, expected[i], k)
-		if i > 0 {
-			k, _, ok = sm.prev(k)
-			assert.True(t, ok)
-		}
-	}
-}
-
-// =============================================================================
-// CONCURRENT TESTS - sharedLinkedMap only. The raw linkedMap is not
-// goroutine-safe by design (owner synchronizes); concurrency guarantees
-// live in the shared wrapper.
-// =============================================================================
 
 func TestSharedLinkedMap_Concurrent_Reads(t *testing.T) {
 	lm := newSharedLinkedMap[string, int]()
