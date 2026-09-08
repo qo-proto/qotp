@@ -2031,3 +2031,43 @@ func TestConn_KeyUpdateAckDue_DoesNotBlockData(t *testing.T) {
 	assert.Greater(t, n, 0, "data must flow while a KEY_UPDATE_ACK is owed")
 	assert.False(t, c.kuAckDue, "and the ack rode along on it")
 }
+
+// slowWriteConn reports a long write, as the real socket wrapper does when the
+// goroutine is descheduled between the syscall returning and the duration
+// being read.
+type slowWriteConn struct{ elapsed uint64 }
+
+func (w *slowWriteConn) ReadFromUDPAddrPort([]byte, uint64, uint64) (int, netip.AddrPort, netip.Addr, uint64, error) {
+	return 0, netip.AddrPort{}, netip.Addr{}, 0, nil
+}
+func (w *slowWriteConn) WriteToUDPAddrPort([]byte, netip.AddrPort, netip.Addr, uint64) (uint64, error) {
+	return w.elapsed, nil
+}
+func (w *slowWriteConn) TimeoutReadNow() error   { return nil }
+func (w *slowWriteConn) Close() error            { return nil }
+func (w *slowWriteConn) LocalAddrString() string { return "slowwrite" }
+
+// A write's reported duration must not move the send stamp: it is read after
+// the syscall returns, so a deschedule in between dates the packet later than
+// it left and the RTT sample comes out short. Measured on a netem path, the
+// peer's kernel logged the packet arriving 6.897ms after our stamp on a link
+// that cannot deliver in under 10.005ms.
+func TestConn_SendStampIgnoresWriteDuration(t *testing.T) {
+	c := createTestConn(true, false, true)
+	c.listener.localConn = &slowWriteConn{elapsed: 5 * msNano}
+	s := c.getOrCreateStream(1)
+
+	c.snd.queueData(1, []byte("data"))
+	c.mtu = testMaxPayload
+	c.rcvWndSize = 1 << 20
+	c.nextWriteTime = 0
+
+	const nowNano = uint64(1_000_000_000)
+	sent, _, err := c.flushStream(s, nowNano)
+	assert.Nil(t, err)
+	assert.Greater(t, sent, 0)
+
+	pkt, ok := c.snd.streams[1].inFlightGet(createPacketKey(0, 4))
+	assert.True(t, ok)
+	assert.Equal(t, nowNano, pkt.sentTimeNano)
+}
