@@ -1,7 +1,6 @@
 package qotp
 
 import (
-	"fmt"
 	"io"
 	"net/netip"
 	"testing"
@@ -19,9 +18,7 @@ func setupStreamTest(t *testing.T) (connA *conn, listenerB *Listener, connPair *
 	assert.Nil(t, err)
 	listenerB, err = Listen(WithNetworkConn(connPair.Conn2), WithPrvKeyId(testPrvKey2))
 	assert.Nil(t, err)
-	pubKeyIdRcv, err := decodeHexPubKey(fmt.Sprintf("0x%x", testPrvKey2.PublicKey().Bytes()))
-	assert.Nil(t, err)
-	connA, err = listenerA.DialWithCrypto(netip.AddrPort{}, pubKeyIdRcv)
+	connA, err = listenerA.DialWithCrypto(netip.AddrPort{}, testPrvKey2.PublicKey())
 	assert.Nil(t, err)
 	assert.NotEmpty(t, connA)
 

@@ -1,6 +1,7 @@
 package qotp
 
 import (
+	"encoding/binary"
 	"errors"
 	"math/bits"
 )
@@ -126,14 +127,17 @@ func encodeProto(p *payloadHeader, userData []byte) []byte {
 
 	encoded[offset] = flags
 	offset++
-	offset += putUint16(encoded[offset:], p.maxPayload)
+	binary.LittleEndian.PutUint16(encoded[offset:], p.maxPayload)
+	offset += 2
 	encoded[offset] = encodeRcvWindow(p.rcvWnd)
 	offset++
 
 	if flags&flagHasAck != 0 {
-		offset += putUint32(encoded[offset:], p.ack.streamId)
+		binary.LittleEndian.PutUint32(encoded[offset:], p.ack.streamId)
+		offset += 4
 		offset += putOffsetVarint(encoded[offset:], p.ack.offset, isExtend)
-		offset += putUint16(encoded[offset:], p.ack.len)
+		binary.LittleEndian.PutUint16(encoded[offset:], p.ack.len)
+		offset += 2
 	}
 
 	if hasKeyUpdate {
@@ -149,7 +153,8 @@ func encodeProto(p *payloadHeader, userData []byte) []byte {
 		if p.unreliable {
 			wireStreamId |= streamUnreliableBit
 		}
-		offset += putUint32(encoded[offset:], wireStreamId)
+		binary.LittleEndian.PutUint32(encoded[offset:], wireStreamId)
+		offset += 4
 		offset += putOffsetVarint(encoded[offset:], p.streamOffset, isExtend)
 	}
 
@@ -166,7 +171,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 	isExtend := flags&flagExtend != 0
 
 	p := &payloadHeader{
-		maxPayload: getUint16(data[1:]),
+		maxPayload: binary.LittleEndian.Uint16(data[1:]),
 		rcvWnd:     decodeRcvWindow(data[3]),
 		isClose:    flags&flagClose != 0,
 	}
@@ -178,12 +183,12 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 			return nil, nil, errors.New("payload too small for ack")
 		}
 		p.ack = &ack{
-			streamId: getUint32(data[offset:]),
+			streamId: binary.LittleEndian.Uint32(data[offset:]),
 		}
 		offset += 4
 		p.ack.offset = offsetVarint(data[offset:], isExtend)
 		offset += offsetSize(isExtend)
-		p.ack.len = getUint16(data[offset:])
+		p.ack.len = binary.LittleEndian.Uint16(data[offset:])
 		offset += 2
 	}
 
@@ -209,7 +214,7 @@ func decodeProto(data []byte) (*payloadHeader, []byte, error) {
 		if len(data) < offset+streamHeaderSize {
 			return nil, nil, errors.New("payload too small for stream header")
 		}
-		wireStreamId := getUint32(data[offset:])
+		wireStreamId := binary.LittleEndian.Uint32(data[offset:])
 		p.unreliable = wireStreamId&streamUnreliableBit != 0
 		p.streamId = wireStreamId &^ streamUnreliableBit
 		offset += 4

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -665,43 +665,6 @@ func TestCryptoOverhead_DataWithLargeOffset(t *testing.T) {
 	assert.Equal(t, expected, calcCryptoOverheadWithData(data, nil, 0xFFFFFF+1))
 }
 
-// =============================================================================
-// DECODE HEX PUB KEY TESTS
-// =============================================================================
-
-func TestCryptoDecodeHexPubKey_Valid(t *testing.T) {
-	key := generateTestKey(t)
-	hexStr := hex.EncodeToString(key.PublicKey().Bytes())
-
-	pubKey, err := decodeHexPubKey(hexStr)
-	assert.NoError(t, err)
-	assert.True(t, bytes.Equal(key.PublicKey().Bytes(), pubKey.Bytes()))
-}
-
-func TestCryptoDecodeHexPubKey_With0xPrefix(t *testing.T) {
-	key := generateTestKey(t)
-	hexStr := "0x" + hex.EncodeToString(key.PublicKey().Bytes())
-
-	pubKey, err := decodeHexPubKey(hexStr)
-	assert.NoError(t, err)
-	assert.True(t, bytes.Equal(key.PublicKey().Bytes(), pubKey.Bytes()))
-}
-
-func TestCryptoDecodeHexPubKey_InvalidHex(t *testing.T) {
-	_, err := decodeHexPubKey("not-valid-hex!")
-	assert.Error(t, err)
-}
-
-func TestCryptoDecodeHexPubKey_WrongLength(t *testing.T) {
-	_, err := decodeHexPubKey("abcd") // Too short for X25519
-	assert.Error(t, err)
-}
-
-func TestCryptoDecodeHexPubKey_Empty(t *testing.T) {
-	_, err := decodeHexPubKey("")
-	assert.Error(t, err)
-}
-
 // DecryptWithSecrets is the offline/debugging entry point: round-trip every
 // message type through it, including the InitCryptoSnd padding strip.
 func TestCryptoDecryptWithSecrets_RoundTrip(t *testing.T) {
@@ -776,7 +739,7 @@ func TestCryptoInitCryptoSnd_FillerLenOverflow(t *testing.T) {
 
 	for _, fillerLen := range []uint16{0xFFFF, 1200, 1144} {
 		padded := make([]byte, conservativeMTU-(minInitCryptoSndSizeHdr+footerDataSize))
-		putUint16(padded, fillerLen)
+		binary.LittleEndian.PutUint16(padded, fillerLen)
 
 		encData, err := chainedEncrypt(0, true, secret, header, padded)
 		assert.NoError(t, err)
@@ -808,7 +771,7 @@ func TestCryptoInitCryptoSnd_FillerLenOverflowViaListen(t *testing.T) {
 	copy(header[headerSize+pubKeySize:], alicePrvKeyId.PublicKey().Bytes())
 
 	padded := make([]byte, conservativeMTU-(minInitCryptoSndSizeHdr+footerDataSize))
-	putUint16(padded, 0xFFFF)
+	binary.LittleEndian.PutUint16(padded, 0xFFFF)
 	encData, err := chainedEncrypt(0, true, secret, header, padded)
 	assert.NoError(t, err)
 

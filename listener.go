@@ -261,10 +261,6 @@ func (l *Listener) newConn(
 	return conn, nil
 }
 
-func (l *Listener) cleanupConn(connId uint64) {
-	l.connMap.remove(connId)
-}
-
 // logSecret writes a line of the key log DecryptWithSecrets reads
 func (l *Listener) logSecret(label string, connId uint64, secret []byte) {
 	if l.keyLogWriter != nil {

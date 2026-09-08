@@ -484,7 +484,7 @@ rounds produce low samples, which a max filter ignores automatically. The
 survives until the next probe re-validates it.
 
 **Rounds**: a round ends when all packets in flight at its start are ACKed
-(tracked via `deliveredAtSend >= roundDeliveredTarget`).
+(tracked via `ackedAtSend.bytes >= roundAckedTarget`).
 
 **Pacing Calculation**:
 
@@ -629,6 +629,9 @@ where retransmitting stale data is worse than dropping it.
   stall after a loss
 - Data arriving for an already-skipped range is dropped and counted;
   poll `LatePackets()`/`LateBytes()` to observe it
+- Data dropped because the receive buffer is full is counted too; poll
+  `DroppedPackets()`/`DroppedBytes()`. On a reliable stream the peer
+  retransmits it, on an unreliable one it is lost
 
 **Consequences for the application**:
 - The delivered byte stream may have lost ranges silently removed, so the
@@ -845,6 +848,11 @@ func (s *Stream) RTTVarNano() uint64
 // was already skipped as lost (unreliable streams).
 func (s *Stream) LatePackets() uint64
 func (s *Stream) LateBytes() uint64
+
+// DroppedPackets / DroppedBytes count data dropped because the receive
+// buffer was full: the application reads slower than the peer sends.
+func (s *Stream) DroppedPackets() uint64
+func (s *Stream) DroppedBytes() uint64
 ```
 
 ### Listener Options

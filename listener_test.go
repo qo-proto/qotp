@@ -383,7 +383,7 @@ func TestListener_cleanupConn(t *testing.T) {
 	_, ok := listener.connMap.get(connId)
 	assert.True(t, ok)
 
-	listener.cleanupConn(connId)
+	listener.connMap.remove(connId)
 
 	_, ok = listener.connMap.get(connId)
 	assert.False(t, ok)
@@ -400,7 +400,7 @@ func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 	// Cursor points at the connection being removed; the iterator's fallback
 	// (unknown start key -> begin from the front) makes this safe.
 	listener.currentConnID = &conn1.connId
-	listener.cleanupConn(conn1.connId)
+	listener.connMap.remove(conn1.connId)
 
 	var seen []uint64
 	for id := range listener.connMap.iterator(listener.currentConnID) {

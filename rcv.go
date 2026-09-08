@@ -29,6 +29,7 @@ type receiver struct {
 	len             int
 	ackList         []*ack
 	advertised      uint64 // free space the peer was last told about
+	announceDue     bool   // a packet was dropped for lack of space since the last advertisement
 	// Payload admitted, counted on arrival so it does not freeze behind a
 	// head-of-line hole like the delivered offset does
 	received uint64
@@ -47,7 +48,7 @@ func (rb *receiver) getOrCreateStream(streamID uint32) *reassemblyBuffer {
 	if s := rb.streams[streamID]; s != nil {
 		return s
 	}
-	s := newRcvBuffer()
+	s := &reassemblyBuffer{segments: newLinkedMap[uint64, []byte]()}
 	rb.streams[streamID] = s
 	return s
 }
@@ -67,16 +68,12 @@ type reassemblyBuffer struct {
 	skippedRanges [][2]uint64 // recent [from, to) skips, to count late arrivals
 	latePackets   uint64
 	lateBytes     uint64
+
+	droppedPackets uint64 // dropped for lack of buffer space
+	droppedBytes   uint64
 }
 
 const maxSkippedRanges = 16
-
-func (s *reassemblyBuffer) recordSkip(from, to uint64) {
-	if len(s.skippedRanges) == maxSkippedRanges {
-		s.skippedRanges = s.skippedRanges[1:]
-	}
-	s.skippedRanges = append(s.skippedRanges, [2]uint64{from, to})
-}
 
 // countIfLate counts data arriving for a range already skipped as lost
 func (s *reassemblyBuffer) countIfLate(offset, dataLen uint64) {
@@ -91,10 +88,6 @@ func (s *reassemblyBuffer) countIfLate(offset, dataLen uint64) {
 			return
 		}
 	}
-}
-
-func newRcvBuffer() *reassemblyBuffer {
-	return &reassemblyBuffer{segments: newLinkedMap[uint64, []byte]()}
 }
 
 // =============================================================================
@@ -122,6 +115,9 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	// rejecting it would deadlock on a full buffer
 	advancesDelivery := offset <= stream.nextInOrder && offset+uint64(dataLen) > stream.nextInOrder
 	if !advancesDelivery && rb.len+dataLen > rb.capacity {
+		stream.droppedPackets++
+		stream.droppedBytes += uint64(dataLen)
+		rb.announceDue = true
 		return rcvInsertBufferFull
 	}
 
@@ -232,7 +228,10 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, timeoutNano uint64
 		return
 	}
 
-	stream.recordSkip(stream.nextInOrder, target)
+	if len(stream.skippedRanges) == maxSkippedRanges {
+		stream.skippedRanges = stream.skippedRanges[1:]
+	}
+	stream.skippedRanges = append(stream.skippedRanges, [2]uint64{stream.nextInOrder, target})
 	stream.nextInOrder = target
 	stream.gapStartNano = 0
 }
@@ -248,6 +247,15 @@ func (rb *receiver) lateStats(streamID uint32) (packets uint64, bytes uint64) {
 	defer rb.mu.Unlock()
 	if s := rb.streams[streamID]; s != nil {
 		return s.latePackets, s.lateBytes
+	}
+	return 0, 0
+}
+
+func (rb *receiver) dropStats(streamID uint32) (packets uint64, bytes uint64) {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	if s := rb.streams[streamID]; s != nil {
+		return s.droppedPackets, s.droppedBytes
 	}
 	return 0, 0
 }
@@ -324,16 +332,6 @@ func (rb *receiver) hasPendingAckForStream(streamID uint32) bool {
 }
 
 // =============================================================================
-// Misc
-// =============================================================================
-
-func (rb *receiver) size() int {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
-	return rb.len
-}
-
-// =============================================================================
 // Receive window
 // =============================================================================
 
@@ -348,14 +346,16 @@ func (rb *receiver) freeAdvertise() uint64 {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.advertised = rb.free()
+	rb.announceDue = false
 	return rb.advertised
 }
 
-// windowReopened reports that the buffer drained usefully since the peer was
-// last told. The margin is the silly-window rule: a slowly draining buffer
-// must not generate a packet per read.
-func (rb *receiver) windowReopened(mtu int) bool {
+// windowChanged reports that the peer's view of the window is stale enough
+// to be worth a packet: a packet was dropped for lack of space, or the
+// buffer drained usefully. The margin is the silly-window rule: a slowly
+// draining buffer must not generate a packet per read.
+func (rb *receiver) windowChanged(mtu int) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	return rb.free() >= rb.advertised+uint64(2*max(mtu, conservativeMTU))
+	return rb.announceDue || rb.free() >= rb.advertised+uint64(2*max(mtu, conservativeMTU))
 }

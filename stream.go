@@ -135,6 +135,20 @@ func (s *Stream) LateBytes() uint64 {
 	return bytes
 }
 
+// DroppedPackets counts packets dropped because the receive buffer was full,
+// i.e. the application reads slower than the peer sends. On a reliable
+// stream the peer retransmits them; on an unreliable one they are lost.
+// Safe from any goroutine.
+func (s *Stream) DroppedPackets() uint64 {
+	packets, _ := s.conn.rcv.dropStats(s.streamID)
+	return packets
+}
+
+func (s *Stream) DroppedBytes() uint64 {
+	_, bytes := s.conn.rcv.dropStats(s.streamID)
+	return bytes
+}
+
 // =============================================================================
 // Misc
 // =============================================================================

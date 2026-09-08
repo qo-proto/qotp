@@ -158,25 +158,6 @@ func (m *linkedMap[K, V]) next(key K) (K, V, bool) {
 	return zeroK, zeroV, false
 }
 
-// iterator starts after startKey, or from the beginning when startKey is
-// nil, missing, or the last element
-func (m *linkedMap[K, V]) iterator(startKey *K) iter.Seq2[K, V] {
-	return func(yield func(K, V) bool) {
-		startNode := m.head.next
-		if startKey != nil {
-			if node, exists := m.items[*startKey]; exists && node.next != m.tail {
-				startNode = node.next
-			}
-		}
-
-		for node := startNode; node != m.tail; node = node.next {
-			if !yield(node.key, node.value) {
-				return
-			}
-		}
-	}
-}
-
 // =============================================================================
 // sharedLinkedMap - locked wrapper for maps shared across goroutines
 //
@@ -224,7 +205,8 @@ func (s *sharedLinkedMap[K, V]) remove(key K) (V, bool) {
 	return s.m.remove(key)
 }
 
-// iterator has the same start semantics as linkedMap.iterator
+// iterator starts after startKey, or from the beginning when startKey is
+// nil, missing, or the last element
 func (s *sharedLinkedMap[K, V]) iterator(startKey *K) iter.Seq2[K, V] {
 	return func(yield func(K, V) bool) {
 		firstHop := true

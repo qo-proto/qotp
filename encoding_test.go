@@ -10,45 +10,6 @@ import (
 // UINT16 TESTS
 // =============================================================================
 
-func TestEncodingUint16_Zero(t *testing.T) {
-	buf := make([]byte, 2)
-	n := putUint16(buf, 0)
-	assert.Equal(t, 2, n)
-	assert.Equal(t, uint16(0), getUint16(buf))
-}
-
-func TestEncodingUint16_Max(t *testing.T) {
-	buf := make([]byte, 2)
-	putUint16(buf, 0xFFFF)
-	assert.Equal(t, uint16(0xFFFF), getUint16(buf))
-}
-
-func TestEncodingUint16_LittleEndian(t *testing.T) {
-	buf := make([]byte, 2)
-	putUint16(buf, 0x1234)
-	assert.Equal(t, byte(0x34), buf[0], "low byte first")
-	assert.Equal(t, byte(0x12), buf[1], "high byte second")
-	assert.Equal(t, uint16(0x1234), getUint16(buf))
-}
-
-func TestEncodingUint16_One(t *testing.T) {
-	buf := make([]byte, 2)
-	putUint16(buf, 1)
-	assert.Equal(t, uint16(1), getUint16(buf))
-}
-
-func TestEncodingUint16_PowerOf2(t *testing.T) {
-	buf := make([]byte, 2)
-	putUint16(buf, 256) // 2^8
-	assert.Equal(t, uint16(256), getUint16(buf))
-	assert.Equal(t, byte(0x00), buf[0])
-	assert.Equal(t, byte(0x01), buf[1])
-}
-
-// =============================================================================
-// UINT24 TESTS
-// =============================================================================
-
 func TestEncodingUint24_Zero(t *testing.T) {
 	buf := make([]byte, 3)
 	n := putUint24(buf, 0)
@@ -86,45 +47,6 @@ func TestEncodingUint24_One(t *testing.T) {
 
 // =============================================================================
 // UINT32 TESTS
-// =============================================================================
-
-func TestEncodingUint32_Zero(t *testing.T) {
-	buf := make([]byte, 4)
-	n := putUint32(buf, 0)
-	assert.Equal(t, 4, n)
-	assert.Equal(t, uint32(0), getUint32(buf))
-}
-
-func TestEncodingUint32_Max(t *testing.T) {
-	buf := make([]byte, 4)
-	putUint32(buf, 0xFFFFFFFF)
-	assert.Equal(t, uint32(0xFFFFFFFF), getUint32(buf))
-}
-
-func TestEncodingUint32_LittleEndian(t *testing.T) {
-	buf := make([]byte, 4)
-	putUint32(buf, 0x12345678)
-	assert.Equal(t, byte(0x78), buf[0])
-	assert.Equal(t, byte(0x56), buf[1])
-	assert.Equal(t, byte(0x34), buf[2])
-	assert.Equal(t, byte(0x12), buf[3])
-	assert.Equal(t, uint32(0x12345678), getUint32(buf))
-}
-
-func TestEncodingUint32_One(t *testing.T) {
-	buf := make([]byte, 4)
-	putUint32(buf, 1)
-	assert.Equal(t, uint32(1), getUint32(buf))
-}
-
-func TestEncodingUint32_PowerOf2(t *testing.T) {
-	buf := make([]byte, 4)
-	putUint32(buf, 1<<24) // 2^24 = 16777216
-	assert.Equal(t, uint32(1<<24), getUint32(buf))
-}
-
-// =============================================================================
-// UINT48 TESTS
 // =============================================================================
 
 func TestEncodingUint48_Zero(t *testing.T) {
@@ -173,49 +95,6 @@ func TestEncodingUint48_PowerOf2(t *testing.T) {
 
 // =============================================================================
 // UINT64 TESTS
-// =============================================================================
-
-func TestEncodingUint64_Zero(t *testing.T) {
-	buf := make([]byte, 8)
-	n := putUint64(buf, 0)
-	assert.Equal(t, 8, n)
-	assert.Equal(t, uint64(0), getUint64(buf))
-}
-
-func TestEncodingUint64_Max(t *testing.T) {
-	buf := make([]byte, 8)
-	putUint64(buf, 0xFFFFFFFFFFFFFFFF)
-	assert.Equal(t, uint64(0xFFFFFFFFFFFFFFFF), getUint64(buf))
-}
-
-func TestEncodingUint64_LittleEndian(t *testing.T) {
-	buf := make([]byte, 8)
-	putUint64(buf, 0x123456789ABCDEF0)
-	assert.Equal(t, byte(0xF0), buf[0])
-	assert.Equal(t, byte(0xDE), buf[1])
-	assert.Equal(t, byte(0xBC), buf[2])
-	assert.Equal(t, byte(0x9A), buf[3])
-	assert.Equal(t, byte(0x78), buf[4])
-	assert.Equal(t, byte(0x56), buf[5])
-	assert.Equal(t, byte(0x34), buf[6])
-	assert.Equal(t, byte(0x12), buf[7])
-	assert.Equal(t, uint64(0x123456789ABCDEF0), getUint64(buf))
-}
-
-func TestEncodingUint64_One(t *testing.T) {
-	buf := make([]byte, 8)
-	putUint64(buf, 1)
-	assert.Equal(t, uint64(1), getUint64(buf))
-}
-
-func TestEncodingUint64_PowerOf2(t *testing.T) {
-	buf := make([]byte, 8)
-	putUint64(buf, 1<<48) // 2^48
-	assert.Equal(t, uint64(1<<48), getUint64(buf))
-}
-
-// =============================================================================
-// OFFSET VARINT TESTS (24-bit / 48-bit variable encoding)
 // =============================================================================
 
 func TestEncodingOffsetVarint_24BitMode_Zero(t *testing.T) {
@@ -276,31 +155,6 @@ func TestEncodingOffsetSize_48Bit(t *testing.T) {
 // =============================================================================
 // ROUNDTRIP TESTS
 // =============================================================================
-
-func TestEncodingRoundtrip_AllTypes(t *testing.T) {
-	// Test that encoding then decoding produces original value
-	buf := make([]byte, 8)
-
-	testVal16 := uint16(0xABCD)
-	putUint16(buf, testVal16)
-	assert.Equal(t, testVal16, getUint16(buf))
-
-	testVal24 := uint64(0xABCDEF)
-	putUint24(buf, testVal24)
-	assert.Equal(t, testVal24, getUint24(buf))
-
-	testVal32 := uint32(0xABCDEF12)
-	putUint32(buf, testVal32)
-	assert.Equal(t, testVal32, getUint32(buf))
-
-	testVal48 := uint64(0xABCDEF123456)
-	putUint48(buf, testVal48)
-	assert.Equal(t, testVal48, getUint48(buf))
-
-	testVal64 := uint64(0xABCDEF1234567890)
-	putUint64(buf, testVal64)
-	assert.Equal(t, testVal64, getUint64(buf))
-}
 
 func TestEncodingRoundtrip_OffsetVarint(t *testing.T) {
 	buf := make([]byte, 6)

@@ -30,17 +30,13 @@ func (p packetKey) offset() uint64 {
 
 type sendPacket struct {
 	data         []byte
-	sentTimeNano uint64
-	// Snapshots of the measurements at send time, for the delivery-rate
-	// sample this packet's ACK yields
-	deliveredAtSend     uint64
-	deliveredTimeAtSend uint64
-	firstSentTimeAtSend uint64
-	wireLen             uint16 // encrypted size, what pacing counts
-	sentCount           uint
-	ackGap              uint8 // later-sent originals ACKed, capped at fastRetxThreshold
-	isClose             bool
-	needsReTx           bool
+	sentTimeNano uint64 // when this packet last went out (RTT, RTO)
+	ackedAtSend ackState // ACK bookkeeping to compute a bandwidth sample
+	wireLen     uint16 // encrypted size, what pacing counts
+	sentCount   uint
+	ackGap      uint8 // later-sent originals ACKed, capped at fastRetxThreshold
+	isClose     bool
+	needsReTx   bool
 }
 
 type sender struct {
@@ -427,8 +423,7 @@ func (sb *sender) acknowledgeRange(ack *ack, lossEpochNano uint64) (ackedPkt *se
 }
 
 // markSent stamps the packet once it is built and written
-func (sb *sender) markSent(streamID uint32, offset uint64, length, wireLen uint16, nowNano uint64,
-	deliveredAtSend uint64, deliveredTimeNano uint64, firstSentTimeNano uint64) {
+func (sb *sender) markSent(streamID uint32, offset uint64, length, wireLen uint16, nowNano uint64, acked ackState) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -441,16 +436,14 @@ func (sb *sender) markSent(streamID uint32, offset uint64, length, wireLen uint1
 	if pkt, ok := stream.inFlightGet(key); ok {
 		pkt.sentTimeNano = nowNano
 		pkt.wireLen = wireLen
-		pkt.deliveredAtSend = deliveredAtSend
-		// No delivery yet: anchor the intervals at this send
-		if deliveredTimeNano == 0 {
-			deliveredTimeNano = nowNano
+		// No ACK yet: anchor the intervals at this send
+		if acked.timeNano == 0 {
+			acked.timeNano = nowNano
 		}
-		if firstSentTimeNano == 0 {
-			firstSentTimeNano = nowNano
+		if acked.sentNano == 0 {
+			acked.sentNano = nowNano
 		}
-		pkt.deliveredTimeAtSend = deliveredTimeNano
-		pkt.firstSentTimeAtSend = firstSentTimeNano
+		pkt.ackedAtSend = acked
 	}
 }
 

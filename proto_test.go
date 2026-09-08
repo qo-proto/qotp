@@ -2,6 +2,7 @@ package qotp
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -462,11 +463,11 @@ func TestProto_Unreliable_LivesInStreamIdHighBit(t *testing.T) {
 	assert.True(t, dec.unreliable)
 
 	// Locate the streamId: flags(1) + maxPayload(2) + rcvWnd(1), no ack
-	assert.Equal(t, streamUnreliableBit|1, getUint32(enc[4:]))
+	assert.Equal(t, streamUnreliableBit|1, binary.LittleEndian.Uint32(enc[4:]))
 
 	// The reliable case leaves the id untouched
 	enc2 := encodeProto(&payloadHeader{streamId: 1, streamOffset: 0}, []byte("d"))
-	assert.Equal(t, uint32(1), getUint32(enc2[4:]))
+	assert.Equal(t, uint32(1), binary.LittleEndian.Uint32(enc2[4:]))
 }
 
 // The whole id range below the marker bit round-trips unharmed.
@@ -810,7 +811,7 @@ func TestProto_MaxPayload_NoFlagNeeded24(t *testing.T) {
 
 	assert.True(t, encoded[0]&flagExtend == 0)
 	// maxPayload sits in the fixed prefix, immediately after the flags byte
-	assert.Equal(t, uint16(1400), getUint16(encoded[1:]))
+	assert.Equal(t, uint16(1400), binary.LittleEndian.Uint16(encoded[1:]))
 	decoded, _, err := decodeProto(encoded)
 	assert.NoError(t, err)
 	assert.Equal(t, uint16(1400), decoded.maxPayload)
@@ -821,7 +822,7 @@ func TestProto_MaxPayload_NoFlagNeeded48(t *testing.T) {
 	encoded := encodeProto(p, []byte{})
 
 	assert.True(t, encoded[0]&flagExtend != 0)
-	assert.Equal(t, uint16(1400), getUint16(encoded[1:]))
+	assert.Equal(t, uint16(1400), binary.LittleEndian.Uint16(encoded[1:]))
 	decoded, _, err := decodeProto(encoded)
 	assert.NoError(t, err)
 	assert.Equal(t, uint16(1400), decoded.maxPayload)

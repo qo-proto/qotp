@@ -122,6 +122,13 @@ func gainFor(s ccState) uint64 {
 // Measurements - RTT estimation and BBR congestion control
 // =============================================================================
 
+// ackState is where the ACK bookkeeping stood at some moment
+type ackState struct {
+	bytes    uint64 // total wire bytes the peer has ACKed
+	timeNano uint64 // when the latest ACK arrived
+	sentNano uint64 // when the packet that ACK acknowledged had been sent
+}
+
 type measurements struct {
 	// RTT estimation (RFC 6298)
 	srtt   uint64
@@ -151,16 +158,14 @@ type measurements struct {
 	windowLostPackets  uint64
 	windowAckedPackets uint64
 
-	// Delivery-rate tracking (BBR): each send snapshots these into the
-	// packet so its ACK can compute a sample over an honest interval
-	totalDelivered    uint64 // cumulative wire bytes ACKed
-	deliveredTimeNano uint64 // time of the last measured ACK
-	firstSentTimeNano uint64 // send time of the packet it acknowledged
+	// Each send copies this into the packet, so its ACK can compute a
+	// bandwidth sample over the interval since (BBR delivery-rate estimation)
+	acked ackState
 
 	// Packet-timed rounds
-	roundDeliveredTarget uint64 // totalDelivered at which the current round ends
-	roundBwBest          uint64
-	prevRoundBwBest      uint64
+	roundAckedTarget uint64 // acked.bytes at which the current round ends
+	roundBwBest      uint64
+	prevRoundBwBest  uint64
 }
 
 func newMeasurements() measurements {
@@ -188,10 +193,8 @@ func (m *measurements) updateMeasurements(rttNano uint64, pkt *sendPacket, nowNa
 		return
 	}
 
-	m.totalDelivered += uint64(pkt.wireLen)
+	m.acked = ackState{bytes: m.acked.bytes + uint64(pkt.wireLen), timeNano: nowNano, sentNano: pkt.sentTimeNano}
 	m.windowAckedPackets++
-	m.deliveredTimeNano = nowNano
-	m.firstSentTimeNano = pkt.sentTimeNano
 
 	m.updateRTT(rttNano)
 	m.updateMinRTT(rttNano, nowNano)
@@ -248,7 +251,7 @@ func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
 	m.bwMax = max(m.bwMax, bwSample)
 
 	// A round ends once everything in flight at its start is ACKed
-	if pkt.deliveredAtSend >= m.roundDeliveredTarget {
+	if pkt.ackedAtSend.bytes >= m.roundAckedTarget {
 		m.finishRound(nowNano)
 	}
 }
@@ -264,18 +267,18 @@ func (m *measurements) deliveryRateSample(pkt *sendPacket, nowNano uint64) (uint
 	if len(pkt.data) == 0 {
 		return 0, false
 	}
-	if m.totalDelivered <= pkt.deliveredAtSend {
+	if m.acked.bytes <= pkt.ackedAtSend.bytes {
 		return 0, false
 	}
-	delivered := m.totalDelivered - pkt.deliveredAtSend
+	bytes := m.acked.bytes - pkt.ackedAtSend.bytes
 
-	ackElapsed := nowNano - pkt.deliveredTimeAtSend
-	sendElapsed := pkt.sentTimeNano - pkt.firstSentTimeAtSend
+	ackElapsed := nowNano - pkt.ackedAtSend.timeNano
+	sendElapsed := pkt.sentTimeNano - pkt.ackedAtSend.sentNano
 	elapsed := max(ackElapsed, sendElapsed)
 	if elapsed == 0 {
 		return 0, false
 	}
-	return (delivered * secondNano) / elapsed, true
+	return (bytes * secondNano) / elapsed, true
 }
 
 func (m *measurements) finishRound(nowNano uint64) {
@@ -292,7 +295,7 @@ func (m *measurements) finishRound(nowNano uint64) {
 		m.bwMax = slices.Max(m.bwRounds[:])
 	}
 
-	m.roundDeliveredTarget = m.totalDelivered
+	m.roundAckedTarget = m.acked.bytes
 	m.prevRoundBwBest = m.roundBwBest
 	m.roundBwBest = 0
 

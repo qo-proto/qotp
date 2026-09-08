@@ -513,7 +513,7 @@ func TestConnFullHandshake(t *testing.T) {
 
 	// Alice's initial connection
 	connAlice := &conn{
-		connId:      getUint64(prvEpAlice.PublicKey().Bytes()),
+		connId:      binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType: initSnd,
 		listener:    lAlice,
 		rcv:         newReceiveBuffer(1000),
@@ -1110,7 +1110,7 @@ func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 
 	// Alice's initial connection (following TestConnFullHandshake pattern)
 	connAlice := &conn{
-		connId:       getUint64(prvEpAlice.PublicKey().Bytes()),
+		connId:       binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType:  initSnd,
 		listener:     lAlice,
 		rcv:          newReceiveBuffer(1000),
@@ -1210,7 +1210,7 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 	s := c.getOrCreateStream(7)
 	c.snd.queueData(7, []byte("data"))
 	c.snd.readyToSend(7, data, nil, 1000, true)
-	c.snd.markSent(7, 0, 4, 44, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(7, 0, 4, 44, 1_000_000_000, ackState{})
 
 	// An ACK-only packet: no stream header, so streamId defaults to 0
 	p := &payloadHeader{ack: &ack{streamId: 7, offset: 0, len: 4}}
@@ -1239,7 +1239,7 @@ func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 
 	// Alice's initial connection for crypto handshake
 	connAlice := &conn{
-		connId:       getUint64(prvEpAlice.PublicKey().Bytes()),
+		connId:       binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType:  initCryptoSnd,
 		listener:     lAlice,
 		pubKeyIdRcv:  prvIdBob.PublicKey(),
@@ -1453,7 +1453,7 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	// A packet that was sent, then retransmitted
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, ackState{})
 	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
@@ -1471,7 +1471,7 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 	// A packet sent exactly once
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
-	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, 0, 0, 0)
+	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, ackState{})
 
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4}}
 	_, err := c.processIncomingPayload(p, nil, 0, 1_100_000_000)
@@ -1803,7 +1803,7 @@ func TestConn_WindowReopened_PushesUpdate(t *testing.T) {
 	// Buffer nearly full, and that is what the peer was told.
 	c.rcv.insert(1, 0, 1, make([]byte, 63*1024))
 	assert.Equal(t, uint64(1024), c.rcv.freeAdvertise())
-	assert.False(t, c.rcv.windowReopened(c.mtu), "no change yet, nothing to announce")
+	assert.False(t, c.rcv.windowChanged(c.mtu), "no change yet, nothing to announce")
 
 	nowNano := uint64(10 * secondNano)
 	_, _, err := c.flushStream(s, nowNano)
@@ -1812,12 +1812,43 @@ func TestConn_WindowReopened_PushesUpdate(t *testing.T) {
 
 	// The application reads: the buffer drains and the peer's view is stale.
 	c.rcv.removeOldestInOrder(1)
-	assert.True(t, c.rcv.windowReopened(c.mtu))
+	assert.True(t, c.rcv.windowChanged(c.mtu))
 
 	_, _, err = c.flushStream(s, nowNano+secondNano)
 	assert.NoError(t, err)
 	assert.Greater(t, w.writes, before, "reopened window must be announced")
-	assert.False(t, c.rcv.windowReopened(c.mtu), "and only announced once")
+	assert.False(t, c.rcv.windowChanged(c.mtu), "and only announced once")
+}
+
+// A peer whose view of the window is stale-large keeps sending into a full
+// buffer, and a dropped packet is not ACKed, so without an announcement it
+// would only learn the truth after an RTO.
+func TestConn_WindowClosed_PushesUpdate(t *testing.T) {
+	c := createTestConn(true, false, true)
+	w := &countingConn{}
+	c.listener.localConn = w
+	c.rcv = newReceiveBuffer(4 * 1024)
+	c.mtu = conservativeMTU
+	c.rcvWndSize = rcvBufferCapacity
+	s := c.getOrCreateStream(1)
+
+	nowNano := uint64(10 * secondNano)
+	c.rcv.freeAdvertise()
+	_, _, err := c.flushStream(s, nowNano)
+	assert.NoError(t, err)
+	before := w.writes
+
+	// Out-of-order data that does not fit is dropped, and the peer must hear
+	// about the window now rather than after its RTO.
+	assert.Equal(t, rcvInsertBufferFull, c.rcv.insert(1, 100, nowNano, make([]byte, 5*1024)))
+	assert.True(t, c.rcv.windowChanged(c.mtu))
+	assert.Equal(t, uint64(1), s.DroppedPackets())
+	assert.Equal(t, uint64(5*1024), s.DroppedBytes())
+
+	_, _, err = c.flushStream(s, nowNano+secondNano)
+	assert.NoError(t, err)
+	assert.Greater(t, w.writes, before, "a full buffer must be announced")
+	assert.False(t, c.rcv.windowChanged(c.mtu), "and only once")
 }
 
 // The window is free space, so it means nothing except as of the moment it was
@@ -1895,7 +1926,7 @@ func TestConn_DuplicateAck_CountedOnce_StillCarriesWindow(t *testing.T) {
 	c.snd.queueData(1, []byte("hello"))
 	dataOut, offset, _ := c.snd.readyToSend(1, data, nil, 1200, true)
 	assert.Len(t, dataOut, 5)
-	c.snd.markSent(1, offset, 5, 60, 1, 0, 0, 0)
+	c.snd.markSent(1, offset, 5, 60, 1, ackState{})
 	c.dataInFlight = 5
 
 	mk := func(wnd uint64) (*payloadHeader, []byte) {

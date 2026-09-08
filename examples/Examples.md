@@ -476,6 +476,8 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `RTTVarNano()` | RTT variation (jitter) estimate |
 | `LatePackets()` | Packets that arrived after their range was skipped |
 | `LateBytes()` | Bytes that arrived after their range was skipped |
+| `DroppedPackets()` | Packets dropped because the receive buffer was full |
+| `DroppedBytes()` | Bytes dropped because the receive buffer was full |
 | `IsClosed()` | Both directions closed |
 | `IsCloseRequested()` | Close() was called |
 | `IsOpen()` | Not closing and not closed |

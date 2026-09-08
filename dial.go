@@ -2,7 +2,10 @@ package qotp
 
 import (
 	"crypto/ecdh"
+	"encoding/binary"
+	"encoding/hex"
 	"net/netip"
+	"strings"
 )
 
 // Dial opens a connection with in-band key exchange: 1-RTT
@@ -12,7 +15,7 @@ func (l *Listener) Dial(remoteAddr netip.AddrPort) (*conn, error) {
 		return nil, err
 	}
 
-	connId := getUint64(prvKeyEp.PublicKey().Bytes())
+	connId := binary.LittleEndian.Uint64(prvKeyEp.PublicKey().Bytes())
 	return l.newConn(connId, remoteAddr, prvKeyEp, nil, nil, true, false)
 }
 
@@ -24,7 +27,7 @@ func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.P
 		return nil, err
 	}
 
-	connId := getUint64(prvKeyEp.PublicKey().Bytes())
+	connId := binary.LittleEndian.Uint64(prvKeyEp.PublicKey().Bytes())
 	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, true)
 }
 
@@ -50,7 +53,11 @@ func (l *Listener) DialStringWithCryptoString(remoteAddrString string, pubKeyIdR
 		return nil, err
 	}
 
-	pubKeyIdRcv, err := decodeHexPubKey(pubKeyIdRcvHex)
+	b, err := hex.DecodeString(strings.TrimPrefix(pubKeyIdRcvHex, "0x"))
+	if err != nil {
+		return nil, err
+	}
+	pubKeyIdRcv, err := ecdh.X25519().NewPublicKey(b)
 	if err != nil {
 		return nil, err
 	}

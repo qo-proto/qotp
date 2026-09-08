@@ -18,21 +18,19 @@ func newTestConnection() *conn {
 }
 
 // testUpdateMeasurements simulates an ACK for a packet sent rttNano ago with
-// the given deliveredAtSend snapshot. The delivery-rate anchors are set to
+// the given ackedBytesAtSend snapshot. The delivery-rate anchors are set to
 // the send time (no delivery event since), so the sample interval equals the
 // RTT — the pre-delivery-rate-estimation behavior the assertions encode.
-func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, deliveredAtSend uint64, nowNano uint64) {
+func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, ackedBytesAtSend uint64, nowNano uint64) {
 	sentTime := nowNano - rttNano
 	pkt := &sendPacket{
 		// A real data packet: it carries payload, and the estimate counts its
 		// wire size. Here they are the same number so the existing
-		// expectations about totalDelivered still read directly.
-		data:                make([]byte, ackLen),
-		wireLen:             ackLen,
-		sentTimeNano:        sentTime,
-		deliveredAtSend:     deliveredAtSend,
-		deliveredTimeAtSend: sentTime,
-		firstSentTimeAtSend: sentTime,
+		// expectations about acked.bytes still read directly.
+		data:         make([]byte, ackLen),
+		wireLen:      ackLen,
+		sentTimeNano: sentTime,
+		ackedAtSend:  ackState{bytes: ackedBytesAtSend, timeNano: sentTime, sentNano: sentTime},
 	}
 	c.updateMeasurements(rttNano, pkt, nowNano)
 }
@@ -112,11 +110,11 @@ func TestMeasurements_FirstMeasurement_RTTMin(t *testing.T) {
 func TestMeasurements_FirstMeasurement_Bandwidth(t *testing.T) {
 	conn := newTestConnection()
 
-	// First ACK: deliveredAtSend=0, totalDelivered becomes 1000
+	// First ACK: ackedBytesAtSend=0, acked.bytes becomes 1000
 	// delivery rate = (1000 - 0) * 1e9 / 100ms = 10000 B/s
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 	assert.Equal(t, uint64(10000), conn.bwMax, "delivery rate: 1000 bytes delivered over 100ms RTT")
-	assert.Equal(t, uint64(1000), conn.totalDelivered, "should track delivered bytes")
+	assert.Equal(t, uint64(1000), conn.acked.bytes, "should track delivered bytes")
 	assert.Equal(t, uint64(0), conn.noGrowthRounds, "noGrowthRounds should be 0 after bandwidth increase")
 }
 
@@ -228,10 +226,10 @@ func TestMeasurements_RTTMin_SurvivesHigherSamples(t *testing.T) {
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano)
 
 	// Many higher samples within the TTL must NOT displace the minimum
-	delivered := conn.totalDelivered
+	delivered := conn.acked.bytes
 	for i := 0; i < windowSize; i++ {
 		conn.testUpdateMeasurements(150_000_000, 1000, delivered, uint64(2_000_000_000+i*100_000_000))
-		delivered = conn.totalDelivered
+		delivered = conn.acked.bytes
 	}
 
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "minimum must survive queue-inflated samples within TTL")
@@ -245,12 +243,12 @@ func TestMeasurements_RTTMin_TTLExpiry(t *testing.T) {
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano)
 
 	// A higher candidate recorded within the TTL
-	delivered := conn.totalDelivered
+	delivered := conn.acked.bytes
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 5_000_000_000)
 	assert.Equal(t, uint64(50_000_000), conn.rttMinNano, "minimum still valid")
 
 	// Beyond the 10s TTL of the first sample: the stored candidate takes over
-	delivered = conn.totalDelivered
+	delivered = conn.acked.bytes
 	conn.testUpdateMeasurements(200_000_000, 1000, delivered, 12_000_000_000)
 	assert.Equal(t, uint64(150_000_000), conn.rttMinNano,
 		"expired minimum falls back to the best still-valid candidate")
@@ -263,8 +261,8 @@ func TestMeasurements_RTTMin_TTLExpiry(t *testing.T) {
 func TestMeasurements_Bandwidth_Initial(t *testing.T) {
 	conn := newTestConnection()
 
-	// deliveredAtSend=0, ackLen=1000, rtt=100ms
-	// totalDelivered becomes 1000, delivered = 1000-0 = 1000
+	// ackedBytesAtSend=0, ackLen=1000, rtt=100ms
+	// acked.bytes becomes 1000, delivered = 1000-0 = 1000
 	// bw = 1000 * 1e9 / 100_000_000 = 10000
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 	assert.Equal(t, uint64(10000), conn.bwMax, "delivery rate: 10000 B/s")
@@ -273,13 +271,13 @@ func TestMeasurements_Bandwidth_Initial(t *testing.T) {
 func TestMeasurements_Bandwidth_IncreasingDeliveryRate(t *testing.T) {
 	conn := newTestConnection()
 
-	// Packet 1: sent when totalDelivered=0, acked with 1000 bytes, rtt=100ms
+	// Packet 1: sent when acked.bytes=0, acked with 1000 bytes, rtt=100ms
 	// bw = 1000 * 1e9 / 100ms = 10000
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 	assert.Equal(t, uint64(10000), conn.bwMax)
 
-	// Packet 2: sent when totalDelivered=0, acked with 1000 bytes, rtt=50ms
-	// totalDelivered now = 2000, delivered = 2000-0 = 2000
+	// Packet 2: sent when acked.bytes=0, acked with 1000 bytes, rtt=50ms
+	// acked.bytes now = 2000, delivered = 2000-0 = 2000
 	// bw = 2000 * 1e9 / 50ms = 40000
 	conn.testUpdateMeasurements(50_000_000, 1000, 0, 2_000_000_000)
 	assert.Equal(t, uint64(40000), conn.bwMax, "higher delivery rate should update bwMax")
@@ -292,8 +290,8 @@ func TestMeasurements_Bandwidth_MaintainsMaxDeliveryRate(t *testing.T) {
 	conn.testUpdateMeasurements(50_000_000, 1000, 0, 1_000_000_000)
 	assert.Equal(t, uint64(20000), conn.bwMax)
 
-	// Packet 2: sent when totalDelivered=500, acked with 1000 bytes, rtt=100ms
-	// totalDelivered = 2000, delivered = 2000-500 = 1500
+	// Packet 2: sent when acked.bytes=500, acked with 1000 bytes, rtt=100ms
+	// acked.bytes = 2000, delivered = 2000-500 = 1500
 	// bw = 1500 * 1e9 / 100ms = 15000 (lower)
 	conn.testUpdateMeasurements(100_000_000, 1000, 500, 2_000_000_000)
 	assert.Equal(t, uint64(20000), conn.bwMax, "bwMax should not decrease")
@@ -311,10 +309,10 @@ func TestMeasurements_StartupToNormal_Transition(t *testing.T) {
 	assert.Equal(t, ccStartup, conn.state)
 
 	// Simulate 3 rounds with no bandwidth growth (< 25% increase).
-	// Each round: send an ACK whose deliveredAtSend >= roundDeliveredTarget
+	// Each round: send an ACK whose ackedBytesAtSend >= roundAckedTarget
 	// to trigger round completion, with the same bandwidth.
 	for i := 0; i < int(startupExitRounds); i++ {
-		delivered := conn.totalDelivered
+		delivered := conn.acked.bytes
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(2_000_000_000+i*500_000_000))
 	}
 
@@ -330,7 +328,7 @@ func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
 
 	// Only 2 non-increasing rounds — not enough
 	for i := 0; i < int(startupExitRounds)-1; i++ {
-		delivered := conn.totalDelivered
+		delivered := conn.acked.bytes
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(2_000_000_000+i*500_000_000))
 	}
 
@@ -401,12 +399,12 @@ func TestMeasurements_Probing_CycleProbeDrainNormal(t *testing.T) {
 	assert.Equal(t, probeGain, gainFor(conn.state), "probe round at 1.25x")
 
 	// Next completed round switches to drain
-	delivered := conn.totalDelivered
+	delivered := conn.acked.bytes
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_500_000_000)
 	assert.Equal(t, drainGain, gainFor(conn.state), "drain round at 0.75x")
 
 	// Following completed round returns to normal
-	delivered = conn.totalDelivered
+	delivered = conn.acked.bytes
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_700_000_000)
 	assert.Equal(t, normalGain, gainFor(conn.state), "back to 1.0x after drain")
 }
@@ -558,7 +556,7 @@ func TestBackoff(t *testing.T) {
 func TestMeasurements_DivisionByZeroProtection(t *testing.T) {
 	conn := newTestConnection()
 
-	// deliveredAtSend=0, ackLen=1000, rtt=100ms
+	// ackedBytesAtSend=0, ackLen=1000, rtt=100ms
 	// delivered = 1000 - 0 = 1000, bw = 1000 * 1e9 / 1e8 = 10000
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 
@@ -589,7 +587,7 @@ func TestMeasurements_Integration_StartupToNormal(t *testing.T) {
 	// First plateau round still carries high roundBwBest from startup, so
 	// we need startupExitRounds+1 rounds: 1 that resets noGrowthRounds + 3 that increment.
 	for i := 0; i < int(startupExitRounds)+1; i++ {
-		delivered := conn.totalDelivered
+		delivered := conn.acked.bytes
 		conn.testUpdateMeasurements(50_000_000, 1000, delivered, uint64(4_000_000_000+i*500_000_000))
 	}
 	assert.NotEqual(t, ccStartup, conn.state)
@@ -608,15 +606,14 @@ func TestMeasurements_EstimateCountsWireBytes(t *testing.T) {
 	const payload, wire = 1400, 1452
 
 	pkt := &sendPacket{
-		data:                make([]byte, payload),
-		wireLen:             wire,
-		sentTimeNano:        1_000_000,
-		deliveredTimeAtSend: 1_000_000,
-		firstSentTimeAtSend: 1_000_000,
+		data:         make([]byte, payload),
+		wireLen:      wire,
+		sentTimeNano: 1_000_000,
+		ackedAtSend:  ackState{timeNano: 1_000_000, sentNano: 1_000_000},
 	}
 	c.updateMeasurements(1_000_000, pkt, 2_000_000)
 
-	assert.Equal(t, uint64(wire), c.totalDelivered,
+	assert.Equal(t, uint64(wire), c.acked.bytes,
 		"the estimate counts the packet on the wire, not just its payload")
 }
 
@@ -626,11 +623,10 @@ func TestMeasurements_ZeroPayloadPacketGivesNoBandwidthSample(t *testing.T) {
 	c := newTestConnection()
 
 	probe := &sendPacket{
-		data:                nil,
-		wireLen:             51,
-		sentTimeNano:        1_000_000,
-		deliveredTimeAtSend: 1_000_000,
-		firstSentTimeAtSend: 1_000_000,
+		data:         nil,
+		wireLen:      51,
+		sentTimeNano: 1_000_000,
+		ackedAtSend:  ackState{timeNano: 1_000_000, sentNano: 1_000_000},
 	}
 	c.updateMeasurements(1_000_000, probe, 2_000_000)
 

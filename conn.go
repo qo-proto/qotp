@@ -3,6 +3,7 @@ package qotp
 import (
 	"bytes"
 	"crypto/ecdh"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -242,7 +243,7 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 // =============================================================================
 
 func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, uint64, error) {
-	connId := getUint64(encData[headerSize : headerSize+connIdSize])
+	connId := binary.LittleEndian.Uint64(encData[headerSize : headerSize+connIdSize])
 
 	switch msgType {
 	case initSnd, initCryptoSnd:
@@ -677,9 +678,10 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 		return c.sendControlPacket(s, ack, nowNano)
 	}
 
-	// Our receive buffer drained well past what we last advertised: tell a
-	// peer blocked on the stale value now instead of leaving it to its probe
-	if c.rcv.windowReopened(c.mtu) {
+	// The peer's view of our window is stale: it is blocked on a value that
+	// has since opened, or still sending into a buffer that is full. Any
+	// packet carries the current window, so send one now.
+	if c.rcv.windowChanged(c.mtu) {
 		return c.sendControlPacket(s, nil, nowNano)
 	}
 
@@ -723,8 +725,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	// for its whole TTL. Erring early only inflates a sample, which the
 	// filter discards.
 	if data != nil {
-		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano,
-			c.totalDelivered, c.deliveredTimeNano, c.firstSentTimeNano)
+		c.snd.markSent(s.streamID, offset, uint16(len(data)), uint16(len(encData)), nowNano, c.acked)
 	}
 
 	if isKeyUpdate {

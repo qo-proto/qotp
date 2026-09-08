@@ -203,7 +203,7 @@ func TestReceiveBuffer_Insert_BufferFull(t *testing.T) {
 	status := rb.insert(1, 4, 0, []byte("more"))
 
 	assert.Equal(t, rcvInsertBufferFull, status)
-	assert.Equal(t, 4, rb.size())
+	assert.Equal(t, 4, rb.len)
 }
 
 func TestReceiveBuffer_Insert_AfterReadFreesSpace(t *testing.T) {
@@ -222,7 +222,7 @@ func TestReceiveBuffer_Insert_ExactCapacity(t *testing.T) {
 	status := rb.insert(1, 0, 0, []byte("12345678"))
 
 	assert.Equal(t, rcvInsertOk, status)
-	assert.Equal(t, 8, rb.size())
+	assert.Equal(t, 8, rb.len)
 }
 
 // =============================================================================
@@ -236,7 +236,7 @@ func TestReceiveBuffer_Overlap_PreviousSegment(t *testing.T) {
 	assert.Equal(t, rcvInsertOk, rb.insert(1, 3, 0, []byte("DEFGH")))
 
 	assert.Equal(t, []byte("ABCDEFGH"), rb.removeOldestInOrder(1))
-	assert.Equal(t, 0, rb.size())
+	assert.Equal(t, 0, rb.len)
 }
 
 func TestReceiveBuffer_Overlap_NextSegment(t *testing.T) {
@@ -245,7 +245,7 @@ func TestReceiveBuffer_Overlap_NextSegment(t *testing.T) {
 	assert.Equal(t, rcvInsertOk, rb.insert(1, 0, 0, []byte("ABCDEFG")))
 
 	assert.Equal(t, []byte("ABCDEFGHI"), rb.removeOldestInOrder(1))
-	assert.Equal(t, 0, rb.size())
+	assert.Equal(t, 0, rb.len)
 }
 
 func TestReceiveBuffer_Overlap_CoversBothNeighbours(t *testing.T) {
@@ -255,7 +255,7 @@ func TestReceiveBuffer_Overlap_CoversBothNeighbours(t *testing.T) {
 	assert.Equal(t, rcvInsertOk, rb.insert(1, 2, 0, []byte("345ABCDEFGHIJWXYZUV")))
 
 	assert.Equal(t, []byte("12345ABCDEFGHIJWXYZUV"), rb.removeOldestInOrder(1))
-	assert.Equal(t, 0, rb.size())
+	assert.Equal(t, 0, rb.len)
 }
 
 func TestReceiveBuffer_Overlap_CompletelyCovered(t *testing.T) {
@@ -313,7 +313,7 @@ func TestReceiveBuffer_Size_AfterInsert(t *testing.T) {
 
 	rb.insert(1, 0, 0, []byte("ABCDE"))
 
-	assert.Equal(t, 5, rb.size())
+	assert.Equal(t, 5, rb.len)
 }
 
 func TestReceiveBuffer_Size_OverlappingCountsStored(t *testing.T) {
@@ -322,7 +322,7 @@ func TestReceiveBuffer_Size_OverlappingCountsStored(t *testing.T) {
 
 	rb.insert(1, 2, 0, []byte("CDEFG"))
 
-	assert.Equal(t, 10, rb.size()) // overlaps are resolved on delivery
+	assert.Equal(t, 10, rb.len) // overlaps are resolved on delivery
 }
 
 func TestReceiveBuffer_Size_AfterRead(t *testing.T) {
@@ -333,7 +333,7 @@ func TestReceiveBuffer_Size_AfterRead(t *testing.T) {
 	data := rb.removeOldestInOrder(1)
 
 	assert.Equal(t, []byte("ABCDEFG"), data)
-	assert.Equal(t, 0, rb.size())
+	assert.Equal(t, 0, rb.len)
 }
 
 // =============================================================================
@@ -790,7 +790,7 @@ func TestReceiveBuffer_Insert_InOrderAcceptedWhenFull(t *testing.T) {
 
 	// Fill the buffer with an out-of-order segment (gap at [0,5))
 	rb.insert(1, 5, 0, []byte("ABCDEFGHIJ")) // 10 bytes at offset 5, buffer now full
-	assert.Equal(t, 10, rb.size())
+	assert.Equal(t, 10, rb.len)
 
 	// The in-order gap-filler must be accepted despite the buffer being full,
 	// otherwise the stream deadlocks

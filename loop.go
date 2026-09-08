@@ -100,7 +100,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 	// Deferred: cleanup takes locks the iteration holds
 	defer func() {
 		for _, connId := range closeConnIds {
-			l.cleanupConn(connId)
+			l.connMap.remove(connId)
 		}
 		for conn, streamIDs := range closeStreams {
 			for _, streamID := range streamIDs {

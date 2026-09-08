@@ -882,19 +882,19 @@ func TestSendBuffer_MarkSent(t *testing.T) {
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
+	sb.markSent(1, 0, 4, 44, 12345, ackState{bytes: 5000})
 
 	_, info, ok := sb.streams[1].inFlight[0].first()
 	assert.True(t, ok)
 	assert.Equal(t, uint64(12345), info.sentTimeNano)
-	assert.Equal(t, uint64(5000), info.deliveredAtSend)
+	assert.Equal(t, uint64(5000), info.ackedAtSend.bytes)
 }
 
 func TestSendBuffer_MarkSent_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
 	// Should not panic
-	sb.markSent(999, 0, 4, 44, 12345, 0, 0, 0)
+	sb.markSent(999, 0, 4, 44, 12345, ackState{})
 }
 
 func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
@@ -903,20 +903,20 @@ func TestSendBuffer_MarkSent_NonexistentPacket(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 
 	// Wrong offset - should not panic
-	sb.markSent(1, 100, 4, 44, 12345, 0, 0, 0)
+	sb.markSent(1, 100, 4, 44, 12345, ackState{})
 }
 
 func TestSendBuffer_AcknowledgeRange_ReturnsPacketInfo(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.markSent(1, 0, 4, 44, 12345, 5000, 0, 0)
+	sb.markSent(1, 0, 4, 44, 12345, ackState{bytes: 5000})
 
 	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
 	assert.NotNil(t, ackedPkt)
 	assert.Equal(t, uint64(12345), ackedPkt.sentTimeNano)
-	assert.Equal(t, uint64(5000), ackedPkt.deliveredAtSend)
+	assert.Equal(t, uint64(5000), ackedPkt.ackedAtSend.bytes)
 }
 
 // =============================================================================
@@ -1031,7 +1031,7 @@ func TestSendBuffer_GiveUpSchedule(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("x"))
 	sb.readyToSend(1, data, nil, 1200, true)
-	sb.markSent(1, 0, 1, 60, 0, 0, 0, 0)
+	sb.markSent(1, 0, 1, 60, 0, ackState{})
 
 	// Walk the clock forward, recording when each retransmit and the final
 	// give-up happen.
@@ -1100,7 +1100,7 @@ func sendFivePackets(t *testing.T) *sender {
 	for i := range 5 {
 		sb.queueData(1, []byte("abcd"))
 		sb.readyToSend(1, data, nil, 1000, true)
-		sb.markSent(1, uint64(i*4), 4, 40, uint64(i+1)*msNano, 0, 0, 0)
+		sb.markSent(1, uint64(i*4), 4, 40, uint64(i+1)*msNano, ackState{})
 	}
 	return sb
 }

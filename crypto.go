@@ -3,10 +3,9 @@ package qotp
 import (
 	"crypto/ecdh"
 	"crypto/rand"
-	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"fmt"
-	"strings"
 
 	"golang.org/x/crypto/chacha20"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -57,8 +56,8 @@ func encryptInitSnd(pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, localMaxPayload in
 	encData[0] = (uint8(initSnd) << 5) | cryptoVersion
 	copy(encData[headerSize:], pubKeyEpSnd.Bytes())
 	copy(encData[headerSize+pubKeySize:], pubKeyIdSnd.Bytes())
-	putUint16(encData[headerSize+2*pubKeySize:], uint16(localMaxPayload))
-	return getUint64(encData[headerSize:]), encData, nil
+	binary.LittleEndian.PutUint16(encData[headerSize+2*pubKeySize:], uint16(localMaxPayload))
+	return binary.LittleEndian.Uint64(encData[headerSize:]), encData, nil
 }
 
 // encryptInitCryptoSnd seals the 0-RTT initiation to the receiver's identity
@@ -84,7 +83,7 @@ func encryptInitCryptoSnd(
 		return 0, nil, errors.New("packet data too large for MTU")
 	}
 	padded := make([]byte, len(packetData)+msgInitFillLenSize+fillLen)
-	putUint16(padded, uint16(fillLen))
+	binary.LittleEndian.PutUint16(padded, uint16(fillLen))
 	copy(padded[msgInitFillLenSize+fillLen:], packetData)
 
 	secret, err := prvKeyEpSnd.ECDH(pubKeyIdRcv)
@@ -92,7 +91,7 @@ func encryptInitCryptoSnd(
 		return 0, nil, err
 	}
 	encData, err = chainedEncrypt(snCrypto, true, secret, header, padded)
-	return getUint64(header[headerSize:]), encData, err
+	return binary.LittleEndian.Uint64(header[headerSize:]), encData, err
 }
 
 // encryptPacket seals InitRcv and InitCryptoRcv with a fresh ephemeral
@@ -118,7 +117,7 @@ func encryptPacket(
 		}
 		header = make([]byte, minInitRcvSizeHdr)
 		header[0] = (uint8(initRcv) << 5) | cryptoVersion
-		putUint64(header[headerSize:], connId)
+		binary.LittleEndian.PutUint64(header[headerSize:], connId)
 		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
 		copy(header[headerSize+connIdSize+pubKeySize:], pubKeyIdSnd.Bytes())
 		sharedSecret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
@@ -128,7 +127,7 @@ func encryptPacket(
 		}
 		header = make([]byte, minInitCryptoRcvSizeHdr)
 		header[0] = (uint8(initCryptoRcv) << 5) | cryptoVersion
-		putUint64(header[headerSize:], connId)
+		binary.LittleEndian.PutUint64(header[headerSize:], connId)
 		copy(header[headerSize+connIdSize:], prvKeyEpSnd.PublicKey().Bytes())
 		sharedSecret, err = prvKeyEpSnd.ECDH(pubKeyEpRcv)
 	case data:
@@ -137,7 +136,7 @@ func encryptPacket(
 		}
 		header = make([]byte, headerSize+connIdSize)
 		header[0] = (uint8(data) << 5) | cryptoVersion
-		putUint64(header[headerSize:], connId)
+		binary.LittleEndian.PutUint64(header[headerSize:], connId)
 		return chainedEncrypt(snCrypto, isSender, sharedSecret, header, packetData)
 	default:
 		return nil, errors.New("unsupported message type")
@@ -216,7 +215,7 @@ func decryptInitSnd(encData []byte) (pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey, s
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	senderMaxPayload = getUint16(encData[headerSize+2*pubKeySize:])
+	senderMaxPayload = binary.LittleEndian.Uint16(encData[headerSize+2*pubKeySize:])
 	return pubKeyIdSnd, pubKeyEpSnd, senderMaxPayload, nil
 }
 
@@ -276,7 +275,7 @@ func decryptInitCryptoSnd(encData []byte, prvKeyIdRcv *ecdh.PrivateKey) (
 	}
 
 	// fillLen is attacker-chosen: anyone can seal to our public identity key
-	fillerLen := int(getUint16(packetData))
+	fillerLen := int(binary.LittleEndian.Uint16(packetData))
 	if msgInitFillLenSize+fillerLen > len(packetData) {
 		return nil, nil, nil, errors.New("invalid filler length")
 	}
@@ -371,14 +370,6 @@ func decryptSnWithoutMAC(sharedSecret, nonce, encoded []byte) (uint64, error) {
 	return getUint48(snSer[:]), nil
 }
 
-func decodeHexPubKey(pubKeyHex string) (*ecdh.PublicKey, error) {
-	b, err := hex.DecodeString(strings.TrimPrefix(pubKeyHex, "0x"))
-	if err != nil {
-		return nil, err
-	}
-	return ecdh.X25519().NewPublicKey(b)
-}
-
 func generateKey() (*ecdh.PrivateKey, error) {
 	return ecdh.X25519().GenerateKey(rand.Reader)
 }
@@ -459,7 +450,7 @@ func DecryptWithSecrets(encData []byte, isSenderOnInit bool, sharedSecret, share
 	}
 
 	if msgType == initCryptoSnd {
-		fillerLen := getUint16(packetData)
+		fillerLen := binary.LittleEndian.Uint16(packetData)
 		if msgInitFillLenSize+int(fillerLen) > len(packetData) {
 			return nil, errors.New("invalid filler length")
 		}
