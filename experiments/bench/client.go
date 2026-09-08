@@ -446,7 +446,9 @@ func report(all []outcome, sizeMB, runs int, srv *bench.ServerReport) {
 	}
 	fmt.Println("counter (qotp BytesDelivered, TCP tcpi_bytes_acked); QUIC has no")
 	fmt.Println("acked-bytes counter, so its upload samples lag by up to one flow-control")
-	fmt.Println("window. Download progress is counted on receipt for all three.")
+	fmt.Println("window. Download progress is counted on arrival for all three (qotp")
+	fmt.Println("BytesReceived), so a head-of-line hole does not draw a stall into the")
+	fmt.Println("rate curve that never happened on the wire.")
 	fmt.Println("\nThe cpu column is cores busy on each side during that phase alone. A")
 	fmt.Println("flagged phase is a CPU measurement, not a protocol comparison: qotp and")
 	fmt.Println("quic do per-packet work in userspace where tcp does it in the kernel, so")

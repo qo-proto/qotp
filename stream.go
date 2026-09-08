@@ -183,6 +183,17 @@ func (s *Stream) BytesDelivered() uint64 {
 	return s.conn.deliveredBytes.Load()
 }
 
+// BytesReceived returns the connection's cumulative payload accepted into the
+// receive buffer, counted on arrival rather than on in-order delivery — the
+// receive-side counterpart of BytesDelivered. Read() only hands out contiguous
+// data, so its running total freezes for as long as a head-of-line hole is
+// unrepaired even while the link stays busy; this one keeps counting, which is
+// what rate sampling wants. Connection-wide (all streams). Safe from any
+// goroutine (guarded by the receive buffer's lock).
+func (s *Stream) BytesReceived() uint64 {
+	return s.conn.rcv.bytesReceived()
+}
+
 func (s *Stream) ConnID() uint64 {
 	return s.conn.connId
 }
