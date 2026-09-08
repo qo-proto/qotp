@@ -206,9 +206,17 @@ func runQOTP(addr string, dir bench.Dir, size uint64, until time.Time, prog *ato
 				return errDone
 			}
 		} else {
-			prog.Store(recvd)
+			// Sample arrival, not in-order delivery: Read() hands out only
+			// contiguous data, so recvd freezes while a head-of-line hole is
+			// unrepaired even though the link is busy, drawing a stall into
+			// the rate curve that never happened on the wire. BytesReceived is
+			// the counterpart of the upload branch's BytesDelivered, so both
+			// directions measure the same thing. Completion still waits for
+			// delivery, as it does for tcp and quic.
+			prog.Store(stream.BytesReceived())
 			if until.IsZero() && recvd >= size {
 				dur = time.Since(start)
+				prog.Store(size)
 				return errDone
 			}
 		}

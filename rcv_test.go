@@ -902,3 +902,75 @@ func TestReceiveBuffer_Insert_OutOfOrderRejectedWhenFull(t *testing.T) {
 	status := rb.insert(1, 20, 0, []byte("XX"))
 	assert.Equal(t, rcvInsertBufferFull, status)
 }
+
+// =============================================================================
+// RECEIVED-ON-ARRIVAL COUNTER TESTS
+// =============================================================================
+
+func TestReceiveBuffer_BytesReceived_CountsOutOfOrder(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+
+	// Out-of-order segment: nothing is deliverable yet, but it did arrive.
+	rb.insert(1, 10, 0, []byte("later"))
+	assert.Equal(t, uint64(5), rb.bytesReceived())
+	assert.Nil(t, rb.removeOldestInOrder(1))
+
+	// Filling the gap adds its own bytes, it does not re-count the tail.
+	rb.insert(1, 0, 0, []byte("0123456789"))
+	assert.Equal(t, uint64(15), rb.bytesReceived())
+	assert.Equal(t, []byte("0123456789later"), rb.removeOldestInOrder(1))
+}
+
+func TestReceiveBuffer_BytesReceived_SurvivesDelivery(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("data"))
+	rb.removeOldestInOrder(1)
+
+	// Draining to the application must not undo the count.
+	assert.Equal(t, uint64(4), rb.bytesReceived())
+	assert.Equal(t, 0, rb.len)
+}
+
+func TestReceiveBuffer_BytesReceived_IgnoresDuplicates(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("ABCD"))
+	rb.insert(1, 0, 0, []byte("ABCD"))
+
+	assert.Equal(t, uint64(4), rb.bytesReceived())
+}
+
+func TestReceiveBuffer_BytesReceived_CountsOnlyNewBytesOfOverlap(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("ABCD"))
+	// Overlaps the first two bytes, contributes "EF".
+	rb.insert(1, 2, 0, []byte("CDEF"))
+
+	assert.Equal(t, uint64(6), rb.bytesReceived())
+	assert.Equal(t, []byte("ABCDEF"), rb.removeOldestInOrder(1))
+}
+
+func TestReceiveBuffer_BytesReceived_ExcludesAlreadyDelivered(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("ABCD"))
+	rb.removeOldestInOrder(1)
+
+	// A retransmit of delivered data is dropped, not counted.
+	rb.insert(1, 0, 0, []byte("ABCD"))
+	assert.Equal(t, uint64(4), rb.bytesReceived())
+
+	// A partial retransmit contributes only the part past nextInOrder.
+	rb.insert(1, 2, 0, []byte("CDEF"))
+	assert.Equal(t, uint64(6), rb.bytesReceived())
+}
+
+// Connection-wide, and it outlives the stream it counted -- which is why the
+// counter sits on the receiver and not on the per-stream reassembly buffer.
+func TestReceiveBuffer_BytesReceived_SpansStreams(t *testing.T) {
+	rb := newReceiveBuffer(1000)
+	rb.insert(1, 0, 0, []byte("aaa"))
+	rb.insert(2, 0, 0, []byte("bbbb"))
+	assert.Equal(t, uint64(7), rb.bytesReceived())
+
+	rb.removeStream(1)
+	assert.Equal(t, uint64(7), rb.bytesReceived())
+}

@@ -36,7 +36,13 @@ type receiver struct {
 	len             int
 	ackList         []*ack
 	advertised      uint64 // free space the peer was last told about
-	mu              sync.Mutex
+	// Cumulative payload admitted to the reassembly buffer, counted on
+	// arrival rather than on in-order delivery, so unlike the delivered offset
+	// it does not freeze behind a head-of-line hole. Connection-wide and never
+	// decremented, so it outlives the streams it counted: the receive-side
+	// twin of conn.deliveredBytes.
+	received uint64
+	mu       sync.Mutex
 }
 
 func newReceiveBuffer(capacity int) *receiver {
@@ -119,6 +125,16 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	defer rb.mu.Unlock()
 
 	stream := rb.getOrCreateStream(streamID)
+
+	// Whatever the overlap resolution below stores, rb.len grows by exactly
+	// that much, so the delta is the newly received byte count -- duplicates
+	// and already-delivered prefixes excluded for free.
+	lenBefore := rb.len
+	defer func() {
+		if stored := rb.len - lenBefore; stored > 0 {
+			rb.received += uint64(stored)
+		}
+	}()
 
 	// Data after close offset - ACK but drop
 	if stream.closeAtOffset != nil && offset >= *stream.closeAtOffset {
@@ -310,6 +326,14 @@ func (rb *receiver) checkGap(streamID uint32, nowNano uint64, deadlineNano uint6
 	stream.recordSkip(stream.nextInOrder, target)
 	stream.nextInOrder = target
 	stream.gapStartNano = 0
+}
+
+// bytesReceived returns the cumulative payload admitted to the reassembly
+// buffer across the connection, counted on arrival.
+func (rb *receiver) bytesReceived() uint64 {
+	rb.mu.Lock()
+	defer rb.mu.Unlock()
+	return rb.received
 }
 
 // lateStats returns counters for data that arrived after its range was skipped.
