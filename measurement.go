@@ -174,7 +174,11 @@ type measurements struct {
 	lastProbeTimeNano    uint64 // when we last probed for more bandwidth
 
 	// Fairness throttle (see lossRateThresholdPct)
-	throttlePct        uint64 // persistent pacing multiplier, 100 = none
+	throttlePct uint64 // persistent pacing multiplier, 100 = none
+	// Start of the current loss episode. A packet sent at or before it was
+	// already in flight when we last responded, so its loss is the tail of
+	// that same episode -- see acknowledgeRange.
+	lossEpochNano      uint64
 	windowRoundsDone   uint64 // rounds completed in the current evaluation window
 	windowLostPackets  uint64 // fast-retx loss declarations in the current window
 	windowAckedPackets uint64 // measured ACKs in the current window
@@ -300,7 +304,7 @@ func (m *measurements) updateBandwidth(pkt *sendPacket, nowNano uint64) {
 
 	// Round completion: all packets in flight at round start have been ACK'd
 	if pkt.deliveredAtSend >= m.roundDeliveredTarget {
-		m.finishRound()
+		m.finishRound(nowNano)
 	}
 }
 
@@ -338,9 +342,9 @@ func (m *measurements) deliveryRateSample(pkt *sendPacket, nowNano uint64) (uint
 // finishRound closes a BBR round: growth tracking, fairness-throttle
 // evaluation, retiring the round into the max filter, and advancing the
 // probe gain cycle.
-func (m *measurements) finishRound() {
+func (m *measurements) finishRound(nowNano uint64) {
 	m.trackGrowth()
-	m.updateThrottle()
+	m.updateThrottle(nowNano)
 
 	// Retire the round into the max window; recompute so that maxima older
 	// than windowSize rounds can age out. Skipped while pacing is
@@ -393,9 +397,16 @@ func (m *measurements) trackGrowth() {
 // window whose loss rate exceeds lossRateThresholdPct (with at least
 // throttleMinLost losses as evidence) is a congestion event: multiplicative
 // decrease, at most once per window. A clean window ratchets the throttle
-// back toward 100%. Sustained loss during startup also ends startup: a full
-// pipe announces itself through loss (BBRv2-style exit).
-func (m *measurements) updateThrottle() {
+// back toward 100%.
+//
+// Loss during startup ends startup but does not throttle: startup finds the
+// ceiling by doubling until the path objects, so the loss that ends it is our
+// own probe, not competition. Measured on 100mbit/20ms netem, startup loss is
+// 6-34% of the first window against a 2% threshold, so this fired every run
+// and clamped an otherwise idle path for one to two seconds. The cost is one
+// window of delay in answering a flow that really is competing during our
+// startup.
+func (m *measurements) updateThrottle(nowNano uint64) {
 	m.windowRoundsDone++
 	if m.windowRoundsDone < throttleWindowRounds {
 		return
@@ -412,11 +423,13 @@ func (m *measurements) updateThrottle() {
 
 	isCongested := lost >= throttleMinLost && lost*100 > total*lossRateThresholdPct
 	switch {
+	case isCongested && m.inStartup():
+		// A full pipe announcing itself: end startup (BBRv2-style exit) but do
+		// not read our own probe as congestion.
+		m.exitStartup(nowNano)
 	case isCongested:
 		m.throttlePct = max((m.throttlePct*throttleBetaPct)/100, throttleFloorPct)
-		if m.inStartup() {
-			m.exitStartup()
-		}
+		m.lossEpochNano = nowNano
 	case m.throttlePct < 100:
 		m.throttlePct = min(m.throttlePct+throttleRecoverPct, 100)
 	}
@@ -437,8 +450,16 @@ func (m *measurements) inStartup() bool {
 	return m.state == ccStartup
 }
 
-func (m *measurements) exitStartup() {
+// exitStartup also discards the evaluation window in progress and opens a new
+// loss episode. The window holds startup's overshoot, which says nothing about
+// the path now that the flow paces at its measured rate; the epoch is needed
+// on top because loss detection lags the loss, so gap evidence for packets
+// dropped during startup keeps landing in the fresh window.
+func (m *measurements) exitStartup(nowNano uint64) {
 	m.setState(ccSteady)
+	m.windowRoundsDone = 0
+	m.windowLostPackets, m.windowAckedPackets = 0, 0
+	m.lossEpochNano = nowNano
 }
 
 func (m *measurements) updateBBRState(nowNano uint64) {
@@ -447,15 +468,15 @@ func (m *measurements) updateBBRState(nowNano uint64) {
 	}
 
 	if m.inStartup() {
-		m.updateStartup()
+		m.updateStartup(nowNano)
 	} else {
 		m.updateNormal(nowNano)
 	}
 }
 
-func (m *measurements) updateStartup() {
+func (m *measurements) updateStartup(nowNano uint64) {
 	if m.noGrowthRounds >= startupExitRounds {
-		m.exitStartup()
+		m.exitStartup(nowNano)
 	}
 }
 

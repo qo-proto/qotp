@@ -686,3 +686,102 @@ func TestMeasurements_HealthyAqmDoesNotDrain(t *testing.T) {
 	assert.Equal(t, ccDraining, m.state)
 	assert.Equal(t, drainGain, m.pacingGainPct)
 }
+
+// =============================================================================
+// FAIRNESS THROTTLE
+// =============================================================================
+
+// runThrottleWindow feeds one complete evaluation window, ending at nowNano.
+func runThrottleWindow(m *measurements, lost, acked, nowNano uint64) {
+	m.windowLostPackets += lost
+	m.windowAckedPackets += acked
+	for range throttleWindowRounds {
+		m.updateThrottle(nowNano)
+	}
+}
+
+func TestMeasurements_ThrottleRespondsToCongestion(t *testing.T) {
+	m := newMeasurements()
+	m.setState(ccSteady)
+
+	runThrottleWindow(&m, 100, 200, secondNano)
+	assert.Equal(t, throttleBetaPct, m.throttlePct, "a congested window backs off")
+
+	// A clean window ratchets back, one step at a time.
+	runThrottleWindow(&m, 0, 500, 2*secondNano)
+	assert.Equal(t, throttleBetaPct+throttleRecoverPct, m.throttlePct)
+}
+
+func TestMeasurements_ThrottleIgnoresWeakEvidence(t *testing.T) {
+	m := newMeasurements()
+	m.setState(ccSteady)
+
+	// Below throttleMinLost: too few losses to call it congestion.
+	runThrottleWindow(&m, throttleMinLost-1, 100, secondNano)
+	assert.Equal(t, uint64(100), m.throttlePct)
+
+	// Enough losses, but well under the rate threshold: random loss on a lossy
+	// link must not read as congestion.
+	runThrottleWindow(&m, 10, 10_000, 2*secondNano)
+	assert.Equal(t, uint64(100), m.throttlePct)
+}
+
+func TestMeasurements_ThrottleFloor(t *testing.T) {
+	m := newMeasurements()
+	m.setState(ccSteady)
+	for i := range 20 {
+		runThrottleWindow(&m, 100, 200, uint64(i+1)*secondNano)
+	}
+	assert.Equal(t, throttleFloorPct, m.throttlePct, "the flow must stay alive")
+}
+
+// Startup's overshoot is how the ceiling gets found; it is not competition.
+func TestMeasurements_StartupLossEndsStartupWithoutThrottling(t *testing.T) {
+	m := newMeasurements()
+	assert.True(t, m.inStartup())
+
+	runThrottleWindow(&m, 100, 200, secondNano) // 33% loss, as startup produces
+	assert.False(t, m.inStartup(), "a full pipe announcing itself ends startup")
+	assert.Equal(t, uint64(100), m.throttlePct, "our own probe is not congestion")
+
+	// Out of startup the response is normal again. The packets must postdate
+	// the epoch that exitStartup opened, or they are the same episode.
+	runThrottleWindow(&m, 100, 200, 2*secondNano)
+	assert.Equal(t, throttleBetaPct, m.throttlePct)
+}
+
+// Leaving startup discards the window in progress, so the overshoot that ended
+// startup cannot throttle the first steady-state window instead.
+func TestMeasurements_ExitStartupDiscardsWindow(t *testing.T) {
+	m := newMeasurements()
+	m.srtt = 20 * msNano
+	m.windowRoundsDone = throttleWindowRounds - 1
+	m.windowLostPackets, m.windowAckedPackets = 500, 100
+
+	m.exitStartup(secondNano)
+	assert.Equal(t, uint64(0), m.windowRoundsDone)
+	assert.Equal(t, uint64(0), m.windowLostPackets)
+	assert.Equal(t, uint64(0), m.windowAckedPackets)
+	// The response time itself, with no RTT grace: packets sent after it went
+	// out at the reduced rate, so their loss is real evidence and must count.
+	assert.Equal(t, uint64(secondNano), m.lossEpochNano)
+
+	runThrottleWindow(&m, 0, 500, 2*secondNano)
+	assert.Equal(t, uint64(100), m.throttlePct)
+}
+
+// The measured regression: on a 100mbit/20ms path startup lost 34% of one
+// window and the transfer then ran with zero loss, yet the sender stayed
+// clamped for over two seconds.
+func TestMeasurements_IdlePathIsNotThrottledAfterStartup(t *testing.T) {
+	m := newMeasurements()
+
+	runThrottleWindow(&m, 752, 1460, secondNano) // the first window, as measured
+	assert.False(t, m.inStartup())
+
+	for i := range 7 { // every remaining window of that transfer: no loss
+		runThrottleWindow(&m, 0, 1000, uint64(i+2)*secondNano)
+	}
+	assert.Equal(t, uint64(100), m.throttlePct,
+		"an idle path must not hold the sender below its measured rate")
+}

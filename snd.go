@@ -462,7 +462,15 @@ func (sb *sender) drainExpiredBestEffort(streamID uint32, baseRTO uint64, nowNan
 // declared lost by this call. Only originals count — ACKs for
 // retransmissions (gen 1+) are transmission-ambiguous and contribute no
 // gap evidence.
-func (sb *sender) acknowledgeRange(ack *ack) (ackedPkt *sendPacket, lostCount int) {
+// acknowledgeRange retires one ACKed packet and reports how many earlier
+// originals this ACK completed the loss case against.
+//
+// A packet sent at or before lossEpochNano was already in flight when the last
+// congestion response was made, so slowing down could not have saved it and
+// its loss is not new evidence: RFC 6582 for NewReno, RFC 9002 §7.3.2 for
+// QUIC, where this is what stops one burst causing several reductions. Gates
+// reporting only: the packet is still declared lost and still retransmitted.
+func (sb *sender) acknowledgeRange(ack *ack, lossEpochNano uint64) (ackedPkt *sendPacket, lostCount int) {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
@@ -480,7 +488,7 @@ func (sb *sender) acknowledgeRange(ack *ack) (ackedPkt *sendPacket, lostCount in
 		for k, p, more := stream.inFlight[0].first(); more && k != key; k, p, more = stream.inFlight[0].next(k) {
 			if p.needsReTx && p.ackGap < fastRetxThreshold {
 				p.ackGap++
-				if p.ackGap == fastRetxThreshold {
+				if p.ackGap == fastRetxThreshold && p.sentTimeNano > lossEpochNano {
 					lostCount++
 				}
 			}
