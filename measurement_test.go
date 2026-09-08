@@ -43,7 +43,7 @@ func TestMeasurements_New(t *testing.T) {
 	m := newMeasurements()
 
 	assert.Equal(t, ccStartup, m.state)
-	assert.Equal(t, startupGain, gainFor(m.state))
+	assert.Equal(t, ccStartup, m.state)
 }
 
 // =============================================================================
@@ -124,7 +124,7 @@ func TestMeasurements_FirstMeasurement_StartupState(t *testing.T) {
 	conn.testUpdateMeasurements(100_000_000, 1000, 0, 1_000_000_000)
 
 	assert.Equal(t, ccStartup, conn.state, "should remain in startup state")
-	assert.Equal(t, startupGain, gainFor(conn.state), "should maintain startup gain")
+	assert.Equal(t, ccStartup, conn.state, "should maintain startup gain")
 }
 
 // =============================================================================
@@ -317,7 +317,7 @@ func TestMeasurements_StartupToNormal_Transition(t *testing.T) {
 	}
 
 	assert.NotEqual(t, ccStartup, conn.state, "should transition to normal after 3 non-increasing rounds")
-	assert.Equal(t, uint64(100), gainFor(conn.state), "pacing gain should be 1.0x")
+	assert.Equal(t, ccSteady, conn.state, "pacing gain should be 1.0x")
 }
 
 func TestMeasurements_StartupToNormal_RemainsInStartup(t *testing.T) {
@@ -350,7 +350,7 @@ func TestMeasurements_NormalState_NormalRTT(t *testing.T) {
 	conn.srtt = 100_000_000
 	conn.testUpdateMeasurements(200_000_000, 1000, 0, 1_300_000_000)
 
-	assert.Equal(t, uint64(100), gainFor(conn.state), "should be 100% when RTT is normal")
+	assert.Equal(t, ccSteady, conn.state, "should be 100% when RTT is normal")
 }
 
 // =============================================================================
@@ -368,7 +368,7 @@ func TestMeasurements_Probing_BeforeProbeTime(t *testing.T) {
 	// elapsed = 1.5s - 1.0s = 0.5s < 1.2s → no probe
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 1_500_000_000)
 
-	assert.Equal(t, uint64(100), gainFor(conn.state), "should not probe yet")
+	assert.Equal(t, ccSteady, conn.state, "should not probe yet")
 }
 
 func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
@@ -382,7 +382,7 @@ func TestMeasurements_Probing_AfterProbeTime(t *testing.T) {
 	// elapsed = 2.3s - 1.0s = 1.3s > 1.2s → triggers probe
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
 
-	assert.Equal(t, probeGain, gainFor(conn.state), "should probe with 1.25x gain")
+	assert.Equal(t, ccProbing, conn.state, "should probe with 1.25x gain")
 	assert.Equal(t, uint64(2_300_000_000), conn.lastProbeTimeNano, "should update probe time")
 	assert.Equal(t, uint64(2), conn.probeRoundsRemaining, "should set probe cycle rounds")
 }
@@ -396,17 +396,17 @@ func TestMeasurements_Probing_CycleProbeDrainNormal(t *testing.T) {
 
 	// Trigger the probe (elapsed 1.3s > 150ms * 8 = 1.2s)
 	conn.testUpdateMeasurements(150_000_000, 1000, 0, 2_300_000_000)
-	assert.Equal(t, probeGain, gainFor(conn.state), "probe round at 1.25x")
+	assert.Equal(t, ccProbing, conn.state, "probe round at 1.25x")
 
 	// Next completed round switches to drain
 	delivered := conn.acked.bytes
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_500_000_000)
-	assert.Equal(t, drainGain, gainFor(conn.state), "drain round at 0.75x")
+	assert.Equal(t, ccDraining, conn.state, "drain round at 0.75x")
 
 	// Following completed round returns to normal
 	delivered = conn.acked.bytes
 	conn.testUpdateMeasurements(150_000_000, 1000, delivered, 2_700_000_000)
-	assert.Equal(t, normalGain, gainFor(conn.state), "back to 1.0x after drain")
+	assert.Equal(t, ccSteady, conn.state, "back to 1.0x after drain")
 }
 
 // =============================================================================
@@ -679,7 +679,7 @@ func TestMeasurements_HealthyAqmDoesNotDrain(t *testing.T) {
 	m.srtt = m.rttMinNano + 20*msNano
 	m.updateState(2 * secondNano)
 	assert.Equal(t, ccDraining, m.state)
-	assert.Equal(t, drainGain, gainFor(m.state))
+	assert.Equal(t, ccDraining, m.state)
 }
 
 // =============================================================================

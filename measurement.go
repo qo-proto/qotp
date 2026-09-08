@@ -105,19 +105,6 @@ const (
 	ccDraining                // one round below it: probe cycle or queue feedback
 )
 
-func gainFor(s ccState) uint64 {
-	switch s {
-	case ccStartup:
-		return startupGain
-	case ccProbing:
-		return probeGain
-	case ccDraining:
-		return drainGain
-	default:
-		return normalGain
-	}
-}
-
 // =============================================================================
 // Measurements - RTT estimation and BBR congestion control
 // =============================================================================
@@ -434,7 +421,18 @@ func (m *measurements) calcPacing(packetSize uint64) uint64 {
 		return (packetSize * interval) / conservativeMTU
 	}
 
-	pacedBw := (m.bwMax * gainFor(m.state) * m.throttlePct) / 10_000
+	var pacedBw uint64
+	switch m.state {
+	case ccStartup:
+		pacedBw = (m.bwMax * startupGain * m.throttlePct) / 10_000
+	case ccProbing:
+		pacedBw = (m.bwMax * probeGain * m.throttlePct) / 10_000
+	case ccDraining:
+		pacedBw = (m.bwMax * drainGain * m.throttlePct) / 10_000
+	default:
+		pacedBw = (m.bwMax * normalGain * m.throttlePct) / 10_000
+	}
+
 	if pacedBw == 0 {
 		return initialWindowInterval
 	}
