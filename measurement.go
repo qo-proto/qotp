@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"sync/atomic"
 )
 
 // =============================================================================
@@ -117,9 +118,10 @@ type ackState struct {
 }
 
 type measurements struct {
-	// RTT estimation (RFC 6298)
-	srtt   uint64
-	rttvar uint64
+	// RTT estimation (RFC 6298). The atomics are copies for RTTNano and
+	// RTTVarNano, which run on the user's goroutines.
+	srtt, rttvar             uint64
+	srttShared, rttvarShared atomic.Uint64
 
 	// Min-RTT filter: candidates ascending in age and value, [0] is the minimum
 	rttMinWin   [filterLen]rttMinEntry
@@ -194,11 +196,13 @@ func (m *measurements) updateRTT(rttNano uint64) {
 	if m.srtt == 0 {
 		m.srtt = rttNano
 		m.rttvar = rttNano / 2
-		return
+	} else {
+		delta := max(rttNano, m.srtt) - min(rttNano, m.srtt)
+		m.rttvar = (m.rttvar*3 + delta) / 4
+		m.srtt = (m.srtt*7 + rttNano) / 8
 	}
-	delta := max(rttNano, m.srtt) - min(rttNano, m.srtt)
-	m.rttvar = (m.rttvar*3 + delta) / 4
-	m.srtt = (m.srtt*7 + rttNano) / 8
+	m.srttShared.Store(m.srtt)
+	m.rttvarShared.Store(m.rttvar)
 }
 
 // updateMinRTT keeps a time-windowed minimum as a monotonic staircase: a new

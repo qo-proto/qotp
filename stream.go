@@ -106,15 +106,15 @@ func (s *Stream) GapTimeoutNano() uint64 {
 	return s.gapTimeoutNano.Load()
 }
 
-// RTTNano is the smoothed RTT, 0 until the first sample. Call it from the
-// Loop callback: the event loop writes it without a lock.
+// RTTNano is the smoothed RTT, 0 until the first sample. Safe from any
+// goroutine.
 func (s *Stream) RTTNano() uint64 {
-	return s.conn.srtt
+	return s.conn.srttShared.Load()
 }
 
-// RTTVarNano is the RTT variation (RFC 6298). Call it from the Loop callback.
+// RTTVarNano is the RTT variation (RFC 6298). Safe from any goroutine.
 func (s *Stream) RTTVarNano() uint64 {
-	return s.conn.rttvar
+	return s.conn.rttvarShared.Load()
 }
 
 // LatePackets counts packets that arrived after their range was skipped as

@@ -267,20 +267,6 @@ func TestListener_HasActiveStreams_WithConnection(t *testing.T) {
 // DIAL FROM LISTENER TESTS
 // =============================================================================
 
-func TestListener_RefreshMaxPayload_NonUDP(t *testing.T) {
-	connPair := NewConnPair("a", "b")
-	listener, err := Listen(WithNetworkConn(connPair.Conn1), WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-
-	// Non-UDP conn: no interface to read, maxPayload keeps the 1500-48 default
-	listener.RefreshMaxPayload()
-	assert.Equal(t, 1452, listener.maxPayload)
-}
-
-// =============================================================================
-// NEWCONN TESTS
-// =============================================================================
-
 func TestListener_newConn_DuplicateConnId(t *testing.T) {
 	listener, err := Listen(WithSeed(testPrvSeed1))
 	assert.NoError(t, err)

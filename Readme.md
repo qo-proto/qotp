@@ -841,8 +841,7 @@ func (s *Stream) SetGapTimeoutNano(timeoutNano uint64)
 func (s *Stream) GapTimeoutNano() uint64
 
 // RTTNano / RTTVarNano expose the smoothed RTT and jitter estimates.
-// Read them from the Loop callback: the send path updates them without a
-// lock, so reading from another goroutine is a data race.
+// Safe from any goroutine.
 func (s *Stream) RTTNano() uint64
 func (s *Stream) RTTVarNano() uint64
 

@@ -246,9 +246,8 @@ stream.Ping()
 
 // Ping will be sent on next Flush() and RTT measured when ACK arrives.
 // Pings are best-effort: a lost ping is not retransmitted, just send another.
-// RTT is used internally for congestion control and can be read via the
-// getters below - call them from the Loop callback (the send path updates
-// them locklessly, so reading from another goroutine is a data race):
+// RTT is used internally for congestion control and can be read from any
+// goroutine via the getters below:
 srtt := stream.RTTNano()    // smoothed RTT (0 until first sample)
 jitter := stream.RTTVarNano() // RTT variation
 ```
@@ -267,12 +266,6 @@ listener, err := qotp.Listen(
 ```
 
 Connections start at a conservative 1232 bytes and negotiate up to `min(local, remote)` maxPayload. Every packet carries the sender's `maxPayload`, so a path MTU change reaches the peer on the next packet.
-
-To re-detect the interface MTU at runtime (e.g., after switching from WiFi to Ethernet):
-
-```go
-listener.RefreshMaxPayload()
-```
 
 ## Example 11: Wireshark Debugging
 
@@ -424,7 +417,6 @@ Close (FIN) and key updates are always reliable, even on unreliable streams.
 | `Listen(timeout, now)` | Receive one packet (low-level) |
 | `Flush(now)` | Send pending data (low-level) |
 | `HasActiveStreams()` | Check for active streams |
-| `RefreshMaxPayload()` | Re-detect interface MTU and recompute maxPayload |
 | `Dial("host:port")` | Connect, in-band key exchange (1-RTT) |
 | `DialWithCrypto("host:port", pubKey)` | Connect to a known identity key (0-RTT) |
 | `PubKeyFromHex(hex)` | Parse an identity key as printed by a peer (package function) |

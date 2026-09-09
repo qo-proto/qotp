@@ -19,8 +19,7 @@ import (
 // net.core.rmem_max)
 const socketBufferSize = 7 * 1024 * 1024
 
-// The read buffer holds any datagram, so a peer whose maxPayload grew after
-// RefreshMaxPayload cannot send one that truncates and fails its MAC
+// The read buffer holds any datagram; a truncated one would fail its MAC
 const maxUDPPayload = 65535
 
 type Listener struct {
@@ -165,15 +164,6 @@ func (l *Listener) Close() error {
 		return err
 	}
 	return l.localConn.Close()
-}
-
-// RefreshMaxPayload re-reads the interface MTU, e.g. after switching from
-// WiFi to Ethernet; peers learn the new value on their next packet. Call it
-// from the Loop callback: the event loop reads maxPayload without a lock.
-func (l *Listener) RefreshMaxPayload() {
-	if udpConn, ok := l.localConn.(*udpNetworkConn); ok {
-		l.maxPayload = max(getInterfaceMTU(udpConn.conn)-ipOverhead, conservativeMTU)
-	}
 }
 
 func (l *Listener) HasActiveStreams() bool {

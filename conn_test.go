@@ -1194,8 +1194,8 @@ func TestConn_MaxPayload_ChangePropagates(t *testing.T) {
 	_, _, err := c.encodeAndWrite(s, nil, []byte("one"), 0, false, 1000, false)
 	assert.NoError(t, err)
 
-	// Interface changes (RefreshMaxPayload updates the listener) — the very
-	// next packet advertises the new value; there is no latch to reset.
+	// A changed maxPayload is advertised on the very next packet; there is
+	// no latch to reset.
 	c.listener.maxPayload = 1300
 	_, _, err = c.encodeAndWrite(s, nil, []byte("two"), 3, false, 2000, false)
 	assert.NoError(t, err)
