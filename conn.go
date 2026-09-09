@@ -72,10 +72,9 @@ type conn struct {
 
 	nextWriteTime uint64
 
-	// Receive-window probing; both reset when the window opens so a fresh
-	// block probes at once
-	rwndProbeNano  uint64
-	rwndProbeCount uint
+	// When the last receive-window probe went out; reset when the window
+	// opens so a fresh block probes at once
+	rwndProbeNano uint64
 
 	// Sequence number of the newest packet a window was taken from: the
 	// window is a snapshot of free space, so an older packet arriving late
@@ -589,7 +588,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	isBlockedByRwnd := c.dataInFlight+c.mtu > int(c.rcvWndSize)
 	if !isBlockedByRwnd {
-		c.rwndProbeNano, c.rwndProbeCount = 0, 0
+		c.rwndProbeNano = 0
 	}
 
 	// Pacing blocks everything but ACKs
@@ -638,17 +637,18 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 
 	// The window is only learned from ACKs, and a peer with nothing to
 	// acknowledge sends none, so a blocked sender that goes quiet would
-	// deadlock. Probe with a control packet: it carries a stream header, the
-	// peer ACKs that, and every ACK carries the window. Backed off like a
-	// retransmit but never giving up: a peer refusing data is behaving
-	// correctly, and only silence (the read deadline) ends the connection.
+	// deadlock. Probe once per RTO with a control packet: it carries a stream
+	// header, the peer ACKs that, and every ACK carries the window. The peer
+	// also announces a reopened window itself; the probe is the retry for a
+	// lost announcement and the keepalive during a long block. It never gives
+	// up: a peer refusing data is behaving correctly, and only silence (the
+	// read deadline) ends the connection.
 	if isBlockedByRwnd {
 		if ack == nil && !kuSendDue {
-			every := backoff(c.rtoNano(), c.rwndProbeCount)
-			if waited := nowNano - c.rwndProbeNano; waited < every {
-				return 0, every - waited, nil
+			if waited := nowNano - c.rwndProbeNano; waited < c.rtoNano() {
+				return 0, c.rtoNano() - waited, nil
 			}
-			c.rwndProbeNano, c.rwndProbeCount = nowNano, c.rwndProbeCount+1
+			c.rwndProbeNano = nowNano
 		}
 		return c.sendControlPacket(s, ack, nowNano)
 	}

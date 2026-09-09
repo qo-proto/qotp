@@ -426,10 +426,12 @@ That final wait is deliberately not backed off: there is no further retransmit
 to space out, so using the backed-off interval would add 16×RTO to how long a
 broken path takes to surface.
 
-The probe interval backs off like a retransmit, but the probe never gives up:
-a peer refusing data is behaving correctly, so there is no failure to count. A
-peer that has actually gone away is ended by the 30s read deadline instead —
-the probe reports zero bytes sent, so it cannot hold the connection open.
+The probe repeats once per RTO and never gives up: a peer refusing data is
+behaving correctly, so there is no failure to count. The receiver also
+announces a reopened window itself, so the probe is the retry for a lost
+announcement and the keepalive during a long block. A peer that has actually
+gone away is ended by the 30s read deadline instead — the probe reports zero
+bytes sent, so it cannot hold the connection open.
 
 #### BBR Congestion Control
 

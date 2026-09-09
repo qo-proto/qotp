@@ -1954,10 +1954,10 @@ func TestConn_DuplicateAck_CountedOnce_StillCarriesWindow(t *testing.T) {
 		"a duplicate ACK still carries a usable window")
 }
 
-// Probing must not go on at full rate forever. It backs off like a
-// retransmit, but unlike one it never gives up: a peer refusing data is
-// behaving correctly, so only silence may end the connection.
-func TestConn_RwndProbe_BacksOffButNeverGivesUp(t *testing.T) {
+// The probe repeats once per RTO for as long as the block lasts and never
+// gives up: a peer refusing data is behaving correctly, so only silence may
+// end the connection.
+func TestConn_RwndProbe_OncePerRTONeverGivesUp(t *testing.T) {
 	c := createTestConn(true, false, true)
 	w := &countingConn{}
 	c.listener.localConn = w
@@ -1984,27 +1984,15 @@ func TestConn_RwndProbe_BacksOffButNeverGivesUp(t *testing.T) {
 		return wait
 	}
 
-	var intervals []uint64
 	for range 8 {
-		intervals = append(intervals, probe())
+		assert.Equal(t, rto, probe(), "every probe is one RTO after the last")
 	}
-
-	assert.Equal(t, rto*2, intervals[0])
-	assert.Equal(t, rto*4, intervals[1])
-	assert.Equal(t, rto*8, intervals[2])
-	for i := 1; i < len(intervals); i++ {
-		assert.GreaterOrEqual(t, intervals[i], intervals[i-1], "interval must not shrink")
-		assert.LessOrEqual(t, intervals[i], maxRTO, "and stays capped")
-	}
-	last := len(intervals) - 1
-	assert.Equal(t, intervals[last-1], intervals[last], "settles flat rather than growing")
 
 	// The window opening resets it, so a later block probes at once again.
 	c.rcvWndSize = rcvBufferCapacity
 	_, _, err := c.flushStream(s, nowNano)
 	assert.NoError(t, err)
 	assert.Equal(t, uint64(0), c.rwndProbeNano)
-	assert.Equal(t, uint(0), c.rwndProbeCount)
 }
 
 // A peer that has genuinely gone away stops the probing: nothing it sends
