@@ -29,7 +29,6 @@ type receiver struct {
 	len             int
 	ackList         []*ack
 	advertised      uint64 // free space the peer was last told about
-	announceDue     bool   // a packet was dropped for lack of space since the last advertisement
 	// Payload admitted, counted on arrival so it does not freeze behind a
 	// head-of-line hole like the delivered offset does
 	received uint64
@@ -109,7 +108,6 @@ func (rb *receiver) insert(streamID uint32, offset uint64, nowNano uint64, userD
 	if !advancesDelivery && rb.len+dataLen > rb.capacity {
 		stream.droppedPackets++
 		stream.droppedBytes += uint64(dataLen)
-		rb.announceDue = true
 		return rcvInsertBufferFull
 	}
 
@@ -334,16 +332,14 @@ func (rb *receiver) freeAdvertise() uint64 {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.advertised = rb.free()
-	rb.announceDue = false
 	return rb.advertised
 }
 
-// windowChanged reports that the peer's view of the window is stale enough
-// to be worth a packet: a packet was dropped for lack of space, or the
-// buffer drained usefully. The margin is the silly-window rule: a slowly
-// draining buffer must not generate a packet per read.
-func (rb *receiver) windowChanged(mtu int) bool {
+// windowReopened reports that the buffer drained usefully since the peer was
+// last told. The margin is the silly-window rule: a slowly draining buffer
+// must not generate a packet per read.
+func (rb *receiver) windowReopened(mtu int) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	return rb.announceDue || rb.free() >= rb.advertised+uint64(2*max(mtu, conservativeMTU))
+	return rb.free() >= rb.advertised+uint64(2*max(mtu, conservativeMTU))
 }

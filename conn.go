@@ -75,6 +75,10 @@ type conn struct {
 	// When the last receive-window probe went out; reset when the window
 	// opens so a fresh block probes at once
 	rwndProbeNano uint64
+	// A packet was dropped for lack of space: the peer's view of our window
+	// is stale, so announce it on the next flush instead of leaving the peer
+	// to find out from a missing ACK after an RTO
+	rwndAnnounceDue bool
 
 	// Sequence number of the newest packet a window was taken from: the
 	// window is a snapshot of free space, so an older packet arriving late
@@ -475,7 +479,9 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 	}
 
 	if len(userData) > 0 {
-		c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData)
+		if c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData) == rcvInsertBufferFull {
+			c.rwndAnnounceDue = true
+		}
 		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
 	} else { // ping, close or key update: still ACKed
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
@@ -611,11 +617,12 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	}
 	probeMtu := effectiveMtu - (c.mtu - conservativeMTU)
 
-	// Retransmits bypass the receive window: the data was counted in
-	// dataInFlight when first sent. Blocking them deadlocks on the gap the
-	// lost packet left in the receiver's buffer.
+	// Retransmits are not blocked by the receive window: the data was counted
+	// in dataInFlight when first sent, and the gap filler must get through or
+	// the peer can never drain. While the window is closed the sender holds
+	// everything except that one packet (see readyToRetransmit).
 	splitData, offset, isClose, err := c.snd.readyToRetransmit(
-		s.streamID, ack, effectiveMtu, probeMtu, c.rtoNano(), msgType, nowNano)
+		s.streamID, ack, effectiveMtu, probeMtu, c.rtoNano(), msgType, nowNano, isBlockedByRwnd)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -670,7 +677,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	// The peer's view of our window is stale: it is blocked on a value that
 	// has since opened, or still sending into a buffer that is full. Any
 	// packet carries the current window, so send one now.
-	if c.rcv.windowChanged(c.mtu) {
+	if c.rwndAnnounceDue || c.rcv.windowReopened(c.mtu) {
 		return c.sendControlPacket(s, nil, nowNano)
 	}
 
@@ -731,6 +738,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 	if isKeyUpdateAck {
 		c.kuAckDue = false
 	}
+	c.rwndAnnounceDue = false // every packet carries the window
 
 	// Token-bucket pacing: the next send is scheduled from the previous
 	// nextWriteTime, not from now. The loop sends one packet per wakeup and

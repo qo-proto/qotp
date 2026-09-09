@@ -304,7 +304,7 @@ func TestSendBuffer_ReadyToRetransmit_NotExpired(t *testing.T) {
 	sb.queueData(1, []byte("test1"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 100, data, 50)
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 100, data, 50, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -315,7 +315,7 @@ func TestSendBuffer_ReadyToRetransmit_Expired(t *testing.T) {
 	sb.queueData(1, []byte("test1"))
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	d, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("test1"), d)
@@ -325,7 +325,7 @@ func TestSendBuffer_ReadyToRetransmit_Expired(t *testing.T) {
 func TestSendBuffer_ReadyToRetransmit_NonexistentStream(t *testing.T) {
 	sb := newSendBuffer(1000)
 
-	d, _, _, err := sb.readyToRetransmit(999, nil, 1000, 1000, 50, data, 200)
+	d, _, _, err := sb.readyToRetransmit(999, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -337,7 +337,7 @@ func TestSendBuffer_ReadyToRetransmit_EmptyInFlight(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -353,7 +353,7 @@ func TestSendBuffer_ReadyToRetransmit_Split_Left(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 
 	// MTU allowing exactly 6 bytes of data
-	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
+	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 6, len(d))
@@ -365,9 +365,9 @@ func TestSendBuffer_ReadyToRetransmit_Split_Right(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("0123456789"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
+	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200, false)
 
-	d, offset, _, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300)
+	d, offset, _, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 4, len(d))
@@ -384,7 +384,7 @@ func TestSendBuffer_ReadyToRetransmit_PingNotRetransmitted(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, true)
 
 	// Expired ping: not retransmitted, and left for drainExpiredBestEffort
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -550,7 +550,7 @@ func TestSendBuffer_Close_Retransmit_KeepsCloseFlag(t *testing.T) {
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	d, offset, isClose, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, offset, isClose, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, []byte("test"), d)
@@ -564,7 +564,7 @@ func TestSendBuffer_Close_RetransmitSplit_LeftNoClose(t *testing.T) {
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, true)
 
-	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
+	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 6, len(d))
@@ -577,9 +577,9 @@ func TestSendBuffer_Close_RetransmitSplit_RightHasClose(t *testing.T) {
 	sb.queueData(1, []byte("0123456789"))
 	sb.close(1)
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200)
+	sb.readyToRetransmit(1, nil, dataOverhead+6, dataOverhead+6, 50, data, 200, false)
 
-	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300)
+	d, offset, isClose, err := sb.readyToRetransmit(1, nil, dataOverhead+4, dataOverhead+4, 50, data, 300, false)
 
 	assert.Nil(t, err)
 	assert.Equal(t, 4, len(d))
@@ -595,7 +595,7 @@ func TestSendBuffer_AcknowledgeRange_ReturnsSentCount(t *testing.T) {
 	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
 	sb.readyToSend(1, data, nil, 1000, true)
-	sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200) // one retransmit
+	sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false) // one retransmit
 
 	ackedPkt, _ := sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 4}, 0)
 
@@ -610,18 +610,18 @@ func TestSendBuffer_ReadyToRetransmit_FinalRetryGetsWindow(t *testing.T) {
 
 	// Exhaust all retransmit attempts (sentCount reaches maxRetry)
 	for i := 1; i <= int(maxRetry); i++ {
-		d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(i*1000))
+		d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(i*1000), false)
 		assert.NoError(t, err)
 		assert.NotNil(t, d, "retransmit %d", i)
 	}
 
 	// Immediately after the final retransmit: response window still open
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(int(maxRetry)*1000+10))
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(int(maxRetry)*1000+10), false)
 	assert.NoError(t, err)
 	assert.Nil(t, d, "final retransmit must get its response window before the error")
 
 	// Window expired without an ACK: give up
-	_, _, _, err = sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(int(maxRetry)*1000+10_000))
+	_, _, _, err = sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, uint64(int(maxRetry)*1000+10_000), false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max retry")
 }
@@ -695,7 +695,7 @@ func TestSendBuffer_Unreliable_PingNotRetransmitted(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, false)
 
 	// Expired ping is never retransmitted; removal is drainExpiredBestEffort's job
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -709,7 +709,7 @@ func TestSendBuffer_Unreliable_DataNotRetransmitted(t *testing.T) {
 	sb.readyToSend(1, data, nil, 1000, false)
 
 	// Expired unreliable data is never retransmitted; drain removes it
-	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200)
+	d, _, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, 50, data, 200, false)
 
 	assert.Nil(t, err)
 	assert.Nil(t, d)
@@ -997,14 +997,14 @@ func TestSendBuffer_RetransmitProbesAtSmallerMtu(t *testing.T) {
 	now := uint64(1000)
 	for want := uint(0); want < maxRetry-mtuProbeLastAttempts; want++ {
 		now += 1_000_000
-		d, _, _, err := sb.readyToRetransmit(1, nil, big, probe, 1, data, now)
+		d, _, _, err := sb.readyToRetransmit(1, nil, big, probe, 1, data, now, false)
 		assert.NoError(t, err)
 		assert.Equal(t, 400, len(d), "retransmit at sentCount=%d still uses the working size", want)
 	}
 
 	// Now at the probe stage: the same data goes out shrunk.
 	now += 1_000_000
-	d, _, _, err := sb.readyToRetransmit(1, nil, big, probe, 1, data, now)
+	d, _, _, err := sb.readyToRetransmit(1, nil, big, probe, 1, data, now, false)
 	assert.NoError(t, err)
 	assert.Equal(t, 40, len(d), "the last attempts must probe at the smaller size")
 }
@@ -1026,7 +1026,7 @@ func TestSendBuffer_GiveUpSchedule(t *testing.T) {
 	var events []uint64
 	var gaveUp bool
 	for nowNano := step; nowNano < 60*rto; nowNano += step {
-		d, _, _, err := sb.readyToRetransmit(1, nil, 1200, 1200, rto, data, nowNano)
+		d, _, _, err := sb.readyToRetransmit(1, nil, 1200, 1200, rto, data, nowNano, false)
 		if err != nil {
 			assert.Contains(t, err.Error(), "max retry attempts exceeded")
 			events = append(events, nowNano)
@@ -1111,7 +1111,7 @@ func TestSendBuffer_LossEpochCountsOneEpisode(t *testing.T) {
 		"the tail of an answered episode must not count again")
 
 	// Gating the report must not gate the repair.
-	splitData, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, msNano, data, 6*msNano)
+	splitData, offset, _, err := sb.readyToRetransmit(1, nil, 1000, 1000, msNano, data, 6*msNano, false)
 	assert.Nil(t, err)
 	assert.NotNil(t, splitData, "the packet is still lost and must retransmit")
 	assert.Equal(t, uint64(0), offset, "the oldest hole goes first")
@@ -1123,4 +1123,39 @@ func TestSendBuffer_LossAfterEpochCounts(t *testing.T) {
 	// The episode closed before these packets went out, so their loss is new
 	// evidence: both head packets are reported.
 	assert.Equal(t, 2, ackLastThree(sb, 0))
+}
+
+// While the peer's window is closed, only the lowest in-flight offset may be
+// retransmitted: the peer accepts in-order data even when full, but would
+// drop anything above it, and every such drop would otherwise burn an
+// attempt. Held packets keep their attempt count and go out once the window
+// opens.
+func TestSendBuffer_Retransmit_WindowClosedHoldsAllButLowest(t *testing.T) {
+	sb := newSendBuffer(10000)
+	sb.queueData(1, make([]byte, 30))
+	mtu10 := calcCryptoOverheadWithData(data, nil, 0) + 10 // exactly 10 bytes of payload per packet
+	for i := range 3 {
+		_, off, _ := sb.readyToSend(1, data, nil, mtu10, true)
+		sb.markSent(1, off, 10, 60, uint64(i+1)*1000, ackState{})
+	}
+	// The lowest offset is acknowledged; 10 and 20 are in flight and expired.
+	sb.acknowledgeRange(&ack{streamId: 1, offset: 0, len: 10}, 0)
+	now := uint64(10 * secondNano)
+
+	// Window closed: 10 goes out (it is the gap filler), 20 is held.
+	d, off, _, err := sb.readyToRetransmit(1, nil, mtu10, mtu10, 1000, data, now, true)
+	assert.NoError(t, err)
+	assert.Len(t, d, 10)
+	assert.Equal(t, uint64(10), off)
+	d, _, _, err = sb.readyToRetransmit(1, nil, mtu10, mtu10, 1000, data, now, true)
+	assert.NoError(t, err)
+	assert.Nil(t, d, "20 is above the lowest in-flight offset and must wait")
+	pkt, _ := sb.streams[1].inFlightGet(createPacketKey(20, 10))
+	assert.Equal(t, uint(0), pkt.sentCount, "a held packet does not spend an attempt")
+
+	// Window open: 20 goes out.
+	d, off, _, err = sb.readyToRetransmit(1, nil, mtu10, mtu10, 1000, data, now, false)
+	assert.NoError(t, err)
+	assert.Len(t, d, 10)
+	assert.Equal(t, uint64(20), off)
 }

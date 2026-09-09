@@ -252,10 +252,18 @@ func (sb *sender) sendQueuedData(stream *transmitBuffer, msgType cryptoMsgType, 
 // readyToRetransmit returns the oldest expired reliable packet, split if the
 // MTU shrank. A packet close to giving up goes out at probeMtu (see
 // conn.observeMTU).
+//
+// While the peer's window is closed only the lowest in-flight offset is
+// eligible: the peer accepts in-order data even when full, and it is either
+// that or a duplicate whose ACK was lost. Anything above it might be out of
+// order there and dropped, so it is held with its expiry and attempt count
+// intact until the window opens. A full peer can therefore never exhaust
+// the retries; only the gap filler goes out, and without it the peer could
+// never drain.
 func (sb *sender) readyToRetransmit(
 	streamID uint32, ack *ack, mtu, probeMtu int,
 	baseRTO uint64, msgType cryptoMsgType,
-	nowNano uint64) (data []byte, offset uint64, isClose bool, err error) {
+	nowNano uint64, windowClosed bool) (data []byte, offset uint64, isClose bool, err error) {
 
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
@@ -264,6 +272,8 @@ func (sb *sender) readyToRetransmit(
 	if stream == nil {
 		return nil, 0, false, nil
 	}
+
+	lowest := stream.lowestInFlightOffset()
 
 	// Oldest expired head across the generations; a non-expired head clears
 	// its whole generation
@@ -278,7 +288,7 @@ func (sb *sender) readyToRetransmit(
 		for ok && !p.needsReTx {
 			k, p, ok = m.next(k)
 		}
-		if !ok {
+		if !ok || (windowClosed && k.offset() != lowest) {
 			continue
 		}
 		// The last generation has nothing further to schedule, so its
@@ -500,14 +510,19 @@ func (sb *sender) getOffsetAcked(streamID uint32) uint64 {
 	if stream == nil {
 		return 0
 	}
-	// Each generation is in ascending offset order, so its head is its lowest
-	acked := stream.bytesSentOffset
-	for _, m := range stream.inFlight {
-		if firstKey, _, ok := m.first(); ok && firstKey.offset() < acked {
-			acked = firstKey.offset()
+	return stream.lowestInFlightOffset()
+}
+
+// lowestInFlightOffset is the send offset when nothing is in flight. Each
+// generation is in ascending offset order, so its head is its lowest.
+func (t *transmitBuffer) lowestInFlightOffset() uint64 {
+	lowest := t.bytesSentOffset
+	for _, m := range t.inFlight {
+		if firstKey, _, ok := m.first(); ok && firstKey.offset() < lowest {
+			lowest = firstKey.offset()
 		}
 	}
-	return acked
+	return lowest
 }
 
 func (sb *sender) getSendOffset(streamID uint32) uint64 {

@@ -1454,7 +1454,7 @@ func TestConn_Karn_NoMeasurementFromRetransmit(t *testing.T) {
 	c.snd.queueData(0, []byte("test"))
 	c.snd.readyToSend(0, data, nil, 1000, true)
 	c.snd.markSent(0, 0, 4, 44, 1_000_000_000, ackState{})
-	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000)
+	c.snd.readyToRetransmit(0, nil, 1000, 1000, 50, data, 2_000_000_000, false)
 
 	// Its ACK is ambiguous (original or retransmit?) - must not be measured
 	p := &payloadHeader{ack: &ack{streamId: 0, offset: 0, len: 4}}
@@ -1803,7 +1803,7 @@ func TestConn_WindowReopened_PushesUpdate(t *testing.T) {
 	// Buffer nearly full, and that is what the peer was told.
 	c.rcv.insert(1, 0, 1, make([]byte, 63*1024))
 	assert.Equal(t, uint64(1024), c.rcv.freeAdvertise())
-	assert.False(t, c.rcv.windowChanged(c.mtu), "no change yet, nothing to announce")
+	assert.False(t, c.rcv.windowReopened(c.mtu), "no change yet, nothing to announce")
 
 	nowNano := uint64(10 * secondNano)
 	_, _, err := c.flushStream(s, nowNano)
@@ -1812,12 +1812,12 @@ func TestConn_WindowReopened_PushesUpdate(t *testing.T) {
 
 	// The application reads: the buffer drains and the peer's view is stale.
 	c.rcv.removeOldestInOrder(1)
-	assert.True(t, c.rcv.windowChanged(c.mtu))
+	assert.True(t, c.rcv.windowReopened(c.mtu))
 
 	_, _, err = c.flushStream(s, nowNano+secondNano)
 	assert.NoError(t, err)
 	assert.Greater(t, w.writes, before, "reopened window must be announced")
-	assert.False(t, c.rcv.windowChanged(c.mtu), "and only announced once")
+	assert.False(t, c.rcv.windowReopened(c.mtu), "and only announced once")
 }
 
 // A peer whose view of the window is stale-large keeps sending into a full
@@ -1840,15 +1840,20 @@ func TestConn_WindowClosed_PushesUpdate(t *testing.T) {
 
 	// Out-of-order data that does not fit is dropped, and the peer must hear
 	// about the window now rather than after its RTO.
-	assert.Equal(t, rcvInsertBufferFull, c.rcv.insert(1, 100, nowNano, make([]byte, 5*1024)))
-	assert.True(t, c.rcv.windowChanged(c.mtu))
+	p, u, err := decodeProto(mustEncode(&payloadHeader{
+		maxPayload: 1452, rcvWnd: 1 << 20, streamId: 1, streamOffset: 100,
+	}, make([]byte, 5*1024)))
+	assert.NoError(t, err)
+	_, err = c.processIncomingPayload(p, u, 1, nowNano)
+	assert.NoError(t, err)
+	assert.True(t, c.rwndAnnounceDue)
 	assert.Equal(t, uint64(1), s.DroppedPackets())
 	assert.Equal(t, uint64(5*1024), s.DroppedBytes())
 
 	_, _, err = c.flushStream(s, nowNano+secondNano)
 	assert.NoError(t, err)
 	assert.Greater(t, w.writes, before, "a full buffer must be announced")
-	assert.False(t, c.rcv.windowChanged(c.mtu), "and only once")
+	assert.False(t, c.rwndAnnounceDue, "and only once")
 }
 
 // The window is free space, so it means nothing except as of the moment it was
