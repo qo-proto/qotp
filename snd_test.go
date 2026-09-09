@@ -766,28 +766,16 @@ func TestSendBuffer_CheckStreamFullyAcked_FullyAcked(t *testing.T) {
 // GETOFFSETS TESTS
 // =============================================================================
 
-func TestSendBuffer_GetOffsetClosedAt_NoStream(t *testing.T) {
+func TestSendBuffer_IsCloseRequested(t *testing.T) {
 	sb := newSendBuffer(1000)
+	assert.False(t, sb.isCloseRequested(1), "no stream")
 
-	assert.Nil(t, sb.getOffsetClosedAt(1))
-}
-
-func TestSendBuffer_GetOffsetClosedAt_NotClosed(t *testing.T) {
-	sb := newSendBuffer(1000)
 	sb.queueData(1, []byte("test"))
+	assert.False(t, sb.isCloseRequested(1), "not closed")
 
-	assert.Nil(t, sb.getOffsetClosedAt(1))
-}
-
-func TestSendBuffer_GetOffsetClosedAt_Closed(t *testing.T) {
-	sb := newSendBuffer(1000)
-	sb.queueData(1, []byte("test"))
 	sb.close(1)
-
-	result := sb.getOffsetClosedAt(1)
-
-	assert.NotNil(t, result)
-	assert.Equal(t, uint64(4), *result)
+	assert.True(t, sb.isCloseRequested(1))
+	assert.Equal(t, uint64(4), *sb.streams[1].closeAtOffset, "closes after the queued data")
 }
 
 func TestSendBuffer_GetOffsetAcked_NoStream(t *testing.T) {

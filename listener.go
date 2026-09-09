@@ -211,6 +211,17 @@ func (l *Listener) HasActiveStreams() bool {
 // Connection management (internal)
 // =============================================================================
 
+func (l *Listener) getOrCreateConn(connId uint64, rAddr netip.AddrPort, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, isSender, withCrypto bool) (*conn, error) {
+	if conn, exists := l.connMap.get(connId); exists {
+		return conn, nil
+	}
+	prvKeyEp, err := generateKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate key: %w", err)
+	}
+	return l.newConn(connId, rAddr, prvKeyEp, pubKeyIdRcv, pubKeyEpRcv, isSender, withCrypto)
+}
+
 func (l *Listener) newConn(
 	connId uint64,
 	remoteAddr netip.AddrPort,

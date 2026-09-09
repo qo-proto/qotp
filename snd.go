@@ -30,13 +30,13 @@ func (p packetKey) offset() uint64 {
 
 type sendPacket struct {
 	data         []byte
-	sentTimeNano uint64 // when this packet last went out (RTT, RTO)
-	ackedAtSend ackState // ACK bookkeeping to compute a bandwidth sample
-	wireLen     uint16 // encrypted size, what pacing counts
-	sentCount   uint
-	ackGap      uint8 // later-sent originals ACKed, capped at fastRetxThreshold
-	isClose     bool
-	needsReTx   bool
+	sentTimeNano uint64   // when this packet last went out (RTT, RTO)
+	ackedAtSend  ackState // ACK bookkeeping to compute a bandwidth sample
+	wireLen      uint16   // encrypted size, what pacing counts
+	sentCount    uint
+	ackGap       uint8 // later-sent originals ACKed, capped at fastRetxThreshold
+	isClose      bool
+	needsReTx    bool
 }
 
 type sender struct {
@@ -520,12 +520,10 @@ func (sb *sender) getSendOffset(streamID uint32) uint64 {
 	return 0
 }
 
-func (sb *sender) getOffsetClosedAt(streamID uint32) *uint64 {
+func (sb *sender) isCloseRequested(streamID uint32) bool {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 
-	if stream := sb.streams[streamID]; stream != nil {
-		return stream.closeAtOffset
-	}
-	return nil
+	stream := sb.streams[streamID]
+	return stream != nil && stream.closeAtOffset != nil
 }

@@ -71,7 +71,7 @@ func (s *Stream) IsClosed() bool {
 
 // IsCloseRequested reports whether Close has been called
 func (s *Stream) IsCloseRequested() bool {
-	return s.conn.snd.getOffsetClosedAt(s.streamID) != nil
+	return s.conn.snd.isCloseRequested(s.streamID)
 }
 
 func (s *Stream) IsOpen() bool {

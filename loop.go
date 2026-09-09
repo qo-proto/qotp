@@ -94,21 +94,6 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 		return minPacing
 	}
 
-	var closeConnIds []uint64
-	var closeStreams map[*conn][]uint32
-
-	// Deferred: cleanup takes locks the iteration holds
-	defer func() {
-		for _, connId := range closeConnIds {
-			l.connMap.remove(connId)
-		}
-		for conn, streamIDs := range closeStreams {
-			for _, streamID := range streamIDs {
-				conn.cleanupStream(streamID)
-			}
-		}
-	}()
-
 	startStreamID := l.currentStreamID
 
 	for _, c := range l.connMap.iterator(l.currentConnID) {
@@ -116,15 +101,14 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 			dataSent, pacingNano, err := c.flushStream(stream, nowNano)
 			if err != nil {
 				slog.Info("closing connection", slog.Any("err", err))
-				closeConnIds = append(closeConnIds, c.connId)
+				l.connMap.remove(c.connId)
 				return minPacing
 			}
 
+			// Removing the cursor entry ends this walk; the rest of the
+			// streams get their turn on the next Flush
 			if stream.rcvClosed.Load() && stream.sndClosed.Load() && !c.rcv.hasPendingAckForStream(stream.streamID) {
-				if closeStreams == nil {
-					closeStreams = map[*conn][]uint32{}
-				}
-				closeStreams[c] = append(closeStreams[c], stream.streamID)
+				c.cleanupStream(stream.streamID)
 				continue
 			}
 
@@ -138,7 +122,7 @@ func (l *Listener) Flush(nowNano uint64) uint64 {
 				slog.Info("close connection, timeout",
 					slog.Uint64("now", nowNano),
 					slog.Uint64("last", c.lastReadTimeNano))
-				closeConnIds = append(closeConnIds, c.connId)
+				l.connMap.remove(c.connId)
 				return minPacing
 			}
 

@@ -21,7 +21,7 @@ const (
 	// if that gets through where the working size did not, the path cannot
 	// carry the working size. Ordinary loss never moves the MTU.
 	mtuProbeLastAttempts = 2
-	windowSize           = 10 // rolling window of the min-RTT and max-bandwidth filters
+	filterLen            = 10 // rolling window of the min-RTT and max-bandwidth filters
 )
 
 // Tunables are vars so tests can override them.
@@ -122,12 +122,12 @@ type measurements struct {
 	rttvar uint64
 
 	// Min-RTT filter: candidates ascending in age and value, [0] is the minimum
-	rttMinWin   [windowSize]rttMinEntry
+	rttMinWin   [filterLen]rttMinEntry
 	rttMinCount int
 	rttMinNano  uint64 // rttMinWin[0].rttNano, cached
 
 	// Max-bandwidth filter over the best sample of each recent round
-	bwRounds   [windowSize]uint64
+	bwRounds   [filterLen]uint64
 	bwRoundIdx int
 	bwMax      uint64 // max of bwRounds and the round in progress, cached
 
@@ -278,7 +278,7 @@ func (m *measurements) finishRound(nowNano uint64) {
 	// live on short-RTT paths. Keep the last honest reading instead.
 	if m.throttlePct >= throttleNormalGain && m.state != ccDraining {
 		m.bwRounds[m.bwRoundIdx] = m.roundBwBest
-		m.bwRoundIdx = (m.bwRoundIdx + 1) % windowSize
+		m.bwRoundIdx = (m.bwRoundIdx + 1) % filterLen
 		m.bwMax = slices.Max(m.bwRounds[:])
 	}
 

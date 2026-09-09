@@ -227,7 +227,7 @@ func TestMeasurements_RTTMin_SurvivesHigherSamples(t *testing.T) {
 
 	// Many higher samples within the TTL must NOT displace the minimum
 	delivered := conn.acked.bytes
-	for i := 0; i < windowSize; i++ {
+	for i := 0; i < filterLen; i++ {
 		conn.testUpdateMeasurements(150_000_000, 1000, delivered, uint64(2_000_000_000+i*100_000_000))
 		delivered = conn.acked.bytes
 	}
