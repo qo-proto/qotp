@@ -520,7 +520,7 @@ func (sb *sender) getSendOffset(streamID uint32) uint64 {
 	return 0
 }
 
-func (sb *sender) isCloseRequested(streamID uint32) bool {
+func (sb *sender) isClosing(streamID uint32) bool {
 	sb.mu.Lock()
 	defer sb.mu.Unlock()
 

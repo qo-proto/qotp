@@ -43,7 +43,7 @@ func (s *Stream) Read() ([]byte, error) {
 // Write queues data. It returns less than len(userData) when the send
 // buffer is full, and io.EOF once the stream is closing.
 func (s *Stream) Write(userData []byte) (int, error) {
-	if s.sndClosed.Load() || s.IsCloseRequested() {
+	if s.sndClosed.Load() || s.IsClosing() {
 		return 0, io.EOF
 	}
 
@@ -65,25 +65,17 @@ func (s *Stream) Close() {
 	s.conn.snd.close(s.streamID)
 }
 
+// IsClosing reports that Close has been called: Write returns io.EOF, and
+// the stream stays until the FIN is acknowledged and the peer's FIN has
+// been read
+func (s *Stream) IsClosing() bool {
+	return s.conn.snd.isClosing(s.streamID)
+}
+
+// IsClosed reports that both directions are done and the stream is about to
+// be dropped
 func (s *Stream) IsClosed() bool {
 	return s.rcvClosed.Load() && s.sndClosed.Load()
-}
-
-// IsCloseRequested reports whether Close has been called
-func (s *Stream) IsCloseRequested() bool {
-	return s.conn.snd.isCloseRequested(s.streamID)
-}
-
-func (s *Stream) IsOpen() bool {
-	return !s.IsCloseRequested() && !s.IsClosed()
-}
-
-func (s *Stream) RcvClosed() bool {
-	return s.rcvClosed.Load()
-}
-
-func (s *Stream) SndClosed() bool {
-	return s.sndClosed.Load()
 }
 
 // =============================================================================

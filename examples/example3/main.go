@@ -165,8 +165,8 @@ func runClient(serverAddr string) {
 			cancel()
 		} else {
 			for _, ss := range streams {
-				fmt.Printf("Stream %d (%p): sndClosed=%v rcvClosed=%v, %p\n",
-					ss.stream.StreamID(), ss.stream, ss.stream.SndClosed(), ss.stream.RcvClosed(), ss.stream)
+				fmt.Printf("Stream %d (%p): closing=%v closed=%v\n",
+					ss.stream.StreamID(), ss.stream, ss.stream.IsClosing(), ss.stream.IsClosed())
 			}
 		}
 		return nil

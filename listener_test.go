@@ -876,7 +876,7 @@ func TestListener_Bidirectional_MultipleStreams(t *testing.T) {
 						ss.sent += n
 					}
 				}
-				if ss.sent >= len(ss.data) && !ss.stream.IsCloseRequested() {
+				if ss.sent >= len(ss.data) && !ss.stream.IsClosing() {
 					ss.stream.Close()
 				}
 			}

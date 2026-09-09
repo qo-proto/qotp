@@ -68,7 +68,7 @@ func TestStream_BasicSendReceive(t *testing.T) {
 
 	// Receive
 	streamB := waitForStream(t, listenerB, connPair, true)
-	assert.True(t, streamB.IsOpen())
+	assert.False(t, streamB.IsClosing())
 
 	received, err := streamB.Read()
 	assert.Nil(t, err)
@@ -163,7 +163,7 @@ func TestStream_MultipleStreams_SendReceive(t *testing.T) {
 
 	// Receive stream 0
 	streamB1 := waitForStream(t, listenerB, connPair, true)
-	assert.True(t, streamB1.IsOpen())
+	assert.False(t, streamB1.IsClosing())
 	received1, err := streamB1.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, data1, received1)
@@ -183,7 +183,7 @@ func TestStream_MultipleStreams_SendReceive(t *testing.T) {
 
 	// Receive stream 1
 	streamB2 := waitForStream(t, listenerB, connPair, true)
-	assert.True(t, streamB2.IsOpen())
+	assert.False(t, streamB2.IsClosing())
 	received2, err := streamB2.Read()
 	assert.Nil(t, err)
 	assert.Equal(t, data2, received2)
@@ -217,7 +217,7 @@ func TestStream_Retransmission_FirstRetry(t *testing.T) {
 	assert.Nil(t, err)
 
 	streamB := waitForStream(t, listenerB, connPair, true)
-	assert.True(t, streamB.IsOpen())
+	assert.False(t, streamB.IsClosing())
 }
 
 func TestStream_Retransmission_ExponentialBackoff(t *testing.T) {
@@ -254,7 +254,7 @@ func TestStream_Retransmission_ExponentialBackoff(t *testing.T) {
 
 	streamB := waitForStream(t, listenerB, connPair, true)
 	assert.NotNil(t, streamB)
-	assert.True(t, streamB.IsOpen())
+	assert.False(t, streamB.IsClosing())
 }
 
 func TestStream_Retransmission_MaxRetriesRemovesConnection(t *testing.T) {
@@ -308,7 +308,7 @@ func TestStream_Close_SenderInitiated_DataWithFIN(t *testing.T) {
 	assert.Nil(t, err)
 
 	connA.closeAllStreams()
-	assert.True(t, streamA.IsCloseRequested())
+	assert.True(t, streamA.IsClosing())
 
 	connA.listener.Flush(connPair.Conn1.localTime)
 	connPair.senderToRecipient(0)
@@ -341,8 +341,9 @@ func TestStream_Close_SenderInitiated_HalfClose(t *testing.T) {
 	streamB.Read() // consume EOF
 
 	// Half-close: receive side closed, send side open
-	assert.True(t, streamB.RcvClosed())
-	assert.False(t, streamB.IsCloseRequested())
+	_, err = streamB.Read()
+	assert.Equal(t, io.EOF, err)
+	assert.False(t, streamB.IsClosing())
 }
 
 func TestStream_Close_SenderInitiated_FullClose(t *testing.T) {
@@ -352,7 +353,7 @@ func TestStream_Close_SenderInitiated_FullClose(t *testing.T) {
 	_, err := streamA.Write([]byte("data"))
 	assert.Nil(t, err)
 	connA.closeAllStreams()
-	assert.True(t, streamA.IsCloseRequested())
+	assert.True(t, streamA.IsClosing())
 
 	connA.listener.Flush(connPair.Conn1.localTime)
 	connPair.senderToRecipient(0)
@@ -362,7 +363,7 @@ func TestStream_Close_SenderInitiated_FullClose(t *testing.T) {
 
 	// Bob closes his send side
 	streamB.Close()
-	assert.True(t, streamB.IsCloseRequested())
+	assert.True(t, streamB.IsClosing())
 
 	streamB.conn.listener.Flush(connPair.Conn2.localTime)
 	connPair.recipientToSender(0)
@@ -389,7 +390,7 @@ func TestStream_Close_ReceiverInitiated(t *testing.T) {
 	data := []byte("data")
 	_, err := streamA.Write(data)
 	assert.Nil(t, err)
-	assert.True(t, streamA.IsOpen())
+	assert.False(t, streamA.IsClosing())
 
 	connA.listener.Flush(connPair.Conn1.localTime)
 	connPair.senderToRecipient(0)
@@ -398,7 +399,7 @@ func TestStream_Close_ReceiverInitiated(t *testing.T) {
 
 	// Bob initiates close
 	streamB.conn.closeAllStreams()
-	assert.True(t, streamB.IsCloseRequested())
+	assert.True(t, streamB.IsClosing())
 
 	received, err := streamB.Read()
 	assert.Nil(t, err)
@@ -415,8 +416,9 @@ func TestStream_Close_ReceiverInitiated(t *testing.T) {
 	assert.NotNil(t, streamA)
 
 	// Half-close: Alice's receive side closed, send side open
-	assert.True(t, streamA.RcvClosed())
-	assert.False(t, streamA.IsCloseRequested())
+	_, err = streamA.Read()
+	assert.Equal(t, io.EOF, err)
+	assert.False(t, streamA.IsClosing())
 }
 
 // =============================================================================
@@ -595,40 +597,25 @@ func TestStream_Unreliable_SkipsLostPacketEndToEnd(t *testing.T) {
 	assert.Less(t, len(received), len(testData), "lost packet must not appear in the delivered stream")
 }
 
-func TestStream_IsOpen_Initially(t *testing.T) {
+func TestStream_NotClosingInitially(t *testing.T) {
 	connA, _, _ := setupStreamTest(t)
 
 	streamA := connA.getOrCreateStream(0)
 
-	assert.True(t, streamA.IsOpen())
-	assert.False(t, streamA.IsCloseRequested())
+	assert.False(t, streamA.IsClosing())
 	assert.False(t, streamA.IsClosed())
+	_, err := streamA.Read()
+	assert.NoError(t, err, "receive side open")
 }
 
-func TestStream_IsCloseRequested_AfterClose(t *testing.T) {
+func TestStream_IsClosing_AfterClose(t *testing.T) {
 	connA, _, _ := setupStreamTest(t)
 
 	streamA := connA.getOrCreateStream(0)
 	streamA.Close()
 
-	assert.True(t, streamA.IsCloseRequested())
-	assert.False(t, streamA.IsOpen())
-}
-
-func TestStream_RcvClosed_Initially(t *testing.T) {
-	connA, _, _ := setupStreamTest(t)
-
-	streamA := connA.getOrCreateStream(0)
-
-	assert.False(t, streamA.RcvClosed())
-}
-
-func TestStream_SndClosed_Initially(t *testing.T) {
-	connA, _, _ := setupStreamTest(t)
-
-	streamA := connA.getOrCreateStream(0)
-
-	assert.False(t, streamA.SndClosed())
+	assert.True(t, streamA.IsClosing())
+	assert.False(t, streamA.IsClosed(), "FIN not acknowledged yet")
 }
 
 // =============================================================================

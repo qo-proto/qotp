@@ -802,7 +802,7 @@ func TestConnCloseAllStreams(t *testing.T) {
 
 	// Verify all streams have Close() called (queued for close)
 	for _, s := range c.streams.iterator(nil) {
-		assert.True(t, s.IsCloseRequested(), "all streams should be close-requested")
+		assert.True(t, s.IsClosing(), "all streams should be close-requested")
 	}
 }
 

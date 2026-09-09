@@ -766,15 +766,15 @@ func TestSendBuffer_CheckStreamFullyAcked_FullyAcked(t *testing.T) {
 // GETOFFSETS TESTS
 // =============================================================================
 
-func TestSendBuffer_IsCloseRequested(t *testing.T) {
+func TestSendBuffer_IsClosing(t *testing.T) {
 	sb := newSendBuffer(1000)
-	assert.False(t, sb.isCloseRequested(1), "no stream")
+	assert.False(t, sb.isClosing(1), "no stream")
 
 	sb.queueData(1, []byte("test"))
-	assert.False(t, sb.isCloseRequested(1), "not closed")
+	assert.False(t, sb.isClosing(1), "not closed")
 
 	sb.close(1)
-	assert.True(t, sb.isCloseRequested(1))
+	assert.True(t, sb.isClosing(1))
 	assert.Equal(t, uint64(4), *sb.streams[1].closeAtOffset, "closes after the queued data")
 }
 

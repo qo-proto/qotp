@@ -546,8 +546,8 @@ Open → Active → Close_Requested → Closed (30s timeout)
 
 **Stream States**:
 - `Open`: Normal read/write operations
-- `CloseRequested`: Close initiated, waiting for offset acknowledgment
-- `Closed`: All data up to close offset delivered, 30-second grace period
+- `Closing` (`IsClosing()`): Close called, FIN sent, waiting for its acknowledgment
+- `Closed` (`IsClosed()`): FIN acknowledged and the peer's FIN read; the loop drops the stream
 
 #### Close Protocol
 
@@ -820,11 +820,11 @@ func (s *Stream) Write(userData []byte) (int, error)
 // Receive direction remains open until peer's FIN.
 func (s *Stream) Close()
 
-// IsClosed returns true when both directions fully closed.
-func (s *Stream) IsClosed() bool
+// IsClosing returns true once Close() has been called.
+func (s *Stream) IsClosing() bool
 
-// IsCloseRequested returns true if Close() has been called.
-func (s *Stream) IsCloseRequested() bool
+// IsClosed returns true when both directions are fully closed.
+func (s *Stream) IsClosed() bool
 
 // Ping queues a best-effort ping packet for RTT measurement.
 func (s *Stream) Ping()

@@ -205,23 +205,19 @@ Understanding stream states and graceful close.
 ```go
 stream := conn.Stream(0)
 
-// Check if stream is usable
-if stream.IsOpen() {
-    stream.Write([]byte("data"))
-}
-
 // Initiate close (sends FIN)
 stream.Close()
 
 // After Close():
-stream.IsCloseRequested() // true - Close() was called
-stream.IsOpen()           // false
+stream.IsClosing()        // true - Close() was called
 stream.Write([]byte("x")) // returns io.EOF
 
-// Stream fully closed when both directions done:
-stream.SndClosed() // true when our FIN is ACKed
-stream.RcvClosed() // true when we received peer's FIN and read all data
-stream.IsClosed()  // true when both SndClosed && RcvClosed
+// The receive direction is reported by Read: io.EOF once the peer's FIN
+// and everything before it have been delivered.
+
+// Fully closed once our FIN is ACKed and the peer's FIN has been read;
+// the loop drops the stream after this:
+stream.IsClosed()
 ```
 
 ## Example 8: Graceful Shutdown
@@ -478,11 +474,8 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `LateBytes()` | Bytes that arrived after their range was skipped |
 | `DroppedPackets()` | Packets dropped because the receive buffer was full |
 | `DroppedBytes()` | Bytes dropped because the receive buffer was full |
-| `IsClosed()` | Both directions closed |
-| `IsCloseRequested()` | Close() was called |
-| `IsOpen()` | Not closing and not closed |
-| `SndClosed()` | Send direction closed |
-| `RcvClosed()` | Receive direction closed |
+| `IsClosing()` | Close() was called; Write returns io.EOF |
+| `IsClosed()` | Both directions closed; the stream is about to be dropped |
 | `StreamID()` | Get stream ID |
 | `ConnID()` | Get connection ID |
 | `NotifyDataAvailable()` | Interrupt blocking read (internal) |
