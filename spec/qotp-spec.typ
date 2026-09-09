@@ -27,6 +27,9 @@ number of independent byte streams, each reliable or
 best-effort.
 
 All integers are little-endian. All sizes are bytes.
+The companion document, _QOTP -- Why_, explains the
+reasoning behind each mechanism; references of the form
+"Why, A.n" point there.
 
 = 1. Packet
 
@@ -163,7 +166,7 @@ encrypted sequence number (§4).
 
 A receiver MUST reject a packet shorter than its
 minimum, which is `header + 6 (sn) + 16 (MAC) +
-10 (smallest payload, §5)`.
+11 (smallest payload, §5)`.
 
 = 4. Encryption
 
@@ -235,20 +238,16 @@ flags bit
 ```
 
 `maxPayload` (u16) is the sender's largest acceptable
-UDP payload. It is unconditional: path MTU can change
-at any time, so no state records whether it has been
-announced. The connection MTU is
-`max(min(local, remote), 1232)`.
+UDP payload, on every packet so an MTU change needs no
+"already announced" state. The connection MTU is
+`max(min(local, remote), 1232)`: a bound the endpoints
+agree on, not a property of the path, which may drop
+larger packets silently. A sender MUST be able to fall
+back to 1232 (Why, A.3).
 
-`rcvWnd` (u8, §7) is unconditional for the same reason,
-and because it describes the connection, not one
-stream.
-
-That is an upper bound agreed by the two endpoints, not
-a property of the path between them, which may silently
-drop larger packets. A sender MUST be able to fall back
-to 1232, which is always carried; how it decides to is
-an implementation matter.
+`rcvWnd` (u8, §7) is on every packet for the same
+reason, and because it describes the connection, not
+one stream.
 
 *ACK block* -- one packet acknowledged per block.
 
@@ -283,11 +282,12 @@ reserved.
 
 *Reliability is a property of the stream, not of the
 packet.* Bit 31 set means best-effort: the sender never
-retransmits that stream's data, and the receiver, after
-a reorder deadline, skips a gap and continues. It
-travels in the ID so every packet of the stream carries
-it -- a flag announced once could be lost, and a
-best-effort stream never retransmits the announcement.
+retransmits that stream's data, and the receiver, once
+a head-of-line gap has been open longer than a gap
+timeout, skips it and continues. It travels in the ID
+so every packet of the stream carries it -- a flag
+announced once could be lost, and a best-effort stream
+never retransmits the announcement.
 
 Close and key updates are retransmitted even on a
 best-effort stream.
@@ -302,9 +302,7 @@ have closed and no acknowledgements are outstanding.
 `(stream, offset, length)`. A packet is retransmitted
 when its timeout expires, or when three later packets
 have been acknowledged. A sender gives up after a
-bounded number of attempts, plus one round trip to hear
-back from the last -- a response window, not another
-backoff step.
+bounded number of attempts (Why, A.6).
 
 *Receive window.* Free space in the receiver's buffer,
 connection-wide, on every packet (§5). An 8-bit
@@ -322,17 +320,20 @@ else, a = enc - 2:
 ```
 
 A sender MUST NOT put more unacknowledged stream bytes
-in flight than the window. Retransmissions are exempt,
-or a lost packet could deadlock reassembly.
+in flight than the window. A receiver MUST accept
+in-order data even when full, or reassembly deadlocks.
+Retransmissions are exempt; while the window is closed
+a sender SHOULD retransmit only its lowest
+unacknowledged offset, the one packet the receiver is
+sure to take (Why, A.5).
 
 A blocked sender MUST NOT go quiet: the window arrives
 only in a packet, and a peer with nothing to say sends
-none, so both wait for the other. It sends an empty
-packet until the window reopens, backing off but never
-giving up -- a peer refusing data is behaving
-correctly. A receiver draining far below what it
-announced SHOULD send one unprompted, which may be
-lost and so does not replace the probe.
+none. It sends an empty packet once per RTO until the
+window reopens, never giving up. A receiver SHOULD send
+one unprompted when it drops a packet for lack of space
+or drains well below what it announced; that may be
+lost, so it does not replace the probe.
 
 *Congestion control.* A sender paces packets: it
 measures the rate at which its bytes are acknowledged
@@ -344,9 +345,8 @@ an RTT sample but never a bandwidth sample: it was sent
 because there was nothing else to send, so its rate
 would measure the sender's idleness, not the link.
 
-A connection that only ever receives obtains no
-bandwidth estimate, and this is intended: it has
-nothing to pace.
+A receive-only connection has no bandwidth estimate:
+it has nothing to pace.
 
 The estimator is an implementation matter, not part of
 this specification. What is required: pace, do not
@@ -373,11 +373,9 @@ scheduled send time run unboundedly ahead of the clock.
 
 = 9. Security notes
 
-- Decryption succeeding does *not* mean the sender is
-  trusted. InitCryptoSnd is encrypted to a *public*
-  identity key, so anyone who can dial may choose its
-  plaintext. Parse it as hostile input: bound every
-  length taken from it before use.
+- InitCryptoSnd is encrypted to a *public* identity
+  key, so anyone who can dial chooses its plaintext.
+  Parse it as hostile input; bound every length in it.
 
 - The connection ID and packet type are readable on the
   wire. Everything else -- stream IDs, offsets, the

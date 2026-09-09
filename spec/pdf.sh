@@ -3,17 +3,16 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC="$SCRIPT_DIR/qotp-spec.typ"
-OUT="$SCRIPT_DIR/qotp-spec.pdf"
+DOCS=(qotp-spec qotp-why)
 
 usage() {
   cat <<USAGE
 Usage: $(basename "${BASH_SOURCE[0]}") [--watch]
 
-Compile $(basename "$SRC") to $(basename "$OUT").
+Compile qotp-spec.typ and qotp-why.typ to PDF.
 
 OPTIONS:
-  --watch     Recompile on every save (live preview while editing)
+  --watch     Recompile qotp-spec.typ on every save (live preview)
   -h, --help  Print this help and exit
 USAGE
   exit
@@ -25,11 +24,13 @@ command -v typst >/dev/null || {
 }
 
 case "${1-}" in
-  --watch) exec typst watch "$SRC" "$OUT" ;;
+  --watch) exec typst watch "$SCRIPT_DIR/qotp-spec.typ" "$SCRIPT_DIR/qotp-spec.pdf" ;;
   -h|--help) usage ;;
   "") ;;
   *) echo "Unknown option: $1" >&2; exit 1 ;;
 esac
 
-typst compile "$SRC" "$OUT"
-echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
+for doc in "${DOCS[@]}"; do
+  typst compile "$SCRIPT_DIR/$doc.typ" "$SCRIPT_DIR/$doc.pdf"
+  echo "wrote $doc.pdf ($(du -h "$SCRIPT_DIR/$doc.pdf" | cut -f1))"
+done
