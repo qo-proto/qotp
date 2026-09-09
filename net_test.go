@@ -856,7 +856,7 @@ func TestMultiHomed_ReplyUsesContactedAddress(t *testing.T) {
 	srv, err := Listen(WithListenAddr("0.0.0.0:0")) // wildcard: the broken case
 	assert.NoError(t, err)
 	defer srv.Close()
-	srvPort := srv.localConn.(*UDPNetworkConn).conn.LocalAddr().(*net.UDPAddr).Port
+	srvPort := srv.localConn.(*udpNetworkConn).conn.LocalAddr().(*net.UDPAddr).Port
 
 	// The responder's localAddr is owned by its event loop, so it is read
 	// here, on that goroutine, and published over a channel.
@@ -883,7 +883,7 @@ func TestMultiHomed_ReplyUsesContactedAddress(t *testing.T) {
 			assert.NoError(t, err)
 			defer cli.Close()
 
-			conn, err := cli.DialString(fmt.Sprintf("%s:%d", dst, srvPort))
+			conn, err := cli.Dial(fmt.Sprintf("%s:%d", dst, srvPort))
 			assert.NoError(t, err)
 			st := conn.Stream(0)
 

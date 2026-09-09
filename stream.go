@@ -11,7 +11,7 @@ const defaultGapTimeoutNano = uint64(100 * msNano) // see SetGapTimeoutNano
 // directions close independently.
 type Stream struct {
 	streamID       uint32
-	conn           *conn
+	conn           *Conn
 	reliable       bool
 	gapTimeoutNano uint64
 
@@ -176,9 +176,4 @@ func (s *Stream) ConnID() uint64 {
 // Ping queues a best-effort ping, e.g. for an RTT sample
 func (s *Stream) Ping() {
 	s.conn.snd.queuePing(s.streamID)
-}
-
-// NotifyDataAvailable wakes the event loop
-func (s *Stream) NotifyDataAvailable() error {
-	return s.conn.listener.localConn.TimeoutReadNow()
 }

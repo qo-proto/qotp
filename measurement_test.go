@@ -11,8 +11,8 @@ import (
 // TEST HELPER
 // =============================================================================
 
-func newTestConnection() *conn {
-	return &conn{
+func newTestConnection() *Conn {
+	return &Conn{
 		measurements: newMeasurements(),
 	}
 }
@@ -21,7 +21,7 @@ func newTestConnection() *conn {
 // the given ackedBytesAtSend snapshot. The delivery-rate anchors are set to
 // the send time (no delivery event since), so the sample interval equals the
 // RTT — the pre-delivery-rate-estimation behavior the assertions encode.
-func (c *conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, ackedBytesAtSend uint64, nowNano uint64) {
+func (c *Conn) testUpdateMeasurements(rttNano uint64, ackLen uint16, ackedBytesAtSend uint64, nowNano uint64) {
 	sentTime := nowNano - rttNano
 	pkt := &sendPacket{
 		// A real data packet: it carries payload, and the estimate counts its

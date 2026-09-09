@@ -17,7 +17,7 @@ func TestDialString_InvalidAddress(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	_, err = l.DialString("not-valid-address")
+	_, err = l.Dial("not-valid-address")
 	assert.Error(t, err)
 }
 
@@ -26,7 +26,7 @@ func TestDialString_MissingPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	_, err = l.DialString("127.0.0.1")
+	_, err = l.Dial("127.0.0.1")
 	assert.Error(t, err)
 }
 
@@ -35,7 +35,7 @@ func TestDialString_InvalidPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	_, err = l.DialString("127.0.0.1:99999")
+	_, err = l.Dial("127.0.0.1:99999")
 	assert.Error(t, err)
 }
 
@@ -44,7 +44,7 @@ func TestDialString_EmptyAddress(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	_, err = l.DialString("")
+	_, err = l.Dial("")
 	assert.Error(t, err)
 }
 
@@ -53,7 +53,7 @@ func TestDialString_ValidIPv4(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn, err := l.DialString("127.0.0.1:9000")
+	conn, err := l.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 	assert.Equal(t, initSnd, conn.initMsgType)
@@ -64,7 +64,7 @@ func TestDialString_ValidIPv6(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn, err := l.DialString("[::1]:9000")
+	conn, err := l.Dial("[::1]:9000")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 	assert.True(t, conn.remoteAddr.Addr().Is6())
@@ -79,11 +79,10 @@ func TestDial_ValidAddrPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	addr := netip.MustParseAddrPort("127.0.0.1:9000")
-	conn, err := l.Dial(addr)
+	conn, err := l.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
-	assert.Equal(t, addr, conn.remoteAddr)
+	assert.Equal(t, netip.MustParseAddrPort("127.0.0.1:9000"), conn.remoteAddr)
 }
 
 func TestDial_ZeroPort(t *testing.T) {
@@ -91,8 +90,7 @@ func TestDial_ZeroPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	addr := netip.MustParseAddrPort("127.0.0.1:0")
-	conn, err := l.Dial(addr)
+	conn, err := l.Dial("127.0.0.1:0")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 }
@@ -102,8 +100,7 @@ func TestDial_MaxPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	addr := netip.MustParseAddrPort("127.0.0.1:65535")
-	conn, err := l.Dial(addr)
+	conn, err := l.Dial("127.0.0.1:65535")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 }
@@ -115,11 +112,11 @@ func TestDial_AddsToConnMap(t *testing.T) {
 
 	assert.Equal(t, 0, l.connMap.size())
 
-	_, err = l.DialString("127.0.0.1:9000")
+	_, err = l.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, l.connMap.size())
 
-	_, err = l.DialString("127.0.0.1:9001")
+	_, err = l.Dial("127.0.0.1:9001")
 	assert.NoError(t, err)
 	assert.Equal(t, 2, l.connMap.size())
 }
@@ -133,7 +130,7 @@ func TestDialWithCrypto_ValidKey(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn, err := l.DialStringWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
+	conn, err := l.DialWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 	assert.Equal(t, initCryptoSnd, conn.initMsgType)
@@ -146,7 +143,7 @@ func TestDialWithCrypto_NilKey(t *testing.T) {
 	defer l.Close()
 
 	// nil key is accepted at dial time; error happens during encode
-	conn, err := l.DialStringWithCrypto("127.0.0.1:9000", nil)
+	conn, err := l.DialWithCrypto("127.0.0.1:9000", nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 	assert.Nil(t, conn.pubKeyIdRcv)
@@ -157,8 +154,7 @@ func TestDialWithCrypto_AddrPort(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	addr := netip.MustParseAddrPort("127.0.0.1:9000")
-	conn, err := l.DialWithCrypto(addr, prvIdBob.PublicKey())
+	conn, err := l.DialWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
 	assert.NoError(t, err)
 	assert.NotNil(t, conn)
 	assert.Equal(t, initCryptoSnd, conn.initMsgType)
@@ -168,86 +164,12 @@ func TestDialWithCrypto_AddrPort(t *testing.T) {
 // DIAL STRING WITH CRYPTO STRING TESTS
 // =============================================================================
 
-func TestDialStringWithCryptoString_InvalidAddress(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	_, err = l.DialStringWithCryptoString("not-valid", "0x1234")
-	assert.Error(t, err)
-}
-
-func TestDialStringWithCryptoString_InvalidHex(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	_, err = l.DialStringWithCryptoString("127.0.0.1:8080", "not-hex!")
-	assert.Error(t, err)
-}
-
-func TestDialStringWithCryptoString_HexTooShort(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	_, err = l.DialStringWithCryptoString("127.0.0.1:8080", "0x1234")
-	assert.Error(t, err)
-}
-
-func TestDialStringWithCryptoString_HexTooLong(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	// 33 bytes = 66 hex chars
-	longHex := hex.EncodeToString(make([]byte, 33))
-	_, err = l.DialStringWithCryptoString("127.0.0.1:8080", longHex)
-	assert.Error(t, err)
-}
-
-func TestDialStringWithCryptoString_ValidHex(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	validHex := hex.EncodeToString(prvIdBob.PublicKey().Bytes())
-	conn, err := l.DialStringWithCryptoString("127.0.0.1:8080", validHex)
-	assert.NoError(t, err)
-	assert.NotNil(t, conn)
-	assert.Equal(t, initCryptoSnd, conn.initMsgType)
-}
-
-func TestDialStringWithCryptoString_ValidHexWith0xPrefix(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	validHex := "0x" + hex.EncodeToString(prvIdBob.PublicKey().Bytes())
-	conn, err := l.DialStringWithCryptoString("127.0.0.1:8080", validHex)
-	assert.NoError(t, err)
-	assert.NotNil(t, conn)
-}
-
-func TestDialStringWithCryptoString_EmptyHex(t *testing.T) {
-	l, err := Listen(WithSeed(seed1))
-	assert.NoError(t, err)
-	defer l.Close()
-
-	_, err = l.DialStringWithCryptoString("127.0.0.1:8080", "")
-	assert.Error(t, err)
-}
-
-// =============================================================================
-// CONNECTION STATE TESTS
-// =============================================================================
-
 func TestDial_SetsCorrectState(t *testing.T) {
 	l, err := Listen(WithSeed(seed1))
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn, err := l.DialString("127.0.0.1:9000")
+	conn, err := l.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 
 	assert.Equal(t, initSnd, conn.initMsgType, "dial without crypto should use initSnd")
@@ -264,7 +186,7 @@ func TestDialWithCrypto_SetsCorrectState(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn, err := l.DialStringWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
+	conn, err := l.DialWithCrypto("127.0.0.1:9000", prvIdBob.PublicKey())
 	assert.NoError(t, err)
 
 	assert.Equal(t, initCryptoSnd, conn.initMsgType, "dial with crypto should use initCryptoSnd")
@@ -276,11 +198,26 @@ func TestDial_GeneratesUniqueConnId(t *testing.T) {
 	assert.NoError(t, err)
 	defer l.Close()
 
-	conn1, err := l.DialString("127.0.0.1:9000")
+	conn1, err := l.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 
-	conn2, err := l.DialString("127.0.0.1:9001")
+	conn2, err := l.Dial("127.0.0.1:9001")
 	assert.NoError(t, err)
 
 	assert.NotEqual(t, conn1.connId, conn2.connId, "each dial should generate unique connId")
+}
+
+func TestPubKeyFromHex(t *testing.T) {
+	key := generateTestKey(t)
+	hexStr := hex.EncodeToString(key.PublicKey().Bytes())
+
+	for _, in := range []string{hexStr, "0x" + hexStr} {
+		pubKey, err := PubKeyFromHex(in)
+		assert.NoError(t, err)
+		assert.Equal(t, key.PublicKey().Bytes(), pubKey.Bytes())
+	}
+	for _, bad := range []string{"", "not-hex!", "0x1234", hexStr + "00"} {
+		_, err := PubKeyFromHex(bad)
+		assert.Error(t, err, bad)
+	}
 }

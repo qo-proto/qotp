@@ -794,13 +794,13 @@ listener.Loop(ctx, func(ctx context.Context, stream *qotp.Stream) error {
 
 // Client (in-band key exchange, 1-RTT)
 listener, _ := qotp.Listen()
-conn, _ := listener.DialString("127.0.0.1:8888")
+conn, _ := listener.Dial("127.0.0.1:8888")
 stream := conn.Stream(0)
 stream.Write([]byte("hello"))
 
 // Client (out-of-band keys, 0-RTT)
-pubKeyHex := "0x1234..." // Receiver's public key
-conn, _ := listener.DialStringWithCryptoString("127.0.0.1:8888", pubKeyHex)
+pubKey, _ := qotp.PubKeyFromHex("0x1234...") // Receiver's public key
+conn, _ := listener.DialWithCrypto("127.0.0.1:8888", pubKey)
 stream := conn.Stream(0)
 stream.Write([]byte("hello"))
 ```
@@ -869,10 +869,8 @@ qotp.WithMaxPayload(1200)
 // Pre-configured identity key
 qotp.WithPrvKeyId(privateKey)
 
-// Derive key from seed
+// Derive key from a 32-byte seed
 qotp.WithSeed([32]byte{...})
-qotp.WithSeedHex("0x1234...")
-qotp.WithSeedString("my-secret-seed")
 
 // Custom network connection (for testing)
 qotp.WithNetworkConn(conn)

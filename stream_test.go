@@ -12,13 +12,13 @@ import (
 // TEST HELPERS
 // =============================================================================
 
-func setupStreamTest(t *testing.T) (connA *conn, listenerB *Listener, connPair *ConnPair) {
+func setupStreamTest(t *testing.T) (connA *Conn, listenerB *Listener, connPair *ConnPair) {
 	connPair = NewConnPair("alice", "bob")
 	listenerA, err := Listen(WithNetworkConn(connPair.Conn1), WithPrvKeyId(testPrvKey1))
 	assert.Nil(t, err)
 	listenerB, err = Listen(WithNetworkConn(connPair.Conn2), WithPrvKeyId(testPrvKey2))
 	assert.Nil(t, err)
-	connA, err = listenerA.DialWithCrypto(netip.AddrPort{}, testPrvKey2.PublicKey())
+	connA, err = listenerA.dial(netip.AddrPort{}, testPrvKey2.PublicKey(), true)
 	assert.Nil(t, err)
 	assert.NotEmpty(t, connA)
 
@@ -123,7 +123,7 @@ func (w *wakeCounter) TimeoutReadNow() error { w.wakes++; return nil }
 // only when everything fit.
 func TestStream_Write_PartialFillWakesLoop(t *testing.T) {
 	wc := &wakeCounter{}
-	c := &conn{listener: &Listener{localConn: wc}, snd: newSendBuffer(3), rcv: newReceiveBuffer(1000)}
+	c := &Conn{listener: &Listener{localConn: wc}, snd: newSendBuffer(3), rcv: newReceiveBuffer(1000)}
 	s := &Stream{streamID: 1, conn: c, reliable: true}
 
 	n, err := s.Write([]byte("test"))
@@ -668,13 +668,3 @@ func TestStream_Ping(t *testing.T) {
 // =============================================================================
 // NOTIFY DATA AVAILABLE TESTS
 // =============================================================================
-
-func TestStream_NotifyDataAvailable(t *testing.T) {
-	connA, _, _ := setupStreamTest(t)
-
-	streamA := connA.getOrCreateStream(0)
-
-	// Should not error
-	err := streamA.NotifyDataAvailable()
-	assert.Nil(t, err)
-}

@@ -19,7 +19,7 @@ const testMaxPayload = 1400 // fixed test value for maxPayload
 // =============================================================================
 
 // testDecodeConn mirrors Listen() header parsing logic for testing
-func testDecodeConn(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
+func testDecodeConn(l *Listener, encData []byte, rAddr netip.AddrPort) (*Conn, []byte, cryptoMsgType, error) {
 	if len(encData) < minPacketSize {
 		return nil, nil, 0, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
@@ -48,7 +48,7 @@ var (
 	prvEpNew, _   = ecdh.X25519().NewPrivateKey(seed5[:])
 )
 
-func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
+func createTestConn(isSender, withCrypto, handshakeDone bool) *Conn {
 	sharedSecret := bytes.Repeat([]byte{1}, 32)
 
 	phase := phaseCreated
@@ -69,7 +69,7 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 		initMsgType = initRcv
 	}
 
-	c := &conn{
+	c := &Conn{
 		initMsgType: initMsgType,
 		phase:       phase,
 		pubKeyIdRcv: prvIdBob.PublicKey(),
@@ -102,12 +102,12 @@ func createTestConn(isSender, withCrypto, handshakeDone bool) *conn {
 
 func createTestListeners() (*Listener, *Listener) {
 	lAlice := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdAlice,
 		maxPayload: testMaxPayload,
 	}
 	lBob := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdBob,
 		maxPayload: testMaxPayload,
 	}
@@ -512,7 +512,7 @@ func TestConnFullHandshake(t *testing.T) {
 	remoteAddr := getTestRemoteAddr()
 
 	// Alice's initial connection
-	connAlice := &conn{
+	connAlice := &Conn{
 		connId:      binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType: initSnd,
 		listener:    lAlice,
@@ -1097,19 +1097,19 @@ func TestConn_MtuUpdate_ViaPayload(t *testing.T) {
 
 func TestConn_MtuNegotiation_NoCrypto_Handshake(t *testing.T) {
 	lAlice := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdAlice,
 		maxPayload: 1400,
 	}
 	lBob := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdBob,
 		maxPayload: 1300, // Bob has smaller maxPayload
 	}
 	remoteAddr := getTestRemoteAddr()
 
 	// Alice's initial connection (following TestConnFullHandshake pattern)
-	connAlice := &conn{
+	connAlice := &Conn{
 		connId:       binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType:  initSnd,
 		listener:     lAlice,
@@ -1226,19 +1226,19 @@ func TestConn_ProcessIncomingPayload_AckOnlyNoPhantomStream(t *testing.T) {
 
 func TestConn_MtuNegotiation_Crypto_Handshake(t *testing.T) {
 	lAlice := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdAlice,
 		maxPayload: 8952, // jumbo frame Alice
 	}
 	lBob := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   prvIdBob,
 		maxPayload: 1452, // standard Ethernet Bob
 	}
 	remoteAddr := getTestRemoteAddr()
 
 	// Alice's initial connection for crypto handshake
-	connAlice := &conn{
+	connAlice := &Conn{
 		connId:       binary.LittleEndian.Uint64(prvEpAlice.PublicKey().Bytes()),
 		initMsgType:  initCryptoSnd,
 		listener:     lAlice,
@@ -1371,7 +1371,7 @@ func TestConn_FlushStream_NewDataBlockedByRwnd(t *testing.T) {
 // FLUSHSTREAM KEY UPDATE TESTS (state-driven KU send and RTO-paced resend)
 // =============================================================================
 
-func newKuTestConn(connPair *ConnPair) (*conn, *Stream) {
+func newKuTestConn(connPair *ConnPair) (*Conn, *Stream) {
 	c := createTestConn(true, false, true)
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
@@ -1483,7 +1483,7 @@ func TestConn_Karn_MeasurementFromFreshPacket(t *testing.T) {
 // FLUSHSTREAM HANDSHAKE RESEND TESTS (untracked init packets, ~5s give-up)
 // =============================================================================
 
-func newInitTestConn(connPair *ConnPair) (*conn, *Stream) {
+func newInitTestConn(connPair *ConnPair) (*Conn, *Stream) {
 	c := createTestConn(true, false, false) // phaseCreated, initSnd
 	c.listener.localConn = connPair.Conn1
 	c.remoteAddr = getTestRemoteAddr()
@@ -1655,10 +1655,10 @@ func TestConn_AckProbe_YieldsRttSample(t *testing.T) {
 func TestConn_AckProbe_StandsDownOnKeyCollision(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		setup func(c *conn)
+		setup func(c *Conn)
 	}{
-		{"close pending", func(c *conn) { c.snd.close(0) }},
-		{"ping pending", func(c *conn) { c.snd.queuePing(0) }},
+		{"close pending", func(c *Conn) { c.snd.close(0) }},
+		{"ping pending", func(c *Conn) { c.snd.queuePing(0) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := createTestConn(true, false, true)
@@ -2009,7 +2009,7 @@ func TestConn_RwndProbe_DeadPeerIsTornDown(t *testing.T) {
 	c := createTestConn(true, false, true)
 	c.connId, c.mtu = 42, conservativeMTU
 	c.listener = &Listener{
-		connMap: newSharedLinkedMap[uint64, *conn](), prvKeyId: prvIdAlice,
+		connMap: newSharedLinkedMap[uint64, *Conn](), prvKeyId: prvIdAlice,
 		maxPayload: testMaxPayload, localConn: w,
 	}
 	c.listener.connMap.getOrPut(c.connId, c)

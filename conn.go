@@ -48,7 +48,7 @@ const (
 // All protocol state is owned by the event-loop goroutine and accessed
 // without locks. Other goroutines may only touch the streams map (mu), the
 // send/receive buffers (their own locks) and the stream close flags (atomic).
-type conn struct {
+type Conn struct {
 	connId     uint64
 	remoteAddr netip.AddrPort
 	// The address the peer sent to, so a wildcard-bound socket on a
@@ -118,11 +118,11 @@ type conn struct {
 // Public methods
 // =============================================================================
 
-func (c *conn) Stream(streamID uint32) *Stream {
+func (c *Conn) Stream(streamID uint32) *Stream {
 	return c.getOrCreateStream(streamID)
 }
 
-func (c *conn) HasActiveStreams() bool {
+func (c *Conn) HasActiveStreams() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, val := range c.streams.iterator(nil) {
@@ -134,18 +134,18 @@ func (c *conn) HasActiveStreams() bool {
 }
 
 // kuPending reports a KEY_UPDATE we initiated that the peer has not acked yet.
-func (c *conn) kuPending() bool {
+func (c *Conn) kuPending() bool {
 	return c.sndKeys.prvKeyEpNext != nil && c.sndKeys.next == nil
 }
 
 // kuAckPending reports a KEY_UPDATE_ACK we owe the peer.
-func (c *conn) kuAckPending() bool {
+func (c *Conn) kuAckPending() bool {
 	return c.kuAckDue && c.rcvKeys.prvKeyEpNext != nil
 }
 
 // kuAttachDue reports whether the pending KEY_UPDATE should ride on the next
 // packet: on first send, then once per RTO until acked.
-func (c *conn) kuAttachDue(nowNano uint64) bool {
+func (c *Conn) kuAttachDue(nowNano uint64) bool {
 	if !c.kuPending() {
 		return false
 	}
@@ -156,7 +156,7 @@ func (c *conn) kuAttachDue(nowNano uint64) bool {
 // Connection lifecycle
 // =============================================================================
 
-func (c *conn) closeAllStreams() {
+func (c *Conn) closeAllStreams() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, s := range c.streams.iterator(nil) {
@@ -164,7 +164,7 @@ func (c *conn) closeAllStreams() {
 	}
 }
 
-func (c *conn) cleanupStream(streamID uint32) {
+func (c *Conn) cleanupStream(streamID uint32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.streams.remove(streamID)
@@ -175,7 +175,7 @@ func (c *conn) cleanupStream(streamID uint32) {
 // observeMTU moves the MTU only on evidence: an ACK for a first transmission
 // proves a size traverses the path; a probe-sized retransmit succeeding where
 // the working size repeatedly failed proves the working size does not.
-func (c *conn) observeMTU(pkt *sendPacket) {
+func (c *Conn) observeMTU(pkt *sendPacket) {
 	size := int(pkt.wireLen)
 
 	if pkt.sentCount == 0 {
@@ -200,7 +200,7 @@ func (c *conn) observeMTU(pkt *sendPacket) {
 
 // negotiateMTU runs on every packet; a downgrade is permanent because the
 // path, not the peer's advertisement, decided it
-func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
+func (c *Conn) negotiateMTU(remoteMaxPayload uint16) {
 	if c.mtuDowngraded {
 		return
 	}
@@ -214,7 +214,7 @@ func (c *conn) negotiateMTU(remoteMaxPayload uint16) {
 // getOrCreateStream returns nil for a finished stream. Callable from any
 // goroutine; c.mu keeps the finished check and the insert atomic against
 // cleanupStream, or a concurrent cleanup could resurrect a finished stream.
-func (c *conn) getOrCreateStream(streamID uint32) *Stream {
+func (c *Conn) getOrCreateStream(streamID uint32) *Stream {
 	if streamID > maxStreamID { // the high bit is the wire reliability marker
 		return nil
 	}
@@ -234,7 +234,7 @@ func (c *conn) getOrCreateStream(streamID uint32) *Stream {
 // Packet decoding (receive path)
 // =============================================================================
 
-func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*conn, []byte, uint64, error) {
+func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cryptoMsgType) (*Conn, []byte, uint64, error) {
 	connId := binary.LittleEndian.Uint64(encData[headerSize : headerSize+connIdSize])
 
 	switch msgType {
@@ -252,7 +252,7 @@ func decodePacket(l *Listener, encData []byte, rAddr netip.AddrPort, msgType cry
 	return nil, nil, 0, fmt.Errorf("unknown message type: %v", msgType)
 }
 
-func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*conn, []byte, error) {
+func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId uint64, msgType cryptoMsgType) (*Conn, []byte, error) {
 	var pubKeyIdSnd, pubKeyEpSnd *ecdh.PublicKey
 	var senderMaxPayload uint16
 	var payload []byte
@@ -300,7 +300,7 @@ func decodeInitPacket(l *Listener, encData []byte, rAddr netip.AddrPort, connId 
 
 // decode returns the payload and, for Data packets, the sequence number that
 // orders it against other packets from the peer (0 for init packets).
-func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, uint64, error) {
+func (c *Conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, uint64, error) {
 	switch msgType {
 	case initRcv:
 		sharedSecret, pubKeyIdRcv, pubKeyEpRcv, payload, err := decryptInitRcv(encData, c.sndKeys.prvKeyEp)
@@ -343,7 +343,7 @@ func (c *conn) decode(encData []byte, msgType cryptoMsgType) ([]byte, uint64, er
 // Packet encoding (send path)
 // =============================================================================
 
-func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) ([]byte, error) {
+func (c *Conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) ([]byte, error) {
 	var encData []byte
 	var err error
 
@@ -420,7 +420,7 @@ func (c *conn) encode(p *payloadHeader, userData []byte, msgType cryptoMsgType) 
 
 // processIncomingPayload applies a decoded payload. userData is nil for an
 // ACK-only packet, empty for a ping, and the data otherwise.
-func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint64, nowNano uint64) (*Stream, error) {
+func (c *Conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint64, nowNano uint64) (*Stream, error) {
 	if len(p.keyUpdatePub) == pubKeySize {
 		if err := c.handlePeerKeyUpdate(p.keyUpdatePub); err != nil {
 			return nil, fmt.Errorf("key update failed: %w", err)
@@ -502,7 +502,7 @@ func (c *conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 	return s, nil
 }
 
-func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
+func (c *Conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	peerNewPubKey, err := ecdh.X25519().NewPublicKey(peerNewPubKeyBytes)
 	if err != nil {
 		return err
@@ -549,7 +549,7 @@ func (c *conn) handlePeerKeyUpdate(peerNewPubKeyBytes []byte) error {
 	return nil
 }
 
-func (c *conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
+func (c *Conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
 	if c.sndKeys.prvKeyEpNext == nil || c.sndKeys.next != nil { // retransmit
 		return nil
 	}
@@ -573,7 +573,7 @@ func (c *conn) handleKeyUpdateAck(peerNewPubKeyBytes []byte) error {
 
 // flushStream sends at most one packet for the stream and returns the bytes
 // of payload sent and how long until the next send is due.
-func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
+func (c *Conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	ack := c.rcv.getSndAck()
 
 	// Expired best-effort packets are dropped, not retransmitted
@@ -684,7 +684,7 @@ func (c *conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	return 0, minDeadline, nil
 }
 
-func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
+func (c *Conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, isClose bool, nowNano uint64, trackInFlight bool) (int, uint64, error) {
 	isKeyUpdate := c.kuAttachDue(nowNano)
 	isKeyUpdateAck := c.kuAckPending()
 
@@ -765,7 +765,7 @@ func (c *conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 // handshake re-send, window probe). It is not tracked in the send buffer: a
 // tracked probe whose ACK was lost would hold the stream's one zero-payload
 // slot for an RTO and block the next probe.
-func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
+func (c *Conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint64, error) {
 	offset := c.snd.getSendOffset(s.streamID)
 
 	// A receive-only connection never gets an RTT sample, so until the first
@@ -783,11 +783,11 @@ func (c *conn) sendControlPacket(s *Stream, ack *ack, nowNano uint64) (int, uint
 // =============================================================================
 
 // isInitiator reports whether this side dialed
-func (c *conn) isInitiator() bool {
+func (c *Conn) isInitiator() bool {
 	return c.initMsgType == initSnd || c.initMsgType == initCryptoSnd
 }
 
-func (c *conn) msgType() cryptoMsgType {
+func (c *Conn) msgType() cryptoMsgType {
 	if c.phase >= phaseReady {
 		return data
 	}

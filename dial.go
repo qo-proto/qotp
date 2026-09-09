@@ -4,63 +4,59 @@ import (
 	"crypto/ecdh"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
+	"net"
 	"net/netip"
 	"strings"
 )
 
-// Dial opens a connection with in-band key exchange: 1-RTT
-func (l *Listener) Dial(remoteAddr netip.AddrPort) (*conn, error) {
+// Dial opens a connection to addr ("host:port") with in-band key exchange:
+// one round trip before data flows
+func (l *Listener) Dial(addr string) (*Conn, error) {
+	remoteAddr, err := resolve(addr)
+	if err != nil {
+		return nil, err
+	}
+	return l.dial(remoteAddr, nil, false)
+}
+
+// DialWithCrypto opens a connection to a peer whose identity key is known:
+// data flows at once, but the first packet has no forward secrecy
+func (l *Listener) DialWithCrypto(addr string, pubKeyIdRcv *ecdh.PublicKey) (*Conn, error) {
+	remoteAddr, err := resolve(addr)
+	if err != nil {
+		return nil, err
+	}
+	return l.dial(remoteAddr, pubKeyIdRcv, true)
+}
+
+// PubKeyFromHex parses an identity key as printed by a peer, with or
+// without a 0x prefix
+func PubKeyFromHex(s string) (*ecdh.PublicKey, error) {
+	b, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil {
+		return nil, err
+	}
+	return ecdh.X25519().NewPublicKey(b)
+}
+
+func resolve(addr string) (netip.AddrPort, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	ap := udpAddr.AddrPort()
+	if !ap.IsValid() {
+		return netip.AddrPort{}, errors.New("invalid address: " + addr)
+	}
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), nil
+}
+
+func (l *Listener) dial(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.PublicKey, withCrypto bool) (*Conn, error) {
 	prvKeyEp, err := generateKey()
 	if err != nil {
 		return nil, err
 	}
-
 	connId := binary.LittleEndian.Uint64(prvKeyEp.PublicKey().Bytes())
-	return l.newConn(connId, remoteAddr, prvKeyEp, nil, nil, true, false)
-}
-
-// DialWithCrypto opens a connection to a known identity key: 0-RTT data, but
-// no forward secrecy for the first message
-func (l *Listener) DialWithCrypto(remoteAddr netip.AddrPort, pubKeyIdRcv *ecdh.PublicKey) (*conn, error) {
-	prvKeyEp, err := generateKey()
-	if err != nil {
-		return nil, err
-	}
-
-	connId := binary.LittleEndian.Uint64(prvKeyEp.PublicKey().Bytes())
-	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, true)
-}
-
-func (l *Listener) DialString(remoteAddrString string) (*conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-	return l.Dial(remoteAddr)
-}
-
-func (l *Listener) DialStringWithCrypto(remoteAddrString string, pubKeyIdRcv *ecdh.PublicKey) (*conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
-}
-
-func (l *Listener) DialStringWithCryptoString(remoteAddrString string, pubKeyIdRcvHex string) (*conn, error) {
-	remoteAddr, err := netip.ParseAddrPort(remoteAddrString)
-	if err != nil {
-		return nil, err
-	}
-
-	b, err := hex.DecodeString(strings.TrimPrefix(pubKeyIdRcvHex, "0x"))
-	if err != nil {
-		return nil, err
-	}
-	pubKeyIdRcv, err := ecdh.X25519().NewPublicKey(b)
-	if err != nil {
-		return nil, err
-	}
-
-	return l.DialWithCrypto(remoteAddr, pubKeyIdRcv)
+	return l.newConn(connId, remoteAddr, prvKeyEp, pubKeyIdRcv, nil, true, withCrypto)
 }

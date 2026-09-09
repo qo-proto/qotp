@@ -31,7 +31,7 @@ var (
 // TEST HELPER
 // =============================================================================
 
-func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*conn, []byte, cryptoMsgType, error) {
+func testDecode(l *Listener, encData []byte, rAddr netip.AddrPort) (*Conn, []byte, cryptoMsgType, error) {
 	if len(encData) < minPacketSize {
 		return nil, nil, 0, fmt.Errorf("packet too small: %d bytes", len(encData))
 	}
@@ -90,42 +90,6 @@ func TestListen_WithSeed(t *testing.T) {
 	defer listener.Close()
 }
 
-func TestListen_WithSeedHex_Valid(t *testing.T) {
-	hexSeed := fmt.Sprintf("%x", testPrvSeed1)
-	listener, err := Listen(WithSeedHex(hexSeed))
-	assert.NoError(t, err)
-	assert.NotNil(t, listener)
-	assert.Equal(t, testPrvKey1.PublicKey().Bytes(), listener.prvKeyId.PublicKey().Bytes())
-	defer listener.Close()
-}
-
-func TestListen_WithSeedHex_With0xPrefix(t *testing.T) {
-	hexSeed := "0x" + fmt.Sprintf("%x", testPrvSeed1)
-	listener, err := Listen(WithSeedHex(hexSeed))
-	assert.NoError(t, err)
-	assert.NotNil(t, listener)
-	defer listener.Close()
-}
-
-func TestListen_WithSeedHex_InvalidHex(t *testing.T) {
-	_, err := Listen(WithSeedHex("not-valid-hex!"))
-	assert.Error(t, err)
-}
-
-func TestListen_WithSeedHex_WrongLength(t *testing.T) {
-	_, err := Listen(WithSeedHex("abcd1234"))
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "32 bytes")
-}
-
-func TestListen_WithSeedString(t *testing.T) {
-	listener, err := Listen(WithSeedString("my secret passphrase"))
-	assert.NoError(t, err)
-	assert.NotNil(t, listener)
-	assert.NotNil(t, listener.prvKeyId)
-	defer listener.Close()
-}
-
 func TestListen_WithPrvKeyId(t *testing.T) {
 	listener, err := Listen(WithPrvKeyId(testPrvKey1))
 	assert.NoError(t, err)
@@ -167,7 +131,7 @@ func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
 		return nil
 	}
 	newL := func(id *ecdh.PrivateKey, buf *bytes.Buffer) *Listener {
-		return &Listener{connMap: newSharedLinkedMap[uint64, *conn](), prvKeyId: id,
+		return &Listener{connMap: newSharedLinkedMap[uint64, *Conn](), prvKeyId: id,
 			maxPayload: 1452, keyLogWriter: buf}
 	}
 	userData := func(t *testing.T, plain []byte) []byte {
@@ -180,7 +144,7 @@ func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
 	t.Run("0-RTT", func(t *testing.T) {
 		var logA, logB bytes.Buffer
 		lA, lB := newL(prvIdAlice, &logA), newL(prvIdBob, &logB)
-		cA, err := lA.DialWithCrypto(rAddr, prvIdBob.PublicKey())
+		cA, err := lA.dial(rAddr, prvIdBob.PublicKey(), true)
 		assert.NoError(t, err)
 
 		// Alice -> Bob: InitCryptoSnd, sealed to Bob's identity key
@@ -222,7 +186,7 @@ func TestListen_KeyLog_DecryptsCapture(t *testing.T) {
 	t.Run("1-RTT", func(t *testing.T) {
 		var logA, logB bytes.Buffer
 		lA, lB := newL(prvIdAlice, &logA), newL(prvIdBob, &logB)
-		cA, err := lA.Dial(rAddr)
+		cA, err := lA.dial(rAddr, nil, false)
 		assert.NoError(t, err)
 
 		initPkt, err := cA.encode(nil, nil, initSnd)
@@ -270,16 +234,6 @@ func TestListen_MultipleOptions(t *testing.T) {
 // LISTENER LIFECYCLE TESTS
 // =============================================================================
 
-func TestListener_Close(t *testing.T) {
-	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-
-	_, _ = listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
-
-	err = listener.Close()
-	assert.NoError(t, err)
-}
-
 func TestListener_Close_Empty(t *testing.T) {
 	listener, err := Listen(WithSeed(testPrvSeed1))
 	assert.NoError(t, err)
@@ -301,7 +255,7 @@ func TestListener_HasActiveStreams_WithConnection(t *testing.T) {
 	assert.NoError(t, err)
 	defer listener.Close()
 
-	conn, err := listener.DialString("127.0.0.1:9000")
+	conn, err := listener.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 
 	// Create a stream
@@ -311,30 +265,6 @@ func TestListener_HasActiveStreams_WithConnection(t *testing.T) {
 
 // =============================================================================
 // DIAL FROM LISTENER TESTS
-// =============================================================================
-
-func TestListener_DialStringWithCryptoString_Valid(t *testing.T) {
-	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-	defer listener.Close()
-
-	conn, err := listener.DialStringWithCryptoString("127.0.0.1:9081", hexPubKey1)
-	assert.NoError(t, err)
-	assert.NotNil(t, conn)
-}
-
-func TestListener_DialStringWithCryptoString_InvalidPort(t *testing.T) {
-	listener, err := Listen(WithListenAddr("127.0.0.1:9080"), WithSeed(testPrvSeed1))
-	assert.NoError(t, err)
-	defer listener.Close()
-
-	conn, err := listener.DialStringWithCryptoString("127.0.0.1:99999", hexPubKey1)
-	assert.Nil(t, conn)
-	assert.Error(t, err)
-}
-
-// =============================================================================
-// REFRESH MAX PAYLOAD TESTS
 // =============================================================================
 
 func TestListener_RefreshMaxPayload_NonUDP(t *testing.T) {
@@ -357,7 +287,7 @@ func TestListener_newConn_DuplicateConnId(t *testing.T) {
 	defer listener.Close()
 
 	// First dial creates a connection
-	conn1, err := listener.DialString("127.0.0.1:9000")
+	conn1, err := listener.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 	assert.NotNil(t, conn1)
 
@@ -376,7 +306,7 @@ func TestListener_cleanupConn(t *testing.T) {
 	assert.NoError(t, err)
 	defer listener.Close()
 
-	conn, err := listener.DialString("127.0.0.1:9000")
+	conn, err := listener.Dial("127.0.0.1:9000")
 	assert.NoError(t, err)
 	connId := conn.connId
 
@@ -394,8 +324,8 @@ func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 	assert.NoError(t, err)
 	defer listener.Close()
 
-	conn1, _ := listener.DialString("127.0.0.1:9000")
-	conn2, _ := listener.DialString("127.0.0.1:9001")
+	conn1, _ := listener.Dial("127.0.0.1:9000")
+	conn2, _ := listener.Dial("127.0.0.1:9001")
 
 	// Cursor points at the connection being removed; the iterator's fallback
 	// (unknown start key -> begin from the front) makes this safe.
@@ -415,7 +345,7 @@ func TestListener_cleanupConn_StaleCursorFallsBack(t *testing.T) {
 
 func TestListener_Decode_EmptyBuffer(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -427,7 +357,7 @@ func TestListener_Decode_EmptyBuffer(t *testing.T) {
 
 func TestListener_Decode_TooSmall(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -439,7 +369,7 @@ func TestListener_Decode_TooSmall(t *testing.T) {
 
 func TestListener_Decode_InvalidVersion(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -454,7 +384,7 @@ func TestListener_Decode_InvalidVersion(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -469,7 +399,7 @@ func TestListener_Decode_ConnNotFound_InitRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -484,7 +414,7 @@ func TestListener_Decode_ConnNotFound_InitCryptoRcv(t *testing.T) {
 
 func TestListener_Decode_ConnNotFound_Data(t *testing.T) {
 	l := &Listener{
-		connMap:    newSharedLinkedMap[uint64, *conn](),
+		connMap:    newSharedLinkedMap[uint64, *Conn](),
 		prvKeyId:   testPrvKey1,
 		maxPayload: testMaxPayload,
 	}
@@ -765,7 +695,7 @@ func TestListener_Bidirectional_MultipleStreams(t *testing.T) {
 	assert.NoError(t, err)
 	defer listenerBob.Close()
 
-	connAlice, err := listenerAlice.DialStringWithCrypto(listenerBob.localConn.LocalAddrString(), testPrvKey2.PublicKey())
+	connAlice, err := listenerAlice.DialWithCrypto(listenerBob.localConn.LocalAddrString(), testPrvKey2.PublicKey())
 	assert.NoError(t, err)
 
 	numStreams := 20

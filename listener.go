@@ -3,15 +3,12 @@ package qotp
 import (
 	"crypto/ecdh"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/netip"
-	"strings"
 )
 
 // =============================================================================
@@ -29,7 +26,7 @@ const maxUDPPayload = 65535
 type Listener struct {
 	localConn    NetworkConn
 	prvKeyId     *ecdh.PrivateKey
-	connMap      *sharedLinkedMap[uint64, *conn]
+	connMap      *sharedLinkedMap[uint64, *Conn]
 	keyLogWriter io.Writer
 	maxPayload   int
 
@@ -44,7 +41,7 @@ type Listener struct {
 // Functional options for Listen()
 // =============================================================================
 
-type ListenOption struct {
+type listenOption struct {
 	prvKeyId     *ecdh.PrivateKey
 	localConn    NetworkConn
 	listenAddr   *net.UDPAddr
@@ -52,26 +49,26 @@ type ListenOption struct {
 	keyLogWriter io.Writer
 }
 
-type ListenFunc func(*ListenOption) error
+type ListenFunc func(*listenOption) error
 
 func WithMaxPayload(maxPayload int) ListenFunc {
-	return func(o *ListenOption) error { o.maxPayload = maxPayload; return nil }
+	return func(o *listenOption) error { o.maxPayload = maxPayload; return nil }
 }
 
 func WithKeyLogWriter(w io.Writer) ListenFunc {
-	return func(o *ListenOption) error { o.keyLogWriter = w; return nil }
+	return func(o *listenOption) error { o.keyLogWriter = w; return nil }
 }
 
 func WithNetworkConn(c NetworkConn) ListenFunc {
-	return func(o *ListenOption) error { o.localConn = c; return nil }
+	return func(o *listenOption) error { o.localConn = c; return nil }
 }
 
 func WithPrvKeyId(k *ecdh.PrivateKey) ListenFunc {
-	return func(o *ListenOption) error { o.prvKeyId = k; return nil }
+	return func(o *listenOption) error { o.prvKeyId = k; return nil }
 }
 
 func WithListenAddr(addr string) ListenFunc {
-	return func(o *ListenOption) error {
+	return func(o *listenOption) error {
 		a, err := net.ResolveUDPAddr("udp", addr)
 		if err != nil {
 			return err
@@ -82,7 +79,7 @@ func WithListenAddr(addr string) ListenFunc {
 }
 
 func WithSeed(seed [32]byte) ListenFunc {
-	return func(o *ListenOption) error {
+	return func(o *listenOption) error {
 		k, err := ecdh.X25519().NewPrivateKey(seed[:])
 		if err != nil {
 			return err
@@ -92,31 +89,12 @@ func WithSeed(seed [32]byte) ListenFunc {
 	}
 }
 
-func WithSeedHex(hexStr string) ListenFunc {
-	return func(o *ListenOption) error {
-		b, err := hex.DecodeString(strings.TrimPrefix(hexStr, "0x"))
-		if err != nil {
-			return err
-		}
-		if len(b) != 32 {
-			return errors.New("seed must be 32 bytes")
-		}
-		return WithSeed([32]byte(b))(o)
-	}
-}
-
-func WithSeedString(s string) ListenFunc {
-	return func(o *ListenOption) error {
-		return WithSeed(sha256.Sum256([]byte(s)))(o)
-	}
-}
-
 // =============================================================================
 // Constructor
 // =============================================================================
 
 func Listen(options ...ListenFunc) (*Listener, error) {
-	o := &ListenOption{}
+	o := &listenOption{}
 	for _, opt := range options {
 		if err := opt(o); err != nil {
 			return nil, err
@@ -151,7 +129,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 	}
 
 	var interfaceMTU int
-	if udpConn, ok := o.localConn.(*UDPNetworkConn); ok {
+	if udpConn, ok := o.localConn.(*udpNetworkConn); ok {
 		interfaceMTU = getInterfaceMTU(udpConn.conn)
 	} else {
 		interfaceMTU = 1500
@@ -168,7 +146,7 @@ func Listen(options ...ListenFunc) (*Listener, error) {
 		prvKeyId:     o.prvKeyId,
 		maxPayload:   maxPayload,
 		keyLogWriter: o.keyLogWriter,
-		connMap:      newSharedLinkedMap[uint64, *conn](),
+		connMap:      newSharedLinkedMap[uint64, *Conn](),
 		readBuf:      make([]byte, maxUDPPayload),
 	}
 	slog.Info("Listen", slog.String("listenAddr", o.localConn.LocalAddrString()))
@@ -193,7 +171,7 @@ func (l *Listener) Close() error {
 // WiFi to Ethernet; peers learn the new value on their next packet. Call it
 // from the Loop callback: the event loop reads maxPayload without a lock.
 func (l *Listener) RefreshMaxPayload() {
-	if udpConn, ok := l.localConn.(*UDPNetworkConn); ok {
+	if udpConn, ok := l.localConn.(*udpNetworkConn); ok {
 		l.maxPayload = max(getInterfaceMTU(udpConn.conn)-ipOverhead, conservativeMTU)
 	}
 }
@@ -211,7 +189,7 @@ func (l *Listener) HasActiveStreams() bool {
 // Connection management (internal)
 // =============================================================================
 
-func (l *Listener) getOrCreateConn(connId uint64, rAddr netip.AddrPort, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, isSender, withCrypto bool) (*conn, error) {
+func (l *Listener) getOrCreateConn(connId uint64, rAddr netip.AddrPort, pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey, isSender, withCrypto bool) (*Conn, error) {
 	if conn, exists := l.connMap.get(connId); exists {
 		return conn, nil
 	}
@@ -228,7 +206,7 @@ func (l *Listener) newConn(
 	prvKeyEpSnd *ecdh.PrivateKey,
 	pubKeyIdRcv, pubKeyEpRcv *ecdh.PublicKey,
 	isSender, withCrypto bool,
-) (*conn, error) {
+) (*Conn, error) {
 	var initMsgType cryptoMsgType
 	switch {
 	case withCrypto && isSender:
@@ -241,7 +219,7 @@ func (l *Listener) newConn(
 		initMsgType = initRcv
 	}
 
-	conn := &conn{
+	conn := &Conn{
 		connId:     connId,
 		streams:    newSharedLinkedMap[uint32, *Stream](),
 		remoteAddr: remoteAddr,

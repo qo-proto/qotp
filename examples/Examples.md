@@ -76,7 +76,7 @@ func main() {
     defer listener.Close()
 
     // Connect to server (in-band key exchange, 1-RTT)
-    conn, err := listener.DialString("127.0.0.1:8888")
+    conn, err := listener.Dial("127.0.0.1:8888")
     if err != nil {
         log.Fatal(err)
     }
@@ -135,15 +135,9 @@ var seed [32]byte
 copy(seed[:], someBytes)
 listener, err := qotp.Listen(qotp.WithSeed(seed))
 
-// From hex string
-listener, err := qotp.Listen(
-    qotp.WithSeedHex("0x1234567890abcdef..."),
-)
-
-// From any string (hashed to 32 bytes)
-listener, err := qotp.Listen(
-    qotp.WithSeedString("my-secret-passphrase"),
-)
+// From a hex string in a config file
+b, _ := hex.DecodeString("1234567890abcdef...")
+listener, err := qotp.Listen(qotp.WithSeed([32]byte(b)))
 ```
 
 ## Example 5: 0-RTT Connection (Out-of-band Keys)
@@ -151,26 +145,17 @@ listener, err := qotp.Listen(
 If you know the server's public key in advance, you can send data immediately without waiting for handshake.
 
 ```go
-// Server: use deterministic key so clients can know it
+// Server: use a deterministic key so clients can know it
 serverListener, _ := qotp.Listen(
     qotp.WithListenAddr("0.0.0.0:8888"),
-    qotp.WithSeedString("server-secret"),
+    qotp.WithSeed(serverSeed),
 )
 // Server's public key can be shared out-of-band
 
-// Client: connect with server's public key
+// Client: connect with the server's public key, as printed by the server
 clientListener, _ := qotp.Listen()
-
-// Using hex-encoded public key
-conn, err := clientListener.DialStringWithCryptoString(
-    "127.0.0.1:8888",
-    "0xaabbccdd...", // Server's public identity key
-)
-
-// Or using parsed public key
-import "crypto/ecdh"
-pubKey, _ := ecdh.X25519().NewPublicKey(pubKeyBytes)
-conn, err := clientListener.DialStringWithCrypto("127.0.0.1:8888", pubKey)
+pubKey, _ := qotp.PubKeyFromHex("0xaabbccdd...")
+conn, err := clientListener.DialWithCrypto("127.0.0.1:8888", pubKey)
 
 // Can send data immediately (0-RTT)
 stream := conn.Stream(0)
@@ -182,7 +167,7 @@ stream.Write([]byte("instant message"))
 A single connection can multiplex multiple independent streams.
 
 ```go
-conn, _ := listener.DialString("127.0.0.1:8888")
+conn, _ := listener.Dial("127.0.0.1:8888")
 
 // Create multiple streams
 stream0 := conn.Stream(0) // Control channel
@@ -425,9 +410,7 @@ Close (FIN) and key updates are always reliable, even on unreliable streams.
 | `Listen(options...)` | Create a new listener |
 | `WithListenAddr(addr)` | Bind to specific address |
 | `WithMaxPayload(maxPayload)` | Set max UDP payload (default: interfaceMTU - 48) |
-| `WithSeed(seed)` | Deterministic key from bytes |
-| `WithSeedHex(hex)` | Deterministic key from hex |
-| `WithSeedString(s)` | Deterministic key from string |
+| `WithSeed(seed)` | Deterministic key from 32 bytes |
 | `WithPrvKeyId(key)` | Use specific private key |
 | `WithKeyLogWriter(w)` | Log keys for Wireshark |
 | `WithNetworkConn(conn)` | Custom network (for testing) |
@@ -442,15 +425,13 @@ Close (FIN) and key updates are always reliable, even on unreliable streams.
 | `Flush(now)` | Send pending data (low-level) |
 | `HasActiveStreams()` | Check for active streams |
 | `RefreshMaxPayload()` | Re-detect interface MTU and recompute maxPayload |
-| `Dial(addr)` | Connect with `netip.AddrPort` |
-| `DialString(addr)` | Connect with string address |
-| `DialWithCrypto(addr, pubKey)` | Connect (0-RTT) with `netip.AddrPort` |
-| `DialStringWithCrypto(addr, pubKey)` | Connect (0-RTT) with string |
-| `DialStringWithCryptoString(addr, pubKeyHex)` | Connect (0-RTT) with hex key |
+| `Dial("host:port")` | Connect, in-band key exchange (1-RTT) |
+| `DialWithCrypto("host:port", pubKey)` | Connect to a known identity key (0-RTT) |
+| `PubKeyFromHex(hex)` | Parse an identity key as printed by a peer (package function) |
 
 ### Connection Methods
 
-Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but these methods are available:
+`Dial` and `DialWithCrypto` return a `*Conn`:
 
 | Method | Description |
 |--------|-------------|
@@ -478,7 +459,6 @@ Connection is returned by `Dial*` methods. The type is unexported (`*conn`) but 
 | `IsClosed()` | Both directions closed; the stream is about to be dropped |
 | `StreamID()` | Get stream ID |
 | `ConnID()` | Get connection ID |
-| `NotifyDataAvailable()` | Interrupt blocking read (internal) |
 
 ---
 
@@ -492,12 +472,11 @@ constructors — is already unexported. The remaining judgement calls are below.
 
 | Type/Function | Reason |
 |--------------|--------|
-| `NetworkConn`, `UDPNetworkConn` | Useful for testing, but could be internal |
+| `NetworkConn`, `NewUDPNetworkConn` | Useful for testing with a mock socket |
 | `WithNetworkConn` | Testing hook |
-| `WithPrvKeyId` | Advanced use, `WithSeed*` covers most cases |
+| `WithPrvKeyId` | Advanced use, `WithSeed` covers most cases |
 | `DecryptWithSecrets` | Debugging tool; kept in crypto.go, next to the wire format it decodes |
 | `Listen`, `Flush` on Listener | Low-level, `Loop` is preferred |
-| `NotifyDataAvailable` on Stream | Internal signaling |
 
 ### Keep Exported
 

@@ -93,7 +93,7 @@ func runClient(serverAddr string) {
 	}
 	defer listener.Close()
 
-	conn, err := listener.DialString(serverAddr)
+	conn, err := listener.Dial(serverAddr)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -27,7 +27,7 @@ type NetworkConn interface {
 	LocalAddrString() string
 }
 
-type UDPNetworkConn struct {
+type udpNetworkConn struct {
 	conn *net.UDPConn
 	// Scratch buffer for the destination-address control message; nil when
 	// the platform cannot report it or the socket is bound to one address
@@ -35,7 +35,7 @@ type UDPNetworkConn struct {
 }
 
 func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
-	c := &UDPNetworkConn{conn: conn}
+	c := &udpNetworkConn{conn: conn}
 	if a, ok := conn.LocalAddr().(*net.UDPAddr); ok && (a.IP == nil || a.IP.IsUnspecified()) {
 		if err := enablePktInfo(conn); err == nil {
 			c.oob = make([]byte, pktInfoOobSize)
@@ -47,7 +47,7 @@ func NewUDPNetworkConn(conn *net.UDPConn) NetworkConn {
 	return c
 }
 
-func (c *UDPNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint64) (int, netip.AddrPort, netip.Addr, uint64, error) {
+func (c *udpNetworkConn) ReadFromUDPAddrPort(p []byte, timeoutNano, nowNano uint64) (int, netip.AddrPort, netip.Addr, uint64, error) {
 	deadline := time.Unix(0, int64(nowNano+timeoutNano))
 	if err := c.conn.SetReadDeadline(deadline); err != nil {
 		return 0, netip.AddrPort{}, netip.Addr{}, 0, err
@@ -70,11 +70,11 @@ func sinceNano(nowNano uint64) uint64 {
 }
 
 // TimeoutReadNow unblocks a pending read
-func (c *UDPNetworkConn) TimeoutReadNow() error {
+func (c *udpNetworkConn) TimeoutReadNow() error {
 	return c.conn.SetReadDeadline(time.Unix(0, 1))
 }
 
-func (c *UDPNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, localAddr netip.Addr, _ uint64) error {
+func (c *udpNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort, localAddr netip.Addr, _ uint64) error {
 	var n int
 	var err error
 	if oob := srcControlMessage(localAddr); oob != nil {
@@ -91,11 +91,11 @@ func (c *UDPNetworkConn) WriteToUDPAddrPort(b []byte, remoteAddr netip.AddrPort,
 	return nil
 }
 
-func (c *UDPNetworkConn) Close() error {
+func (c *udpNetworkConn) Close() error {
 	return c.conn.Close()
 }
 
-func (c *UDPNetworkConn) LocalAddrString() string {
+func (c *udpNetworkConn) LocalAddrString() string {
 	return c.conn.LocalAddr().String()
 }
 
