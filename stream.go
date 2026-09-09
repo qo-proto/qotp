@@ -102,10 +102,6 @@ func (s *Stream) SetGapTimeoutNano(timeoutNano uint64) {
 	s.gapTimeoutNano.Store(timeoutNano)
 }
 
-func (s *Stream) GapTimeoutNano() uint64 {
-	return s.gapTimeoutNano.Load()
-}
-
 // RTTNano is the smoothed RTT, 0 until the first sample. Safe from any
 // goroutine.
 func (s *Stream) RTTNano() uint64 {

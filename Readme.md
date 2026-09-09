@@ -625,7 +625,7 @@ where retransmitting stale data is worse than dropping it.
 - A head-of-line gap (lost packet) is skipped once it has been open longer
   than the gap timeout: delivery advances to the next buffered segment,
   or to the close offset when the tail of the stream was lost
-- Gap timeout: 100ms default, per-stream `SetGapTimeoutNano`/`GapTimeoutNano`
+- Gap timeout: 100ms default, per-stream `SetGapTimeoutNano`
   — tune with `RTTNano()`/`RTTVarNano()` (e.g. srtt/2 or 4×rttvar). In-order
   data is never delayed, so this is not a jitter buffer; it only bounds the
   stall after a loss
@@ -838,7 +838,6 @@ func (s *Stream) SetReliable(reliable bool)
 // SetGapTimeoutNano sets how long an unreliable stream waits for a missing
 // packet before skipping it and delivering the data behind it (default 100ms).
 func (s *Stream) SetGapTimeoutNano(timeoutNano uint64)
-func (s *Stream) GapTimeoutNano() uint64
 
 // RTTNano / RTTVarNano expose the smoothed RTT and jitter estimates.
 // Safe from any goroutine.

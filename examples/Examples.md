@@ -440,7 +440,6 @@ Close (FIN) and key updates are always reliable, even on unreliable streams.
 | `Ping()` | Send best-effort ping for RTT measurement |
 | `SetReliable(bool)` | Toggle retransmission (default true; set before first Write). Carried in the high bit of the wire stream ID, so IDs are limited to 2^31-1 |
 | `SetGapTimeoutNano(nano)` | How long an unreliable stream waits for a missing packet before skipping it (default 100ms) |
-| `GapTimeoutNano()` | Current gap timeout |
 | `RTTNano()` | Smoothed RTT estimate (0 until first sample) |
 | `RTTVarNano()` | RTT variation (jitter) estimate |
 | `LatePackets()` | Packets that arrived after their range was skipped |
