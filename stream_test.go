@@ -124,7 +124,7 @@ func (w *wakeCounter) TimeoutReadNow() error { w.wakes++; return nil }
 func TestStream_Write_PartialFillWakesLoop(t *testing.T) {
 	wc := &wakeCounter{}
 	c := &Conn{listener: &Listener{localConn: wc}, snd: newSendBuffer(3), rcv: newReceiveBuffer(1000)}
-	s := &Stream{streamID: 1, conn: c, reliable: true}
+	s := &Stream{streamID: 1, conn: c}
 
 	n, err := s.Write([]byte("test"))
 	assert.NoError(t, err)

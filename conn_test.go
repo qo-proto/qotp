@@ -1572,7 +1572,7 @@ func TestUnreliableMarkerOnCloseOnlyStream(t *testing.T) {
 	s := c.Stream(3)
 	s.SetReliable(false)
 
-	p := &payloadHeader{streamId: 3, streamOffset: 0, isClose: true, unreliable: !s.reliable}
+	p := &payloadHeader{streamId: 3, streamOffset: 0, isClose: true, unreliable: !!s.unreliable.Load()}
 	_, err := c.processIncomingPayload(p, []byte{}, 0, 1000)
 	assert.NoError(t, err)
 

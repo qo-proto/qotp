@@ -10,10 +10,12 @@ const defaultGapTimeoutNano = uint64(100 * msNano) // see SetGapTimeoutNano
 // Stream is a bidirectional byte stream within a connection. The two
 // directions close independently.
 type Stream struct {
-	streamID       uint32
-	conn           *Conn
-	reliable       bool
-	gapTimeoutNano uint64
+	streamID uint32
+	conn     *Conn
+
+	// Set by the user, read by the event loop
+	unreliable     atomic.Bool
+	gapTimeoutNano atomic.Uint64
 
 	// Written by the event loop and by Read on the user's goroutine
 	rcvClosed atomic.Bool // FIN received and delivered
@@ -89,7 +91,7 @@ func (s *Stream) IsClosed() bool {
 // so the application must do its own framing. FIN and key updates are
 // always retransmitted.
 func (s *Stream) SetReliable(reliable bool) {
-	s.reliable = reliable
+	s.unreliable.Store(!reliable)
 }
 
 // SetGapTimeoutNano sets how long an unreliable stream waits for a missing
@@ -97,11 +99,11 @@ func (s *Stream) SetReliable(reliable bool) {
 // 100ms). In-order data is never delayed. RTTNano and RTTVarNano can guide
 // tuning, e.g. 4*rttvar.
 func (s *Stream) SetGapTimeoutNano(timeoutNano uint64) {
-	s.gapTimeoutNano = timeoutNano
+	s.gapTimeoutNano.Store(timeoutNano)
 }
 
 func (s *Stream) GapTimeoutNano() uint64 {
-	return s.gapTimeoutNano
+	return s.gapTimeoutNano.Load()
 }
 
 // RTTNano is the smoothed RTT, 0 until the first sample. Call it from the

@@ -111,7 +111,7 @@ type Conn struct {
 	initSendCount    uint
 
 	measurements
-	mu sync.Mutex
+	mu sync.Mutex // getOrCreateStream's finished check and insert, atomic against cleanupStream
 }
 
 // =============================================================================
@@ -123,8 +123,6 @@ func (c *Conn) Stream(streamID uint32) *Stream {
 }
 
 func (c *Conn) HasActiveStreams() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	for _, val := range c.streams.iterator(nil) {
 		if val != nil && (!val.rcvClosed.Load() || !val.sndClosed.Load()) {
 			return true
@@ -157,8 +155,6 @@ func (c *Conn) kuAttachDue(nowNano uint64) bool {
 // =============================================================================
 
 func (c *Conn) closeAllStreams() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	for _, s := range c.streams.iterator(nil) {
 		s.Close()
 	}
@@ -225,7 +221,8 @@ func (c *Conn) getOrCreateStream(streamID uint32) *Stream {
 	if c.rcv.isFinished(streamID) {
 		return nil
 	}
-	s := &Stream{streamID: streamID, conn: c, reliable: true, gapTimeoutNano: defaultGapTimeoutNano}
+	s := &Stream{streamID: streamID, conn: c}
+	s.gapTimeoutNano.Store(defaultGapTimeoutNano)
 	s, _ = c.streams.getOrPut(streamID, s)
 	return s
 }
@@ -482,14 +479,14 @@ func (c *Conn) processIncomingPayload(p *payloadHeader, userData []byte, sn uint
 		if c.rcv.insert(s.streamID, p.streamOffset, nowNano, userData) == rcvInsertBufferFull {
 			c.rwndAnnounceDue = true
 		}
-		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
+		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano.Load())
 	} else { // ping, close or key update: still ACKed
 		c.rcv.queueAck(s.streamID, p.streamOffset, 0)
 	}
 
 	if p.isClose {
 		c.rcv.close(s.streamID, p.streamOffset+uint64(len(userData)))
-		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
+		c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano.Load())
 	}
 
 	if !s.rcvClosed.Load() && c.rcv.isReadyToClose(s.streamID) {
@@ -580,7 +577,7 @@ func (c *Conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	c.dataInFlight -= c.snd.drainExpiredBestEffort(s.streamID, c.rtoNano(), nowNano)
 
 	// Also here, not only on arrival, for a sender that went silent mid-gap
-	c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano)
+	c.rcv.checkGap(s.streamID, nowNano, s.gapTimeoutNano.Load())
 
 	// A lost KEY_UPDATE_ACK needs no timer: the peer's re-sent KEY_UPDATE
 	// asks for it again
@@ -661,7 +658,7 @@ func (c *Conn) flushStream(s *Stream, nowNano uint64) (int, uint64, error) {
 	}
 
 	if c.phase == phaseReady || c.phase == phaseCreated {
-		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, effectiveMtu, s.reliable)
+		splitData, offset, isClose := c.snd.readyToSend(s.streamID, msgType, ack, effectiveMtu, !s.unreliable.Load())
 		if splitData != nil {
 			return c.encodeAndWrite(s, ack, splitData, offset, isClose, nowNano, true)
 		}
@@ -692,7 +689,7 @@ func (c *Conn) encodeAndWrite(s *Stream, ack *ack, data []byte, offset uint64, i
 		maxPayload:   uint16(c.listener.maxPayload),
 		rcvWnd:       c.rcv.freeAdvertise(),
 		isClose:      isClose,
-		unreliable:   !s.reliable,
+		unreliable:   s.unreliable.Load(),
 		ack:          ack,
 		streamId:     s.streamID,
 		streamOffset: offset,
