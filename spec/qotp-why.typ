@@ -95,6 +95,16 @@ packet can arrive after a newer one with a smaller,
 stale value; applying it would block the sender for
 nothing. The sequence number orders them.
 
+Free space is not monotonic, so a stale value must be
+rejected rather than merely ignored. An absolute byte
+limit, as QUIC carries in MAX_DATA, is monotonic and so
+safe to retransmit: a late copy can never shrink the
+window. The reference implementation keeps free space
+and the sequence number that dates it, trading a
+retransmittable update for a one-byte field instead of
+an offset, and the sender's probe (A.5) instead of a
+retransmitted announcement.
+
 Reliability rides in bit 31 of the stream ID for the
 same reason: every packet of the stream carries it, and
 a best-effort stream never retransmits anything, so a
@@ -381,3 +391,46 @@ per-stream settings the application may change while
 the loop runs. That is the whole concurrency model, and
 it is why the loop can be reasoned about as sequential
 code.
+
+That one loop is also the throughput ceiling. Every
+connection on a listener is served by it, so a single
+core is the limit however many connections share it,
+and each data packet costs a second packet operation
+for its acknowledgement. In userspace this is the
+dominant cost at high rates, where TCP does the same
+work in the kernel with segmentation offload: a
+benchmark that pins a core is measuring per-packet
+cost, not the protocol. The trade is deliberate. A
+lockless core that reads as sequential code is worth
+more at this stage than line rate, and throughput grows
+by adding loops -- more listeners, or connections
+sharded across them -- rather than by threading one.
+
+= A.15 Where the timer and buffer numbers come from
+
+The values not tied to a mechanism above. A second
+implementation may change any of them; these are the
+reference implementation's, with their provenance.
+
+#table(
+  columns: (auto, 1fr),
+  [*value*], [*why this one*],
+  [initial RTO, 200 ms],
+  [the estimate before any RTT sample; RFC 6298's 1 s would stall the first loss recovery on a fast path],
+  [RTO floor, 100 ms],
+  [below it, timers fire on jitter rather than loss],
+  [RTO ceiling, 2 s],
+  [bounds the backoff so a dead path is declared in seconds; unbounded doubling would reach a minute],
+  [retransmits, 5],
+  [with doubling and the ceiling, give up in 3 to 12 s by RTT: long enough to ride out a blip, short enough to fail over],
+  [probe and loss window, 8 RTTs],
+  [the length of BBR's ProbeBW gain cycle, reused as the window over which loss is judged (A.11)],
+  [min-RTT trusted, 10 s],
+  [BBR's RTProp window; a minimum older than this may belong to a path that has since changed],
+  [bandwidth filter, 10 rounds],
+  [BBR's BtlBw window: long enough to span a probe-drain cycle, short enough to forget a rate that is gone],
+  [send and receive buffers, 16 MB],
+  [cap the advertised window and the data in flight; enough to fill a 1 Gbit path to about 130 ms RTT],
+  [reorder gap, 100 ms],
+  [a few typical RTTs: catches ordinary reordering, bounds the stall after a lost best-effort packet (A.12)],
+)
